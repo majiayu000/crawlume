@@ -78,8 +78,8 @@
 
 ## v0.10 身份与许可
 
-- 公开 Agent 身份说明。
-- Web Bot Auth 签名。
+- 公开 Agent 身份说明（已完成首版）。
+- Web Bot Auth 签名（已完成 `cloudflare-legacy` HTTP 兼容档）。
 - RSL 发现与 License Token。
 - 许可、预算和用户确认策略。
 - 访问与内容使用审计。

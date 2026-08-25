@@ -155,6 +155,11 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | Variable | Default | Meaning |
 |---|---:|---|
 | `DIAOYAN_DATA_DIR` | platform user data directory | Cache and profiles |
+| `DIAOYAN_USER_AGENT` | `DiaoyanWebReader/0.10` | Honest crawler product name and operator contact |
+| `DIAOYAN_AGENT_IDENTITY_URL` | unset | Public HTTPS identity used by Web Bot Auth |
+| `DIAOYAN_WEB_BOT_AUTH_JWK_PATH` | unset | Absolute path to a mode-0600 Ed25519 private JWK; enables HTTP signing |
+| `DIAOYAN_WEB_BOT_AUTH_PROFILE` | `cloudflare-legacy` | Wire compatibility profile; currently only this value is supported |
+| `DIAOYAN_WEB_BOT_AUTH_TTL_SECONDS` | `60` | Signature lifetime from 10 to 300 seconds |
 | `DIAOYAN_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
 | `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
 | `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
@@ -187,6 +192,27 @@ Ordinary page attempts rotate through the pool. Authorization Profiles use a sta
 from their Profile name, including during `diaoyan-auth`. Proxy routing does not bypass URL policy,
 robots, authentication, payment, or access-denial checks.
 
+### Self-owned Agent identity
+
+Web Bot Auth is optional and disabled until an administrator provides both a public HTTPS identity
+and an Ed25519 private JWK file. Use an identity you own; do not copy another crawler's User-Agent
+or identity URL.
+
+```bash
+export DIAOYAN_USER_AGENT='DiaoyanCrawler/0.10 (+https://crawler.example)'
+export DIAOYAN_AGENT_IDENTITY_URL=https://crawler.example/identity
+export DIAOYAN_WEB_BOT_AUTH_JWK_PATH=/absolute/private/path/diaoyan-ed25519.jwk.json
+chmod 600 "$DIAOYAN_WEB_BOT_AUTH_JWK_PATH"
+pnpm start
+```
+
+The public origin must serve the matching public JWK at
+`/.well-known/http-message-signatures-directory`, and each supporting platform may still require
+separate bot registration. This release signs only direct HTTP fetches. Browser fetch evidence
+reports `signed: false`; signing never bypasses robots, login, payment, or site policy. See the
+[Agent identity specification](docs/agent-identity-spec.md) for the exact compatibility and key
+requirements.
+
 Project documents:
 
 - [Technical contract](docs/spec.md)
@@ -194,3 +220,4 @@ Project documents:
 - [Product strategy](docs/product-strategy.md)
 - [Roadmap](docs/roadmap.md)
 - [Search provider setup](docs/search.md)
+- [Agent identity and Web Bot Auth](docs/agent-identity-spec.md)

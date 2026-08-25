@@ -1,6 +1,7 @@
 import { chromium, type BrowserContext, type LaunchOptions } from "playwright-core";
 
 import type { AppConfig } from "../config.js";
+import { agentIdentityEvidence } from "../identity.js";
 import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
 import type { PageFetcher, RawPage } from "../types.js";
 import { ProfileManager } from "../profiles.js";
@@ -85,10 +86,14 @@ export class BrowserPageFetcher implements PageFetcher {
         context = await chromium.launchPersistentContext(profilePath, {
           ...browserLaunchOptions(this.config, true, proxy),
           acceptDownloads: false,
+          userAgent: this.config.userAgent,
         });
       } else {
         lease = await this.browserPool.acquire(proxy, signal);
-        context = await lease.browser.newContext({ acceptDownloads: false });
+        context = await lease.browser.newContext({
+          acceptDownloads: false,
+          userAgent: this.config.userAgent,
+        });
       }
 
       const page = context.pages()[0] ?? (await context.newPage());
@@ -170,6 +175,7 @@ export class BrowserPageFetcher implements PageFetcher {
         responseBytes,
         finalUrl,
         proxyUsed: proxy !== null,
+        agentIdentity: agentIdentityEvidence(this.config, false),
       };
     } catch (error) {
       throw browserError(error);

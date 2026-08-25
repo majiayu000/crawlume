@@ -23,6 +23,13 @@ export type ContentValidation = {
   }>;
 };
 
+export type AgentIdentityEvidence = {
+  userAgent: string;
+  identityUrl: string | null;
+  signed: boolean;
+  profile: "cloudflare-legacy" | null;
+};
+
 export type ReadPageOptions = {
   url: string;
   mode?: FetchMode;
@@ -37,6 +44,7 @@ export type FetchEvidence = {
   responseBytes: number;
   finalUrl: string;
   proxyUsed?: boolean;
+  agentIdentity?: AgentIdentityEvidence;
 };
 
 export type RawPage = FetchEvidence & {
@@ -80,6 +88,7 @@ export type ReadPageResult = {
     attempts?: number;
     totalRetryDelayMs?: number;
     proxyUsed?: boolean;
+    agentIdentity?: AgentIdentityEvidence;
   };
 };
 

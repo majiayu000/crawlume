@@ -153,6 +153,7 @@ export class ReaderService {
         contentCharacters: extracted.contentCharacters,
         extractionMethod: extracted.extractionMethod,
         proxyUsed: page.proxyUsed ?? false,
+        ...(page.agentIdentity === undefined ? {} : { agentIdentity: page.agentIdentity }),
       },
     };
   }

@@ -210,4 +210,23 @@ describe("ReaderService", () => {
     expect(page.evidence.proxyUsed).toBe(true);
     expect(JSON.stringify(page)).not.toContain("proxy.example");
   });
+
+  it("preserves public Agent identity evidence", async () => {
+    const agentIdentity = {
+      userAgent: "DiaoyanCrawler/0.10 (+https://crawler.example)",
+      identityUrl: "https://crawler.example/identity",
+      signed: true,
+      profile: "cloudflare-legacy" as const,
+    };
+    const page = await readerWith(
+      new StubFetcher(rawPage({ agentIdentity })),
+      new StubFetcher(new Error("unused")),
+    ).readPage({
+      url: "https://example.com/article",
+      mode: "http",
+      cacheMode: "live",
+    });
+
+    expect(page.evidence.agentIdentity).toEqual(agentIdentity);
+  });
 });

@@ -3,6 +3,7 @@ import type { LookupFunction } from "node:net";
 import { Agent, fetch, ProxyAgent, type Dispatcher } from "undici";
 
 import type { AppConfig } from "../config.js";
+import { AgentIdentity } from "../identity.js";
 import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
 import type { PageFetcher, RawPage } from "../types.js";
 import { UrlPolicy } from "../security/url-policy.js";
@@ -17,6 +18,7 @@ export type TransportResponse = {
   responseBytes: number;
   retryAfterMs: number | null;
   proxyUsed: boolean;
+  agentIdentity: ReturnType<AgentIdentity["evidence"]>;
 };
 
 type BeforeRequest = (url: URL) => Promise<void>;
@@ -107,12 +109,14 @@ async function readLimitedBody(
 export class HttpTransport {
   private readonly directDispatcher: Agent;
   private readonly proxyDispatchers = new Map<string, ProxyAgent>();
+  private readonly identity: AgentIdentity;
 
   constructor(
     private readonly config: AppConfig,
     private readonly urlPolicy: UrlPolicy,
     private readonly proxyPool = new ProxyPool(config.proxyEndpoints),
   ) {
+    this.identity = new AgentIdentity(config);
     this.directDispatcher = new Agent({
       connect: { lookup: safeLookup(urlPolicy) },
       pipelining: 1,
@@ -135,14 +139,15 @@ export class HttpTransport {
 
       let response;
       try {
+        const headers = this.identity.headers(current, {
+          "accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
+          "accept-language": "en-US,en;q=0.8",
+          "user-agent": this.config.userAgent,
+        });
         response = await fetch(current, {
           dispatcher,
           redirect: "manual",
-          headers: {
-            "accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
-            "accept-language": "en-US,en;q=0.8",
-            "user-agent": this.config.userAgent,
-          },
+          headers,
           signal: AbortSignal.timeout(this.config.requestTimeoutMs),
         });
       } catch (error) {
@@ -192,6 +197,7 @@ export class HttpTransport {
         responseBytes: body.bytes,
         retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
         proxyUsed: proxy !== null,
+        agentIdentity: this.identity.evidence(),
       };
     }
 
@@ -246,6 +252,7 @@ export class HttpPageFetcher implements PageFetcher {
       responseBytes: response.responseBytes,
       finalUrl: response.url.toString(),
       proxyUsed: response.proxyUsed,
+      agentIdentity: response.agentIdentity,
     };
   }
 }

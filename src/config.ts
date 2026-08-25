@@ -1,5 +1,5 @@
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { parseProxyEndpoints, type ProxyEndpoint } from "./proxy.js";
 
@@ -8,6 +8,10 @@ export type AppConfig = {
   cachePath: string;
   profilesDir: string;
   userAgent: string;
+  agentIdentityUrl: string | null;
+  webBotAuthJwkPath: string | null;
+  webBotAuthProfile: "cloudflare-legacy";
+  webBotAuthTtlSeconds: number;
   requestTimeoutMs: number;
   browserTimeoutMs: number;
   maxResponseBytes: number;
@@ -28,6 +32,50 @@ export type AppConfig = {
   proxyEndpoints: ProxyEndpoint[];
   searxngUrl: string | null;
 };
+
+function agentIdentityUrl(): string | null {
+  const raw = process.env.DIAOYAN_AGENT_IDENTITY_URL;
+  if (raw === undefined || raw.length === 0) {
+    return null;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("DIAOYAN_AGENT_IDENTITY_URL must be a valid HTTPS URL.");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username.length > 0 ||
+    parsed.password.length > 0 ||
+    parsed.search.length > 0 ||
+    parsed.hash.length > 0
+  ) {
+    throw new Error(
+      "DIAOYAN_AGENT_IDENTITY_URL must be HTTPS and must not contain credentials, query, or fragment.",
+    );
+  }
+  return parsed.toString();
+}
+
+function webBotAuthJwkPath(): string | null {
+  const raw = process.env.DIAOYAN_WEB_BOT_AUTH_JWK_PATH;
+  if (raw === undefined || raw.length === 0) {
+    return null;
+  }
+  if (!isAbsolute(raw)) {
+    throw new Error("DIAOYAN_WEB_BOT_AUTH_JWK_PATH must be an absolute path.");
+  }
+  return raw;
+}
+
+function webBotAuthProfile(): "cloudflare-legacy" {
+  const raw = process.env.DIAOYAN_WEB_BOT_AUTH_PROFILE ?? "cloudflare-legacy";
+  if (raw !== "cloudflare-legacy") {
+    throw new Error("DIAOYAN_WEB_BOT_AUTH_PROFILE must be cloudflare-legacy.");
+  }
+  return raw;
+}
 
 function defaultDataDir(): string {
   if (platform() === "darwin") {
@@ -79,11 +127,27 @@ function integerInRange(name: string, fallback: number, minimum: number, maximum
 
 export function loadConfig(): AppConfig {
   const dataDir = process.env.DIAOYAN_DATA_DIR ?? defaultDataDir();
+  const identityUrl = agentIdentityUrl();
+  const jwkPath = webBotAuthJwkPath();
+  if (jwkPath !== null && identityUrl === null) {
+    throw new Error(
+      "DIAOYAN_AGENT_IDENTITY_URL is required when DIAOYAN_WEB_BOT_AUTH_JWK_PATH is set.",
+    );
+  }
   return {
     dataDir,
     cachePath: join(dataDir, "cache.sqlite"),
     profilesDir: join(dataDir, "profiles"),
-    userAgent: process.env.DIAOYAN_USER_AGENT ?? "DiaoyanWebReader/0.1",
+    userAgent: process.env.DIAOYAN_USER_AGENT ?? "DiaoyanWebReader/0.10",
+    agentIdentityUrl: identityUrl,
+    webBotAuthJwkPath: jwkPath,
+    webBotAuthProfile: webBotAuthProfile(),
+    webBotAuthTtlSeconds: integerInRange(
+      "DIAOYAN_WEB_BOT_AUTH_TTL_SECONDS",
+      60,
+      10,
+      300,
+    ),
     requestTimeoutMs: positiveInteger("DIAOYAN_REQUEST_TIMEOUT_MS", 20_000),
     browserTimeoutMs: positiveInteger("DIAOYAN_BROWSER_TIMEOUT_MS", 30_000),
     maxResponseBytes: positiveInteger("DIAOYAN_MAX_RESPONSE_BYTES", 5_000_000),

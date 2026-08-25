@@ -129,6 +129,21 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 只返回 `evidence.proxyUsed`，不得返回代理 URI、池索引或凭证。代理连接失败沿用既有 retryable
 错误与 v0.6 退避策略。
 
+## 自有 Agent 身份
+
+管理员可通过 `DIAOYAN_AGENT_IDENTITY_URL` 声明自有的公开 HTTPS 身份，并通过
+`DIAOYAN_WEB_BOT_AUTH_JWK_PATH` 为 HTTP 抓取开启 Web Bot Auth 签名。私钥文件必须为
+Ed25519 私钥 JWK、使用绝对路径，并在 POSIX 系统上拒绝 group/other 权限。私钥、路径和完整
+JWK 不得出现在工具输入、返回、缓存或错误 details。
+
+当前只实现 Cloudflare 现行验证器所接受的 `cloudflare-legacy` 报文档，使用 RFC 9421 签名
+`@authority` 与 `signature-agent`，重定向逐跳重新签名。签名只证明请求携带了某个自有密钥，
+不代表站点已经注册或信任该 Agent，也不得用于绕过 robots、认证、付费或访问拒绝。
+
+浏览器路径不发送 Web Bot Auth 签名。新鲜结果的 `evidence.agentIdentity` 必须准确返回最终内容
+请求使用的 User-Agent、公开身份 URL、`signed` 状态和兼容档，不得把浏览器结果标成已签名。
+旧缓存结果可以没有该字段。完整约束见 `docs/agent-identity-spec.md`。
+
 ## 浏览器 Worker 池
 
 无授权 Profile 的动态页面使用进程内浏览器池。默认最多 2 个 Chrome 实例，每个实例最多 4 个
