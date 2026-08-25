@@ -1,0 +1,126 @@
+# Diaoyan Web Reader
+
+Diaoyan is a local, fail-visible MCP web reader for long-running agents. It reads public pages with honest HTTP requests, renders JavaScript pages with a real local Chrome browser when necessary, and can reuse a dedicated user-authorized browser profile.
+
+It does not impersonate AI crawlers, solve CAPTCHAs, or bypass login, payment, robots, or site access controls.
+
+## Requirements
+
+- Node.js 25.7 or newer
+- pnpm
+- Google Chrome for browser mode
+
+## Install and verify
+
+```bash
+pnpm install
+pnpm build
+pnpm test
+pnpm smoke
+```
+
+Runtime data is stored outside this repository. On macOS the default location is:
+
+```text
+~/Library/Application Support/diaoyan/
+```
+
+Set `DIAOYAN_DATA_DIR` to choose another location.
+
+## MCP configuration
+
+Build the project, then add the server to an MCP client:
+
+```toml
+[mcp_servers.diaoyan]
+command = "node"
+args = ["/Users/lifcc/Desktop/code/diaoyan/dist/server.js"]
+env = { DIAOYAN_ALLOW_DNS_FAKE_IP = "1" }
+```
+
+The `env` line is needed on this machine because its Clash/TUN DNS uses Fake-IP mode. Omit it
+on systems whose DNS returns ordinary public addresses.
+
+Available tools:
+
+- `search_web`: search through a configured SearXNG provider.
+- `read_page`: return complete Markdown plus source evidence.
+- `inspect_page`: run the same checks without returning the body.
+- `map_site`: discover a bounded set of same-site links.
+- `crawl_site`: read a bounded set of same-site pages with per-page evidence and failures.
+- `list_auth_profiles`: list dedicated browser profile names.
+
+Every blocked, authenticated, paid, challenged, unsupported, or incomplete response is returned as MCP `isError: true` with a stable error code.
+
+Successful reads include a zero-external-call validation result:
+
+- `usable`: no low-cost warning signal was found.
+- `uncertain`: content is returnable but unusually short or required fallback document extraction.
+- Rejected content remains a structured tool error and is never converted into a low score.
+
+This validation does not use an LLM, embeddings, an extra request, or another browser pass.
+
+## Command-line usage
+
+Use the same reader directly without an MCP client:
+
+```bash
+pnpm cli -- read https://httpbin.org/html
+pnpm cli -- read https://httpbin.org/html --markdown
+pnpm cli -- read https://example.com/app --mode browser --cache-mode live
+pnpm cli -- map https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 20 --max-depth 2
+pnpm cli -- crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 5 --max-depth 1
+DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli -- search MiniMax H3 推理优化 --language zh-CN
+```
+
+After installing or linking the package, use `diaoyan search`, `diaoyan read`, `diaoyan map`, or `diaoyan crawl`.
+JSON is the default output so scripts and Agents can inspect evidence and stable error codes;
+`--markdown` prints only the extracted page body. Run `diaoyan --help` for all options.
+
+`map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
+for deduplication unless `--keep-query` is supplied. Child-page failures are returned in a
+`failures` array; a failed starting page fails the whole call.
+
+## Create an authorized browser profile
+
+Use a dedicated profile rather than copying a personal Chrome profile:
+
+```bash
+pnpm auth -- --profile research --url https://example.com/login
+```
+
+Log in manually in the opened Chrome window and press Enter in the terminal. The profile remains outside the repository. An Agent can then call:
+
+```json
+{
+  "url": "https://example.com/account/article",
+  "mode": "browser",
+  "authProfile": "research"
+}
+```
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `DIAOYAN_DATA_DIR` | platform user data directory | Cache and profiles |
+| `DIAOYAN_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
+| `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
+| `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
+| `DIAOYAN_DEFAULT_CACHE_SECONDS` | `900` | Default successful-content TTL |
+| `DIAOYAN_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
+| `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
+| `DIAOYAN_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |
+| `DIAOYAN_SEARXNG_URL` | unset | Trusted SearXNG instance base URL used by `search_web` |
+
+If Clash or another TUN resolver maps public domains into `198.18.0.0/15`, start the reader with
+`DIAOYAN_ALLOW_DNS_FAKE_IP=1`. This applies only to DNS answers; a URL containing a literal
+`198.18.x.x` address remains blocked by the SSRF policy.
+
+Project documents:
+
+- [Technical contract](docs/spec.md)
+- [Competitive landscape](docs/competitive-landscape.md)
+- [Product strategy](docs/product-strategy.md)
+- [Roadmap](docs/roadmap.md)
+- [Search provider setup](docs/search.md)

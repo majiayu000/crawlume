@@ -1,0 +1,221 @@
+import type { LookupFunction } from "node:net";
+
+import { Agent, fetch } from "undici";
+
+import type { AppConfig } from "../config.js";
+import { errorForHttpStatus, ReadError } from "../errors.js";
+import type { PageFetcher, RawPage } from "../types.js";
+import { UrlPolicy } from "../security/url-policy.js";
+import type { RobotsPolicy } from "../security/robots.js";
+
+export type TransportResponse = {
+  url: URL;
+  status: number;
+  contentType: string;
+  body: string;
+  responseBytes: number;
+};
+
+type BeforeRequest = (url: URL) => Promise<void>;
+
+function safeLookup(policy: UrlPolicy): LookupFunction {
+  return (hostname, options, callback): void => {
+    void policy
+      .resolve(hostname)
+      .then((addresses) => {
+        const requestedFamily = options.family ?? 0;
+        const allowed = addresses.filter(
+          ({ address, family }) =>
+            policy.isAllowedResolvedAddress(address) &&
+            (requestedFamily === 0 || requestedFamily === family),
+        );
+        if (allowed.length === 0) {
+          const error = new Error("DNS resolution returned no public addresses.") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          callback(error, [], 0);
+          return;
+        }
+        if (options.all === true) {
+          callback(null, allowed);
+          return;
+        }
+        const first = allowed[0];
+        if (first === undefined) {
+          const error = new Error("DNS resolution returned no usable address.") as NodeJS.ErrnoException;
+          error.code = "EAI_AGAIN";
+          callback(error, [], 0);
+          return;
+        }
+        callback(null, first.address, first.family);
+      })
+      .catch((cause: unknown) => {
+        const error = new Error("Safe DNS lookup failed.", { cause }) as NodeJS.ErrnoException;
+        error.code = "EACCES";
+        callback(error, [], 0);
+      });
+  };
+}
+
+type StreamReader = {
+  read(): Promise<{ done: boolean; value?: unknown }>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+};
+
+type ReadableBody = {
+  getReader(): StreamReader;
+};
+
+async function readLimitedBody(
+  body: ReadableBody | null,
+  maxBytes: number,
+): Promise<{ text: string; bytes: number }> {
+  if (body === null) {
+    return { text: "", bytes: 0 };
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        text += decoder.decode();
+        return { text, bytes };
+      }
+      if (!(chunk.value instanceof Uint8Array)) {
+        throw new ReadError("UPSTREAM_ERROR", "The response stream returned an invalid chunk.");
+      }
+      bytes += chunk.value.byteLength;
+      if (bytes > maxBytes) {
+        await reader.cancel("response too large");
+        throw new ReadError("RESPONSE_TOO_LARGE", "The response exceeded the configured size limit.", {
+          details: { maxResponseBytes: maxBytes },
+        });
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export class HttpTransport {
+  private readonly dispatcher: Agent;
+
+  constructor(
+    private readonly config: AppConfig,
+    private readonly urlPolicy: UrlPolicy,
+  ) {
+    this.dispatcher = new Agent({
+      connect: { lookup: safeLookup(urlPolicy) },
+      pipelining: 1,
+      connections: 4,
+    });
+  }
+
+  async fetch(
+    initialUrl: URL,
+    options: { maxBytes?: number; beforeRequest?: BeforeRequest } = {},
+  ): Promise<TransportResponse> {
+    let current = initialUrl;
+    const maxBytes = options.maxBytes ?? this.config.maxResponseBytes;
+
+    for (let redirects = 0; redirects <= this.config.maxRedirects; redirects += 1) {
+      await this.urlPolicy.assertPublic(current);
+      await options.beforeRequest?.(current);
+
+      let response;
+      try {
+        response = await fetch(current, {
+          dispatcher: this.dispatcher,
+          redirect: "manual",
+          headers: {
+            "accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
+            "accept-language": "en-US,en;q=0.8",
+            "user-agent": this.config.userAgent,
+          },
+          signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+        });
+      } catch (error) {
+        if (error instanceof ReadError) {
+          throw error;
+        }
+        const isTimeout =
+          error instanceof Error &&
+          (error.name === "TimeoutError" || error.name === "AbortError");
+        throw new ReadError(
+          isTimeout ? "FETCH_TIMEOUT" : "UPSTREAM_ERROR",
+          isTimeout ? "The page request timed out." : "The page request failed.",
+          { retryable: true, details: { url: current.toString() }, cause: error },
+        );
+      }
+
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        await response.body?.cancel();
+        if (location === null) {
+          throw new ReadError("UPSTREAM_ERROR", "The site returned a redirect without a location.", {
+            details: { httpStatus: response.status, url: current.toString() },
+          });
+        }
+        if (redirects === this.config.maxRedirects) {
+          throw new ReadError("UPSTREAM_ERROR", "The page exceeded the redirect limit.", {
+            details: { maxRedirects: this.config.maxRedirects, url: current.toString() },
+          });
+        }
+        current = this.urlPolicy.parse(new URL(location, current).toString());
+        continue;
+      }
+
+      const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+      if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        await response.body?.cancel();
+        throw new ReadError("RESPONSE_TOO_LARGE", "The response exceeded the configured size limit.", {
+          details: { contentLength, maxResponseBytes: maxBytes },
+        });
+      }
+      const body = await readLimitedBody(response.body, maxBytes);
+      return {
+        url: current,
+        status: response.status,
+        contentType: response.headers.get("content-type") ?? "",
+        body: body.text,
+        responseBytes: body.bytes,
+      };
+    }
+
+    throw new ReadError("UPSTREAM_ERROR", "The page exceeded the redirect limit.");
+  }
+
+  async close(): Promise<void> {
+    await this.dispatcher.close();
+  }
+}
+
+export class HttpPageFetcher implements PageFetcher {
+  constructor(
+    private readonly transport: HttpTransport,
+    private readonly robots: RobotsPolicy,
+  ) {}
+
+  async fetch(url: URL): Promise<RawPage> {
+    const response = await this.transport.fetch(url, {
+      beforeRequest: async (nextUrl) => this.robots.assertAllowed(nextUrl),
+    });
+    const statusError = errorForHttpStatus(response.status, response.url.toString());
+    if (statusError !== null) {
+      throw statusError;
+    }
+    return {
+      body: response.body,
+      fetchedAt: new Date().toISOString(),
+      method: "http",
+      httpStatus: response.status,
+      contentType: response.contentType,
+      responseBytes: response.responseBytes,
+      finalUrl: response.url.toString(),
+    };
+  }
+}

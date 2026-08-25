@@ -1,0 +1,45 @@
+{
+  "name": "diaoyan-web-reader",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Fail-visible MCP web reader for long-running agents",
+  "engines": {
+    "node": ">=25.7.0"
+  },
+  "bin": {
+    "diaoyan": "./dist/cli/main.js",
+    "diaoyan-web-reader": "./dist/server.js",
+    "diaoyan-auth": "./dist/cli/auth.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/server.js",
+    "auth": "tsx src/cli/auth.ts",
+    "cli": "tsx src/cli/main.ts",
+    "smoke": "tsx src/cli/smoke.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@mozilla/readability": "0.6.0",
+    "ipaddr.js": "2.2.0",
+    "jsdom": "30.0.1",
+    "playwright-core": "1.62.1",
+    "robots-parser": "3.0.1",
+    "turndown": "7.2.4",
+    "undici": "8.10.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/jsdom": "28.0.1",
+    "@types/node": "25.5.0",
+    "@types/turndown": "5.0.6",
+    "tsx": "4.20.5",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

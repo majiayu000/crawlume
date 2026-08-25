@@ -1,0 +1,161 @@
+# Diaoyan Web Reader v0.3
+
+## 目标
+
+为本地 Agent 提供长期可运行、失败可诊断的网页读取能力。服务通过 MCP stdio 暴露工具，优先读取公开静态页面，只在页面需要 JavaScript 渲染时使用真实 Chromium。需要登录的页面使用用户手动建立的专用浏览器 Profile。
+
+v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、付费或站点访问控制。
+
+## 对外工具
+
+### `search_web`
+
+通过管理员配置的 SearXNG JSON API 搜索网页，返回标准化的标题、URL、摘要、来源引擎、日期和 Provider 分数。
+
+- `query`：必填，最多 512 字符。
+- `limit`：默认 10，最大 20。
+- `page`：默认 1，最大 100。
+- `language`：默认 `all`。
+- `safeSearch`：`0`、`1` 或 `2`，默认 1。
+- `timeRange`：可选的 `day`、`month` 或 `year`。
+
+未配置 Provider 时必须返回 `SEARCH_PROVIDER_NOT_CONFIGURED`。实例禁用 JSON、返回错误状态或响应结构异常时必须返回 `SEARCH_PROVIDER_ERROR`，不得伪造空成功结果。
+
+### `read_page`
+
+输入：
+
+- `url`: 必填，`http` 或 `https` URL。
+- `mode`: `auto`、`http` 或 `browser`，默认 `auto`。
+- `cacheMode`: `prefer-cache`、`live` 或 `cache-only`，默认 `prefer-cache`。
+- `maxAgeSeconds`: 可接受的缓存年龄，默认 900 秒。
+- `authProfile`: 可选的专用浏览器 Profile 名称。
+
+成功返回：
+
+- 原始 URL、最终 URL、抓取时间和读取方式。
+- 标题、作者、发布时间、Markdown 正文。
+- HTTP 状态、Content-Type、响应字节数、正文字符数和 SHA-256。
+- 提取方法和缓存命中状态。
+- `validation.status`：`usable` 或 `uncertain`。
+- `validation.warnings`：稳定 warning code 与可读说明。
+
+失败返回 MCP `isError: true`，正文为结构化错误 JSON。
+
+### `inspect_page`
+
+执行与 `read_page` 相同的读取和校验，但不返回正文，只返回诊断证据。
+
+### `map_site`
+
+从一个公开 URL 开始，串行发现同主机链接。默认最多扫描 50 页、深度 2，并移除查询参数和锚点后去重。可显式允许子域或保留查询参数，最多 500 页、深度 10。
+
+成功返回已扫描 URL、发现来源、深度、截断状态和逐页失败。起始页失败时整个调用失败；后续页面失败时返回 `partial`，不得静默丢弃。
+
+### `crawl_site`
+
+使用与 `read_page` 相同的读取、缓存、完整性和授权规则，边发现边读取同主机页面。默认最多 10 页、深度 2，硬上限 50 页。每页返回 Markdown、证据、发现来源和深度。
+
+起始页失败时整个调用失败；后续页面失败时返回 `partial` 与逐页结构化错误。
+
+### `list_auth_profiles`
+
+列出本地专用浏览器 Profile。不得返回 Cookie、令牌或 Profile 内文件。
+
+## 读取策略
+
+`auto` 首先执行 HTTP 读取：
+
+1. 401、402、403、429 和 5xx 必须原样失败，不切换 UA，不静默换提供商。
+2. HTTP 200 但检测为 JavaScript 壳或正文不完整时，允许切换到真实浏览器渲染。
+3. 浏览器渲染后仍不完整时返回明确错误。
+4. 指定 `authProfile` 时直接使用浏览器路径。
+
+`http` 和 `browser` 只使用指定路径，不自动切换。
+
+## 错误代码
+
+- `INVALID_URL`
+- `INVALID_ARGUMENT`
+- `SSRF_BLOCKED`
+- `ROBOTS_DISALLOWED`
+- `ROBOTS_UNAVAILABLE`
+- `AUTH_REQUIRED`
+- `PAYMENT_REQUIRED`
+- `ACCESS_DENIED`
+- `RATE_LIMITED`
+- `UPSTREAM_ERROR`
+- `FETCH_TIMEOUT`
+- `UNSUPPORTED_CONTENT_TYPE`
+- `RESPONSE_TOO_LARGE`
+- `LOGIN_WALL_DETECTED`
+- `HUMAN_VERIFICATION_REQUIRED`
+- `SHELL_ONLY`
+- `INCOMPLETE_CONTENT`
+- `BROWSER_UNAVAILABLE`
+- `PROFILE_NOT_FOUND`
+- `CACHE_MISS`
+- `SEARCH_PROVIDER_NOT_CONFIGURED`
+- `SEARCH_PROVIDER_ERROR`
+- `INTERNAL_ERROR`
+
+不得用成功响应包装上述失败。
+
+## 安全边界
+
+- 仅允许 `http` 和 `https`。
+- 拒绝 URL 中的用户名和密码。
+- 每次初始请求和重定向都校验目标；拒绝 loopback、私网、链路本地、保留地址和云元数据地址。
+- 浏览器子请求同样执行目标校验。
+- 默认遵守 `robots.txt`；规则明确禁止或无法安全取得规则时失败关闭。
+- 限制重定向次数、响应体大小、请求时间和浏览器执行时间。
+- HTTP 路径不执行页面脚本；浏览器运行在专用 Profile 中。
+- Profile 和 SQLite 数据放在仓库外的数据目录；Profile 内容永不通过 MCP 返回。
+- 缓存只保存成功、完整的读取结果。
+- 站点 Map/Crawl 默认同主机、串行、有界；不自动扩大到外域或子域。
+
+## 内容完整性
+
+提取顺序：Mozilla Readability，失败后才使用清理过的 `body`。HTML 在转 Markdown 前移除脚本、样式、表单、嵌入对象和危险 URL。
+
+以下情况必须失败：
+
+- 已知 CAPTCHA、机器人挑战或访问验证页面。
+- 明确登录墙或订阅墙。
+- 只有应用壳、加载占位符或正文低于最小阈值。
+- Content-Type 不受支持。
+
+返回证据必须足以区分 HTTP 成功、正文成功和缓存命中。
+
+## 低成本内容验收
+
+验收层只复用提取阶段已有数据，不发起额外请求，不调用 LLM 或 Embedding，也不启动第二次浏览器读取。
+
+- 正常 Readability/纯文本结果返回 `usable`。
+- 通过完整性门槛但少于 500 个字符时返回 `uncertain` 和 `SHORT_CONTENT`。
+- Readability 不足并使用清理后的 document 兜底时返回 `uncertain` 和 `FALLBACK_EXTRACTION`。
+- 挑战页、登录墙、付费墙、应用壳和不完整正文继续返回结构化错误，不进入成功验收结果。
+
+该状态只描述提取可信度，不评价来源权威性、事实真实性或与 Agent 任务的相关性。
+
+## 本地数据
+
+默认数据目录为平台用户数据目录下的 `diaoyan`，可通过 `DIAOYAN_DATA_DIR` 覆盖。
+
+- `cache.sqlite`: 成功正文缓存。
+- `profiles/<name>/`: 专用 Chromium Profile。
+
+Profile 名称只允许字母、数字、点、下划线和连字符。
+
+Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启。它只允许域名解析所得的
+`198.18.0.0/15` 地址，URL 直接使用该网段仍按 SSRF 拦截。
+
+## 验收
+
+- TypeScript 构建无错误。
+- 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
+- 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
+- 单元测试覆盖低成本验收状态与稳定 warning code。
+- MCP 客户端可以列出并调用六个工具。
+- 对公开静态页面的真实冒烟读取返回正文和证据。
+- 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。

@@ -1,0 +1,306 @@
+import { JSDOM } from "jsdom";
+import { fetch } from "undici";
+import { z } from "zod";
+
+import { ReadError } from "./errors.js";
+import { searchTimeRanges, type SearchWebOptions, type SearchWebResult } from "./types.js";
+
+const maximumQueryCharacters = 512;
+const maximumResults = 20;
+const maximumResponseBytes = 2_000_000;
+
+type SearchResponse = {
+  status: number;
+  contentType: string;
+  body: string;
+  responseBytes: number;
+};
+
+export type SearchRequester = (url: URL) => Promise<SearchResponse>;
+
+export interface SearchProvider {
+  readonly name: string;
+  search(options: Required<Omit<SearchWebOptions, "timeRange">> & {
+    timeRange?: SearchWebOptions["timeRange"];
+  }): Promise<SearchWebResult>;
+}
+
+const searxngResponse = z.object({
+  number_of_results: z.number().optional(),
+  results: z.array(
+    z.object({
+      url: z.string(),
+      title: z.string(),
+      content: z.string().nullish(),
+      engine: z.string().nullish(),
+      engines: z.array(z.string()).nullish(),
+      score: z.number().nullish(),
+      publishedDate: z.string().nullish(),
+      thumbnail: z.string().nullish(),
+    }).passthrough(),
+  ),
+}).passthrough();
+
+function htmlToText(value: string): string {
+  return (JSDOM.fragment(value).textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+async function readBoundedResponse(
+  response: Awaited<ReturnType<typeof fetch>>,
+): Promise<{ body: string; bytes: number }> {
+  const declaredLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > maximumResponseBytes) {
+    await response.body?.cancel();
+    throw new ReadError("SEARCH_PROVIDER_ERROR", "The search response is too large.", {
+      details: { contentLength: declaredLength, maximumResponseBytes },
+    });
+  }
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    return { body: "", bytes: 0 };
+  }
+  const decoder = new TextDecoder();
+  let body = "";
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        body += decoder.decode();
+        return { body, bytes };
+      }
+      bytes += chunk.value.byteLength;
+      if (bytes > maximumResponseBytes) {
+        await reader.cancel("search response too large");
+        throw new ReadError("SEARCH_PROVIDER_ERROR", "The search response is too large.", {
+          details: { maximumResponseBytes },
+        });
+      }
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function defaultRequester(userAgent: string, timeoutMs: number): SearchRequester {
+  return async (url): Promise<SearchResponse> => {
+    let response;
+    try {
+      response = await fetch(url, {
+        redirect: "error",
+        headers: {
+          accept: "application/json",
+          "accept-language": "en-US,en;q=0.8",
+          "user-agent": userAgent,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      const isTimeout =
+        error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
+      throw new ReadError(
+        "SEARCH_PROVIDER_ERROR",
+        isTimeout ? "The search provider timed out." : "The search provider request failed.",
+        { retryable: true, details: { providerUrl: url.origin }, cause: error },
+      );
+    }
+    const decoded = await readBoundedResponse(response);
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "",
+      body: decoded.body,
+      responseBytes: decoded.bytes,
+    };
+  };
+}
+
+export class SearxngProvider implements SearchProvider {
+  readonly name = "searxng";
+  private readonly baseUrl: URL;
+  private readonly requester: SearchRequester;
+
+  constructor(
+    baseUrl: string,
+    userAgent: string,
+    timeoutMs: number,
+    requester: SearchRequester = defaultRequester(userAgent, timeoutMs),
+  ) {
+    if (!URL.canParse(baseUrl)) {
+      throw new ReadError("INVALID_ARGUMENT", "DIAOYAN_SEARXNG_URL is not a valid URL.");
+    }
+    this.baseUrl = new URL(baseUrl);
+    if (this.baseUrl.protocol !== "http:" && this.baseUrl.protocol !== "https:") {
+      throw new ReadError("INVALID_ARGUMENT", "DIAOYAN_SEARXNG_URL must use http or https.");
+    }
+    if (this.baseUrl.username !== "" || this.baseUrl.password !== "") {
+      throw new ReadError("INVALID_ARGUMENT", "Credentials in DIAOYAN_SEARXNG_URL are not allowed.");
+    }
+    this.requester = requester;
+  }
+
+  async search(
+    options: Required<Omit<SearchWebOptions, "timeRange">> & {
+      timeRange?: SearchWebOptions["timeRange"];
+    },
+  ): Promise<SearchWebResult> {
+    const base = new URL(this.baseUrl);
+    if (!base.pathname.endsWith("/")) {
+      base.pathname += "/";
+    }
+    const endpoint = new URL("search", base);
+    endpoint.searchParams.set("q", options.query);
+    endpoint.searchParams.set("format", "json");
+    endpoint.searchParams.set("categories", "general");
+    endpoint.searchParams.set("language", options.language);
+    endpoint.searchParams.set("pageno", String(options.page));
+    endpoint.searchParams.set("safesearch", String(options.safeSearch));
+    if (options.timeRange !== undefined) {
+      endpoint.searchParams.set("time_range", options.timeRange);
+    }
+
+    const response = await this.requester(endpoint);
+    if (response.status < 200 || response.status >= 300) {
+      throw new ReadError(
+        "SEARCH_PROVIDER_ERROR",
+        response.status === 403
+          ? "SearXNG rejected JSON search; enable the json format in settings.yml."
+          : `SearXNG returned HTTP ${response.status}.`,
+        {
+          retryable: response.status === 429 || response.status >= 500,
+          details: { httpStatus: response.status, provider: this.name },
+        },
+      );
+    }
+    if (!response.contentType.toLowerCase().includes("json")) {
+      throw new ReadError("SEARCH_PROVIDER_ERROR", "SearXNG returned a non-JSON response.", {
+        details: { contentType: response.contentType, provider: this.name },
+      });
+    }
+
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(response.body);
+    } catch (error) {
+      throw new ReadError("SEARCH_PROVIDER_ERROR", "SearXNG returned malformed JSON.", {
+        details: { provider: this.name, responseBytes: response.responseBytes },
+        cause: error,
+      });
+    }
+    const parsed = searxngResponse.safeParse(decoded);
+    if (!parsed.success) {
+      throw new ReadError("SEARCH_PROVIDER_ERROR", "SearXNG returned an unsupported response shape.", {
+        details: { provider: this.name, responseBytes: response.responseBytes },
+        cause: parsed.error,
+      });
+    }
+
+    const seen = new Set<string>();
+    const results = [];
+    for (const item of parsed.data.results) {
+      if (!URL.canParse(item.url)) {
+        throw new ReadError("SEARCH_PROVIDER_ERROR", "SearXNG returned an invalid result URL.", {
+          details: { provider: this.name },
+        });
+      }
+      const url = new URL(item.url);
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        throw new ReadError("SEARCH_PROVIDER_ERROR", "SearXNG returned an unsupported result URL.", {
+          details: { protocol: url.protocol, provider: this.name },
+        });
+      }
+      url.hash = "";
+      const normalizedUrl = url.toString();
+      if (seen.has(normalizedUrl)) {
+        continue;
+      }
+      seen.add(normalizedUrl);
+      const engines = item.engines ?? (item.engine === null || item.engine === undefined ? [] : [item.engine]);
+      results.push({
+        title: htmlToText(item.title),
+        url: normalizedUrl,
+        snippet: htmlToText(item.content ?? ""),
+        engines,
+        score: item.score ?? null,
+        publishedAt: item.publishedDate ?? null,
+        thumbnailUrl: item.thumbnail ?? null,
+      });
+      if (results.length >= options.limit) {
+        break;
+      }
+    }
+
+    return {
+      status: "ok",
+      query: options.query,
+      provider: this.name,
+      searchedAt: new Date().toISOString(),
+      page: options.page,
+      results,
+      totalResults: parsed.data.number_of_results ?? null,
+    };
+  }
+}
+
+export class SearchService {
+  constructor(private readonly provider: SearchProvider | null) {}
+
+  async searchWeb(options: SearchWebOptions): Promise<SearchWebResult> {
+    if (this.provider === null) {
+      throw new ReadError(
+        "SEARCH_PROVIDER_NOT_CONFIGURED",
+        "No search provider is configured. Set DIAOYAN_SEARXNG_URL to a SearXNG instance.",
+      );
+    }
+    const query = options.query.replace(/\s+/g, " ").trim();
+    if (query.length === 0 || query.length > maximumQueryCharacters) {
+      throw new ReadError(
+        "INVALID_ARGUMENT",
+        `query must contain between 1 and ${maximumQueryCharacters} characters.`,
+        { details: { queryCharacters: query.length, maximumQueryCharacters } },
+      );
+    }
+    const limit = options.limit ?? 10;
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > maximumResults) {
+      throw new ReadError("INVALID_ARGUMENT", `limit must be an integer between 1 and ${maximumResults}.`, {
+        details: { limit, maximumResults },
+      });
+    }
+    const page = options.page ?? 1;
+    if (!Number.isSafeInteger(page) || page <= 0 || page > 100) {
+      throw new ReadError("INVALID_ARGUMENT", "page must be an integer between 1 and 100.", {
+        details: { page },
+      });
+    }
+    const language = options.language ?? "all";
+    if (!/^(?:all|[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?)$/.test(language)) {
+      throw new ReadError("INVALID_ARGUMENT", "language is not a supported language code.", {
+        details: { language },
+      });
+    }
+    const safeSearch = options.safeSearch ?? 1;
+    if (safeSearch !== 0 && safeSearch !== 1 && safeSearch !== 2) {
+      throw new ReadError("INVALID_ARGUMENT", "safeSearch must be 0, 1, or 2.", {
+        details: { safeSearch },
+      });
+    }
+    if (
+      options.timeRange !== undefined &&
+      !searchTimeRanges.includes(options.timeRange)
+    ) {
+      throw new ReadError("INVALID_ARGUMENT", "timeRange must be day, month, or year.", {
+        details: { timeRange: options.timeRange },
+      });
+    }
+
+    return this.provider.search({
+      query,
+      limit,
+      page,
+      language,
+      safeSearch,
+      ...(options.timeRange === undefined ? {} : { timeRange: options.timeRange }),
+    });
+  }
+}
