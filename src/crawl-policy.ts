@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import { ReadError } from "./errors.js";
+import { crawlCancelledError, ReadError } from "./errors.js";
 
 export type CrawlAttemptResult<T> = {
   value: T;
@@ -17,15 +17,11 @@ type CrawlPolicyConfig = Pick<
   "crawlMaxAttempts" | "crawlRetryBaseMs" | "crawlMaxRetryDelayMs" | "crawlMinHostIntervalMs"
 >;
 
-function cancelledError(): ReadError {
-  return new ReadError("CRAWL_CANCELLED", "The crawl job was cancelled.");
-}
-
 const defaultRuntime: CrawlPolicyRuntime = {
   now: () => Date.now(),
   sleep: async (milliseconds, signal) => {
     if (signal?.aborted === true) {
-      throw cancelledError();
+      throw crawlCancelledError();
     }
     if (milliseconds <= 0) {
       return;
@@ -33,7 +29,7 @@ const defaultRuntime: CrawlPolicyRuntime = {
     await new Promise<void>((resolve, reject) => {
       const onAbort = (): void => {
         clearTimeout(timer);
-        reject(cancelledError());
+        reject(crawlCancelledError());
       };
       const timer = setTimeout(() => {
         signal?.removeEventListener("abort", onAbort);
@@ -91,7 +87,7 @@ export class CrawlRequestPolicy {
           throw error;
         }
         if (signal?.aborted === true) {
-          throw cancelledError();
+          throw crawlCancelledError();
         }
         if (!error.retryable || attempts >= this.config.crawlMaxAttempts) {
           throw withAttemptEvidence(error, attempts, totalRetryDelayMs);
@@ -121,7 +117,7 @@ export class CrawlRequestPolicy {
 
   private async reserveHost(hostname: string, signal: AbortSignal | undefined): Promise<void> {
     if (signal?.aborted === true) {
-      throw cancelledError();
+      throw crawlCancelledError();
     }
     const host = hostname.toLowerCase();
     const now = this.runtime.now();

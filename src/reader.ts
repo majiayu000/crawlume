@@ -81,7 +81,7 @@ export class ReaderService {
     }
 
     const operation = async (): Promise<PageReadArtifact> =>
-      this.fetchWithMode(url, mode, authProfile);
+      this.fetchWithMode(url, mode, authProfile, options.signal);
     const attempt = this.crawlPolicy === null
       ? { value: await operation(), attempts: 1, totalRetryDelayMs: 0 }
       : await this.crawlPolicy.execute(url, operation, options.signal);
@@ -111,8 +111,9 @@ export class ReaderService {
     sourceUrl: URL,
     fetcher: PageFetcher,
     authProfile: string | null,
+    signal?: AbortSignal,
   ): Promise<PageReadArtifact> {
-    const page = await fetcher.fetch(sourceUrl, authProfile ?? undefined);
+    const page = await fetcher.fetch(sourceUrl, authProfile ?? undefined, signal);
     const extracted = extractPage(page);
     return {
       status: "ok",
@@ -145,15 +146,16 @@ export class ReaderService {
     url: URL,
     mode: "auto" | "http" | "browser",
     authProfile: string | null,
+    signal: AbortSignal | undefined,
   ): Promise<PageReadArtifact> {
     if (mode === "http") {
-      return this.fetchAndExtract(url, this.httpFetcher, null);
+      return this.fetchAndExtract(url, this.httpFetcher, null, signal);
     }
     if (mode === "browser" || authProfile !== null) {
-      return this.fetchAndExtract(url, this.browserFetcher, authProfile);
+      return this.fetchAndExtract(url, this.browserFetcher, authProfile, signal);
     }
     try {
-      return await this.fetchAndExtract(url, this.httpFetcher, null);
+      return await this.fetchAndExtract(url, this.httpFetcher, null, signal);
     } catch (error) {
       if (
         !(error instanceof ReadError) ||
@@ -162,7 +164,7 @@ export class ReaderService {
         throw error;
       }
       try {
-        return await this.fetchAndExtract(url, this.browserFetcher, null);
+        return await this.fetchAndExtract(url, this.browserFetcher, null, signal);
       } catch (browserFailure) {
         if (browserFailure instanceof ReadError && browserFailure.code === "BROWSER_UNAVAILABLE") {
           throw new ReadError(

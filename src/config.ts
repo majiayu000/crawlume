@@ -18,6 +18,9 @@ export type AppConfig = {
   crawlRetryBaseMs: number;
   crawlMaxRetryDelayMs: number;
   crawlMinHostIntervalMs: number;
+  browserPoolSize: number;
+  browserContextsPerInstance: number;
+  browserPoolWaitMs: number;
   browserChannel: string;
   browserExecutable: string | null;
   allowDnsFakeIp: boolean;
@@ -101,6 +104,14 @@ export function loadConfig(): AppConfig {
       0,
       60_000,
     ),
+    browserPoolSize: integerInRange("DIAOYAN_BROWSER_POOL_SIZE", 2, 1, 16),
+    browserContextsPerInstance: integerInRange(
+      "DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE",
+      4,
+      1,
+      32,
+    ),
+    browserPoolWaitMs: integerInRange("DIAOYAN_BROWSER_POOL_WAIT_MS", 30_000, 1, 300_000),
     browserChannel: process.env.DIAOYAN_BROWSER_CHANNEL ?? "chrome",
     browserExecutable: process.env.DIAOYAN_BROWSER_EXECUTABLE ?? null,
     allowDnsFakeIp: booleanFlag("DIAOYAN_ALLOW_DNS_FAKE_IP", false),

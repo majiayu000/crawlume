@@ -121,7 +121,7 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
 
 export function createMcpServer(app: DiaoyanApp): McpServer {
   const server = new McpServer(
-    { name: "diaoyan-web-reader", version: "0.7.0" },
+    { name: "diaoyan-web-reader", version: "0.8.0" },
     {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +

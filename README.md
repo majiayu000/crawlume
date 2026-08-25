@@ -66,6 +66,10 @@ Operators can optionally route HTTP and browser traffic through a self-hosted or
 proxy pool. Proxy addresses and credentials are configuration-only and never returned to Agents;
 fresh result evidence exposes only `proxyUsed: true|false`.
 
+Anonymous JavaScript pages reuse a bounded pool of Chrome instances while receiving a fresh isolated
+BrowserContext per page. Authorization Profiles remain outside the pool and retain exclusive
+persistent contexts.
+
 Successful reads include a zero-external-call validation result:
 
 - `usable`: no low-cost warning signal was found.
@@ -141,6 +145,9 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS` | `250` | Minimum interval between attempts to one hostname |
 | `DIAOYAN_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
 | `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
+| `DIAOYAN_BROWSER_POOL_SIZE` | `2` | Maximum anonymous browser instances per process |
+| `DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE` | `4` | Concurrent isolated contexts per pooled browser |
+| `DIAOYAN_BROWSER_POOL_WAIT_MS` | `30000` | Maximum wait when browser capacity is full |
 | `DIAOYAN_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |
 | `DIAOYAN_LOCAL_INDEX_ENABLED` | `false` | Optionally index successful public pages in SQLite FTS5 |
 | `DIAOYAN_PROXY_URLS` | unset | Comma-separated administrator-controlled HTTP(S) proxy URLs |

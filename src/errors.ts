@@ -17,6 +17,7 @@ export const errorCodes = [
   "SHELL_ONLY",
   "INCOMPLETE_CONTENT",
   "BROWSER_UNAVAILABLE",
+  "BROWSER_POOL_EXHAUSTED",
   "PROFILE_NOT_FOUND",
   "CACHE_MISS",
   "SEARCH_PROVIDER_NOT_CONFIGURED",
@@ -75,6 +76,10 @@ export function normalizeError(error: unknown): ReadError {
   return new ReadError("INTERNAL_ERROR", "The web reader failed unexpectedly.", {
     cause: error,
   });
+}
+
+export function crawlCancelledError(): ReadError {
+  return new ReadError("CRAWL_CANCELLED", "The crawl job was cancelled.");
 }
 
 export function parseRetryAfterMs(value: string | null, now = Date.now()): number | null {

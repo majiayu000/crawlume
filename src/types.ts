@@ -209,5 +209,5 @@ export type SearchWebResult = {
 };
 
 export interface PageFetcher {
-  fetch(url: URL, authProfile?: string): Promise<RawPage>;
+  fetch(url: URL, authProfile?: string, signal?: AbortSignal): Promise<RawPage>;
 }

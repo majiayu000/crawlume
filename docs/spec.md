@@ -1,4 +1,4 @@
-# Diaoyan Crawler v0.7
+# Diaoyan Crawler v0.8
 
 ## 目标
 
@@ -109,6 +109,16 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 只返回 `evidence.proxyUsed`，不得返回代理 URI、池索引或凭证。代理连接失败沿用既有 retryable
 错误与 v0.6 退避策略。
 
+## 浏览器 Worker 池
+
+无授权 Profile 的动态页面使用进程内浏览器池。默认最多 2 个 Chrome 实例，每个实例最多 4 个
+并发隔离 Context。浏览器按直连或代理出口分组复用，每页新建 Context，不共享 Cookie 或
+Storage。池满时事件等待，默认上限 30000ms；超时返回 retryable 的
+`BROWSER_POOL_EXHAUSTED`，异步任务取消可中断等待。
+
+使用授权 Profile 的持久 Context 不进入匿名池，继续独占串行。浏览器断连、启动失败和应用关闭
+必须释放池容量；应用关闭先停止 Crawl Job，再关闭池内浏览器。
+
 ## 错误代码
 
 - `INVALID_URL`
@@ -129,6 +139,7 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 - `SHELL_ONLY`
 - `INCOMPLETE_CONTENT`
 - `BROWSER_UNAVAILABLE`
+- `BROWSER_POOL_EXHAUSTED`
 - `PROFILE_NOT_FOUND`
 - `CACHE_MISS`
 - `SEARCH_PROVIDER_NOT_CONFIGURED`
@@ -199,5 +210,6 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。
 - HTTP 和浏览器可使用管理员代理池，Profile 绑定稳定且结果不泄露代理配置。
+- 匿名浏览器复用有界实例并逐页隔离 Context，池容量等待可取消、超时和安全关闭。
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。

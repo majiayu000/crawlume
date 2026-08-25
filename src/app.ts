@@ -68,6 +68,7 @@ export function createApp(
     search,
     async close(): Promise<void> {
       await jobs.close();
+      await browserFetcher.close();
       reader.close();
       localIndex?.close();
       await transport.close();

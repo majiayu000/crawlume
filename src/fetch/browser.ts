@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type LaunchOptions } from "playwright-core";
+import { chromium, type BrowserContext, type LaunchOptions } from "playwright-core";
 
 import type { AppConfig } from "../config.js";
 import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
@@ -7,6 +7,7 @@ import { ProfileManager } from "../profiles.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
+import { BrowserPool, type BrowserLease } from "../browser-pool.js";
 
 export function browserLaunchOptions(
   config: AppConfig,
@@ -53,11 +54,15 @@ export class BrowserPageFetcher implements PageFetcher {
     private readonly robots: RobotsPolicy,
     private readonly profiles: ProfileManager,
     private readonly proxyPool = new ProxyPool(config.proxyEndpoints),
+    private readonly browserPool = new BrowserPool(
+      config,
+      async (proxy) => chromium.launch(browserLaunchOptions(config, true, proxy)),
+    ),
   ) {}
 
-  async fetch(url: URL, authProfile?: string): Promise<RawPage> {
-    let browser: Browser | null = null;
+  async fetch(url: URL, authProfile?: string, signal?: AbortSignal): Promise<RawPage> {
     let context: BrowserContext | null = null;
+    let lease: BrowserLease | null = null;
     let profilePath: string | null = null;
     const proxy = this.proxyPool.acquire(authProfile);
 
@@ -82,8 +87,8 @@ export class BrowserPageFetcher implements PageFetcher {
           acceptDownloads: false,
         });
       } else {
-        browser = await chromium.launch(browserLaunchOptions(this.config, true, proxy));
-        context = await browser.newContext({ acceptDownloads: false });
+        lease = await this.browserPool.acquire(proxy, signal);
+        context = await lease.browser.newContext({ acceptDownloads: false });
       }
 
       const page = context.pages()[0] ?? (await context.newPage());
@@ -170,10 +175,14 @@ export class BrowserPageFetcher implements PageFetcher {
       throw browserError(error);
     } finally {
       await context?.close().catch(() => undefined);
-      await browser?.close().catch(() => undefined);
+      await lease?.release();
       if (authProfile !== undefined) {
         this.activeProfiles.delete(authProfile);
       }
     }
+  }
+
+  async close(): Promise<void> {
+    await this.browserPool.close();
   }
 }
