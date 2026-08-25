@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 import { UrlPolicy } from "./security/url-policy.js";
 import { validateContent } from "./validation.js";
+import type { RslAccessAudit } from "./rsl-audit.js";
 
 function cacheKey(
   url: string,
@@ -61,6 +62,8 @@ export class ReaderService {
     private readonly localIndex: LocalPageIndex | null = null,
     private readonly crawlPolicy: CrawlRequestPolicy | null = null,
     private readonly metrics: CrawlerMetrics | null = null,
+    private readonly rslAudit: RslAccessAudit | null = null,
+    private readonly rslApprovalContextHash: () => string = () => "",
   ) {}
 
   async readPage(options: ReadPageOptions): Promise<ReadPageResult> {
@@ -73,9 +76,12 @@ export class ReaderService {
     try {
       result = await this.executeReadPageArtifact(options);
     } catch (error) {
-      this.metrics?.recordFailure(normalizeError(error), Date.now() - startedAt);
+      const normalized = normalizeError(error);
+      this.rslAudit?.recordFailure(options.url, normalized);
+      this.metrics?.recordFailure(normalized, Date.now() - startedAt);
       throw error;
     }
+    this.rslAudit?.recordSuccess(result);
     this.metrics?.recordSuccess(result, Date.now() - startedAt);
     return result;
   }
@@ -96,7 +102,10 @@ export class ReaderService {
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
     const authProfile = options.authProfile ?? null;
-    const key = cacheKey(url.toString(), mode, authProfile, this.config);
+    const key = createHash("sha256")
+      .update(cacheKey(url.toString(), mode, authProfile, this.config))
+      .update(this.rslApprovalContextHash())
+      .digest("hex");
 
     if (cacheMode !== "live") {
       const cached = this.cache.get(key, maxAgeSeconds);

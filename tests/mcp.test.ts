@@ -167,6 +167,13 @@ describe("MCP server", () => {
           daily: [],
         })),
       },
+      rslAudit: {
+        list: vi.fn(() => ({
+          status: "ok" as const,
+          generatedAt: "2026-08-25T00:00:00.000Z",
+          entries: [],
+        })),
+      },
       monitors: {
         start: vi.fn(async () => monitorResult()),
         get: vi.fn(() => monitorResult("running")),
@@ -186,6 +193,7 @@ describe("MCP server", () => {
       "start_crawl",
       "get_crawl",
       "get_crawler_stats",
+      "get_rsl_audit",
       "start_monitor",
       "get_monitor",
       "list_monitors",
@@ -254,6 +262,12 @@ describe("MCP server", () => {
       status: "ok",
       totals: { requests: 4, successes: 3, failures: 1 },
     });
+
+    const audit = await client.callTool({
+      name: "get_rsl_audit",
+      arguments: { limit: 50 },
+    });
+    expect(audit.structuredContent).toMatchObject({ status: "ok", entries: [] });
 
     const startedMonitor = await client.callTool({
       name: "start_monitor",

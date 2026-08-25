@@ -64,6 +64,10 @@ const crawlerStatsInput = z.object({
   days: z.int().min(1).max(90).default(7),
 });
 
+const rslAuditInput = z.object({
+  limit: z.int().min(1).max(1_000).default(100),
+});
+
 const pageMonitorInput = z.object({
   url: z.url().describe("Public http or https URL to monitor."),
   mode: z.enum(fetchModes).default("auto"),
@@ -140,12 +144,13 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
 
 export function createMcpServer(app: DiaoyanApp): McpServer {
   const server = new McpServer(
-    { name: "diaoyan-web-reader", version: "0.9.1" },
+    { name: "diaoyan-web-reader", version: "0.10.2" },
     {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, start_crawl/get_crawl/cancel_crawl for durable asynchronous crawling, " +
         "inspect_page for diagnostics, get_crawler_stats for local operational metrics, " +
+        "get_rsl_audit for bounded license and access audit records, " +
         "and start_monitor/get_monitor/list_monitors/cancel_monitor for durable page-change monitoring. " +
         "Access failures are explicit: never treat an isError result as page content. " +
         "Authentication profiles must be created out-of-band by the user.",
@@ -400,6 +405,24 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async (): Promise<CallToolResult> => successResult({ profiles: app.profiles.list() }),
+  );
+
+  server.registerTool(
+    "get_rsl_audit",
+    {
+      title: "Get RSL access audit",
+      description:
+        "Return recent content-access outcomes and RSL decisions without page content, profiles, tokens, or credentials.",
+      inputSchema: rslAuditInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ limit }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.rslAudit.list(limit) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
   );
 
   return server;

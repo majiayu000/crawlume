@@ -15,6 +15,7 @@ import { UrlPolicy } from "./security/url-policy.js";
 import { SiteService } from "./site.js";
 import { SearchService, SearxngProvider } from "./search.js";
 import { RslPolicy } from "./rsl.js";
+import { RslAccessAudit } from "./rsl-audit.js";
 
 export type DiaoyanApp = {
   reader: ReaderService;
@@ -24,6 +25,7 @@ export type DiaoyanApp = {
   search: SearchService;
   metrics: CrawlerMetrics;
   monitors: PageMonitorService;
+  rslAudit: RslAccessAudit;
   close(): Promise<void>;
 };
 
@@ -50,6 +52,7 @@ export function createApp(
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
   const metrics = new CrawlerMetrics(config.cachePath);
+  const rslAudit = new RslAccessAudit(config.cachePath, config.rslUsage);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
   const crawlPolicy = new CrawlRequestPolicy(config);
   const httpFetcher = new HttpPageFetcher(transport, robots, rsl);
@@ -63,6 +66,8 @@ export function createApp(
     localIndex,
     crawlPolicy,
     metrics,
+    rslAudit,
+    () => rsl.approvalContextHash,
   );
   const site = new SiteService(urlPolicy, reader, httpFetcher, browserFetcher, crawlPolicy);
   const searchProvider = config.searxngUrl === null
@@ -93,6 +98,7 @@ export function createApp(
     search,
     metrics,
     monitors,
+    rslAudit,
     async close(): Promise<void> {
       const failures: unknown[] = [];
       const workerResults = await Promise.allSettled([jobs.close(), monitors.close()]);
@@ -105,6 +111,7 @@ export function createApp(
       await captureClose(() => reader.close(), failures);
       await captureClose(() => localIndex?.close(), failures);
       await captureClose(() => metrics.close(), failures);
+      await captureClose(() => rslAudit.close(), failures);
       await captureClose(async () => transport.close(), failures);
       if (failures.length === 1) {
         throw failures[0];

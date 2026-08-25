@@ -159,6 +159,18 @@ HTTP RSL Link、HTML RSL link 和 inline script。外部 RSL 文件继续经过 
 支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS 与媒体容器元数据
 尚未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见 `docs/rsl-policy-spec.md`。
 
+## RSL 批准与访问审计
+
+管理员可在 mode-0600 的 `DIAOYAN_RSL_APPROVALS_PATH` 文件中批准 attribution、standard、legal
+或 terms 义务。批准必须精确绑定 `<license>` XML Hash、`<content url>`、usage、user class、geo、
+全部义务和未来到期时间。服务不通过 MCP 或普通 CLI 修改批准文件，批准到期后立即停止命中，
+页面缓存键同步变化。禁止、付费、reporting 和 License Server 不能由静态批准放行。
+
+每次最终页面读取向 `cache.sqlite` 的独立审计表写入成功或失败、去 query 的 URL、fetch/cache
+状态、RSL 决策、许可 URL/Hash 和批准数量。审计不保存正文、标题、authProfile、Token、Cookie、
+客户端密钥或代理配置。写入失败必须使读取失败。`diaoyan rsl-audit` 和 `get_rsl_audit` 只读返回
+最近最多 1000 条安全字段。完整约束见 `docs/rsl-approval-audit-spec.md`。
+
 ## 浏览器 Worker 池
 
 无授权 Profile 的动态页面使用进程内浏览器池。默认最多 2 个 Chrome 实例，每个实例最多 4 个

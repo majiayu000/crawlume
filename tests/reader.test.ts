@@ -6,12 +6,14 @@ import { ReadError } from "../src/errors.js";
 import { LocalPageIndex } from "../src/index.js";
 import { CrawlerMetrics } from "../src/metrics.js";
 import { ReaderService } from "../src/reader.js";
+import { RslAccessAudit } from "../src/rsl-audit.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
 import type { PageFetcher, RawPage } from "../src/types.js";
 import { publicResolver, rawPage, StubFetcher, testConfig } from "./helpers.js";
 
 const readers: ReaderService[] = [];
 const metricsStores: CrawlerMetrics[] = [];
+const auditStores: RslAccessAudit[] = [];
 
 function readerWith(
   http: StubFetcher,
@@ -19,6 +21,7 @@ function readerWith(
   localIndex: LocalPageIndex | null = null,
   crawlPolicy: CrawlRequestPolicy | null = null,
   metrics: CrawlerMetrics | null = null,
+  rslAudit: RslAccessAudit | null = null,
 ): ReaderService {
   const reader = new ReaderService(
     testConfig(),
@@ -29,6 +32,7 @@ function readerWith(
     localIndex,
     crawlPolicy,
     metrics,
+    rslAudit,
   );
   readers.push(reader);
   return reader;
@@ -40,6 +44,9 @@ afterEach(() => {
   }
   while (metricsStores.length > 0) {
     metricsStores.pop()?.close();
+  }
+  while (auditStores.length > 0) {
+    auditStores.pop()?.close();
   }
 });
 
@@ -236,6 +243,8 @@ describe("ReaderService", () => {
       usage: "ai-input" as const,
       discoveredBy: ["robots" as const],
       licenseUrls: ["https://example.com/license.xml"],
+      licenseHashes: ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      approvalsApplied: 0,
     };
     const page = await readerWith(
       new StubFetcher(rawPage({ rsl })),
@@ -247,5 +256,41 @@ describe("ReaderService", () => {
     });
 
     expect(page.evidence.rsl).toEqual(rsl);
+  });
+
+  it("records one final audit entry for successful and failed reads", async () => {
+    const audit = new RslAccessAudit(":memory:", "ai-input");
+    auditStores.push(audit);
+    await readerWith(
+      new StubFetcher(rawPage()),
+      new StubFetcher(new Error("unused")),
+      null,
+      null,
+      null,
+      audit,
+    ).readPage({
+      url: "https://example.com/success",
+      mode: "http",
+      cacheMode: "live",
+    });
+    await expect(
+      readerWith(
+        new StubFetcher(new ReadError("ACCESS_DENIED", "denied")),
+        new StubFetcher(new Error("unused")),
+        null,
+        null,
+        null,
+        audit,
+      ).readPage({
+        url: "https://example.com/failure",
+        mode: "http",
+        cacheMode: "live",
+      }),
+    ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+
+    expect(audit.list().entries).toMatchObject([
+      { requestUrl: "https://example.com/failure", outcome: "failure" },
+      { requestUrl: "https://example.com/success", outcome: "success" },
+    ]);
   });
 });

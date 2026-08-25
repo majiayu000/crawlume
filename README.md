@@ -163,6 +163,7 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_RSL_USAGE` | `ai-input` | Intended use: `ai-train`, `ai-input`, `ai-index`, or `search` |
 | `DIAOYAN_RSL_USER_CLASS` | unset | Optional operator class used for RSL decisions |
 | `DIAOYAN_RSL_GEO` | unset | Optional two-letter uppercase region used for RSL decisions |
+| `DIAOYAN_RSL_APPROVALS_PATH` | `<data-dir>/rsl-approvals.json` | Absolute path to the administrator-managed approval file |
 | `DIAOYAN_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
 | `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
 | `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
@@ -235,6 +236,30 @@ purchases or accepts a license automatically. `not-declared` evidence means only
 RSL association was found; it is not a legal clearance. See the
 [RSL policy specification](docs/rsl-policy-spec.md) for supported discovery surfaces and limits.
 
+Static approvals can acknowledge attribution, standard-license, legal, or supplemental-term
+obligations only when the exact license Hash, resource, runtime context, obligations, and expiry all
+match. The file is administrator-managed and is never written through MCP or the ordinary CLI:
+
+```json
+{
+  "version": 1,
+  "approvals": [{
+    "licenseHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "resource": "/articles/",
+    "usage": "ai-input",
+    "userClass": "personal",
+    "geo": "CN",
+    "obligations": ["attribution"],
+    "expiresAt": "2026-12-31T15:59:59.000Z",
+    "approvedBy": "operator@example.com"
+  }]
+}
+```
+
+Set the file to mode `0600` on POSIX systems and restart the service after editing it. Approvals do
+not bypass prohibitions, payment, reporting, or License Token requirements. Inspect the latest safe
+access records with `diaoyan rsl-audit --limit 100` or the read-only `get_rsl_audit` MCP tool.
+
 Project documents:
 
 - [Technical contract](docs/spec.md)
@@ -244,3 +269,4 @@ Project documents:
 - [Search provider setup](docs/search.md)
 - [Agent identity and Web Bot Auth](docs/agent-identity-spec.md)
 - [RSL discovery and policy](docs/rsl-policy-spec.md)
+- [RSL approvals and access audit](docs/rsl-approval-audit-spec.md)

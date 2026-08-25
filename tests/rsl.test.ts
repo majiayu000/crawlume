@@ -51,8 +51,11 @@ class StubTransport {
   }
 }
 
-function policy(routes: Map<string, TransportResponse> = new Map()): RslPolicy {
-  return new RslPolicy(testConfig(), new StubTransport(routes) as unknown as HttpTransport);
+function policy(
+  routes: Map<string, TransportResponse> = new Map(),
+  config = testConfig(),
+): RslPolicy {
+  return new RslPolicy(config, new StubTransport(routes) as unknown as HttpTransport);
 }
 
 describe("robots RSL discovery", () => {
@@ -93,12 +96,14 @@ describe("RSL policy", () => {
       [licenseUrl],
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: "permitted",
       usage: "ai-input",
       discoveredBy: ["robots"],
       licenseUrls: [licenseUrl],
+      approvalsApplied: 0,
     });
+    expect(result.licenseHashes).toEqual([expect.stringMatching(/^sha256:[0-9a-f]{64}$/)]);
   });
 
   it("uses the most specific matching content scope", async () => {
@@ -170,6 +175,8 @@ describe("RSL policy", () => {
       usage: "ai-input",
       discoveredBy: [],
       licenseUrls: [],
+      licenseHashes: [],
+      approvalsApplied: 0,
     });
   });
 
@@ -189,6 +196,20 @@ describe("RSL policy", () => {
     const licenseUrl = "https://example.com/license.xml";
     const xml = `<!DOCTYPE rsl [<!ENTITY payload "expanded">]>
       <rsl xmlns="${namespace}"><content url="/"><license><legal>&payload;</legal></license></content></rsl>`;
+
+    await expect(
+      policy(new Map([[licenseUrl, response(licenseUrl, xml)]])).evaluateRobots(
+        new URL("https://example.com/article"),
+        [licenseUrl],
+      ),
+    ).rejects.toMatchObject({ code: "RSL_INVALID" });
+  });
+
+  it("rejects malformed standard-license obligations", async () => {
+    const licenseUrl = "https://example.com/license.xml";
+    const xml = document(
+      '<content url="/"><license><payment type="attribution"><standard>not-a-url</standard></payment></license></content>',
+    );
 
     await expect(
       policy(new Map([[licenseUrl, response(licenseUrl, xml)]])).evaluateRobots(
@@ -218,5 +239,10 @@ describe("RSL configuration", () => {
   it("requires an uppercase two-letter region", () => {
     vi.stubEnv("DIAOYAN_RSL_GEO", "cn");
     expect(() => loadConfig()).toThrow("DIAOYAN_RSL_GEO must be two uppercase ASCII letters");
+  });
+
+  it("requires an absolute administrator approval path", () => {
+    vi.stubEnv("DIAOYAN_RSL_APPROVALS_PATH", "relative/approvals.json");
+    expect(() => loadConfig()).toThrow("DIAOYAN_RSL_APPROVALS_PATH must be an absolute path");
   });
 });

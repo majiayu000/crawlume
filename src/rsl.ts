@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { JSDOM } from "jsdom";
 
 import type { AppConfig } from "./config.js";
@@ -5,6 +7,7 @@ import { ReadError } from "./errors.js";
 import type { TransportResponse } from "./fetch/http.js";
 import type { RslDiscoveryMethod, RslEvidence } from "./types.js";
 import type { HttpTransport } from "./fetch/http.js";
+import { RslApprovalStore } from "./rsl-approvals.js";
 
 const RSL_NAMESPACE = "https://rslstandard.org/rsl";
 const RSL_MEDIA_TYPE = "application/rsl+xml";
@@ -46,6 +49,11 @@ type CachedRsl = {
 };
 
 type Outcome = "permitted" | "prohibited" | "license" | "payment" | "confirmation";
+
+type LicenseEvaluation = {
+  outcome: Outcome;
+  obligations: string[];
+};
 
 function directChildren(element: Element, localName?: string): Element[] {
   return Array.from(element.children).filter(
@@ -105,6 +113,17 @@ function usageMatches(token: string, usage: string): boolean {
   return token === "ai-all" && usage.startsWith("ai-");
 }
 
+function urlObligation(kind: "standard" | "terms", value: string): string {
+  const trimmed = value.trim();
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+  } catch {
+    throw new ReadError("RSL_INVALID", `The RSL ${kind} obligation must be an absolute HTTP(S) URL.`);
+  }
+  return `${kind}:${trimmed}`;
+}
+
 function constraintOutcome(
   license: Element,
   type: "usage" | "user" | "geo",
@@ -132,18 +151,18 @@ function constraintOutcome(
   return null;
 }
 
-function evaluateLicense(content: Element, license: Element, config: AppConfig): Outcome {
-  const constraints = [
-    constraintOutcome(license, "usage", config.rslUsage, usageMatches),
-    constraintOutcome(license, "user", config.rslUserClass),
-    constraintOutcome(license, "geo", config.rslGeo),
-  ];
+function evaluateLicense(content: Element, license: Element, config: AppConfig): LicenseEvaluation {
+  const usageConstraint = constraintOutcome(license, "usage", config.rslUsage, usageMatches);
+  const userConstraint = constraintOutcome(license, "user", config.rslUserClass);
+  const geoConstraint = constraintOutcome(license, "geo", config.rslGeo);
+  const constraints = [usageConstraint, userConstraint, geoConstraint];
   if (constraints.includes("prohibited")) {
-    return "prohibited";
+    return { outcome: "prohibited", obligations: [] };
   }
   if (content.getAttribute("server") !== null) {
-    return "license";
+    return { outcome: "license", obligations: [] };
   }
+  const obligations: string[] = [];
   const payment = directChildren(license, "payment")[0];
   if (payment !== undefined) {
     const paymentType = payment.getAttribute("type");
@@ -157,7 +176,7 @@ function evaluateLicense(content: Element, license: Element, config: AppConfig):
       paymentType === null ||
       ["purchase", "subscription", "training", "crawl", "use", "contribution"].includes(paymentType)
     ) {
-      return "payment";
+      return { outcome: "payment", obligations: [] };
     }
     if (paymentType !== "free" && paymentType !== "attribution") {
       throw new ReadError("RSL_INVALID", "The RSL document contains an unsupported payment type.", {
@@ -165,18 +184,31 @@ function evaluateLicense(content: Element, license: Element, config: AppConfig):
       });
     }
     if (paymentType === "attribution" || directChildren(payment, "standard").length > 0) {
-      return "confirmation";
+      if (paymentType === "attribution") obligations.push("attribution");
+      for (const standard of directChildren(payment, "standard")) {
+        obligations.push(urlObligation("standard", standard.textContent ?? ""));
+      }
     }
   }
+  if (userConstraint === "confirmation") obligations.push("missing-user-context");
+  if (geoConstraint === "confirmation") obligations.push("missing-geo-context");
+  for (const _reporting of directChildren(license, "reporting")) obligations.push("reporting");
+  if (directChildren(license, "legal").length > 0) obligations.push("legal");
+  for (const terms of directChildren(content, "terms")) {
+    obligations.push(urlObligation("terms", terms.textContent ?? ""));
+  }
+  const normalizedObligations = [...new Set(obligations)].sort();
   if (
     constraints.includes("confirmation") ||
-    directChildren(license, "reporting").length > 0 ||
-    directChildren(license, "legal").length > 0 ||
-    directChildren(content, "terms").length > 0
+    normalizedObligations.length > 0
   ) {
-    return "confirmation";
+    return { outcome: "confirmation", obligations: normalizedObligations };
   }
-  return "permitted";
+  return { outcome: "permitted", obligations: [] };
+}
+
+function licenseHash(license: Element): string {
+  return `sha256:${createHash("sha256").update(license.outerHTML).digest("hex")}`;
 }
 
 function scopePattern(content: Element, target: URL): { matches: boolean; specificity: number } {
@@ -315,11 +347,18 @@ function outcomePriority(outcome: Outcome): number {
 
 export class RslPolicy {
   private readonly cache = new Map<string, CachedRsl>();
+  private readonly approvals: RslApprovalStore;
 
   constructor(
     private readonly config: AppConfig,
     private readonly transport: HttpTransport,
-  ) {}
+  ) {
+    this.approvals = new RslApprovalStore(config.rslApprovalsPath);
+  }
+
+  get approvalContextHash(): string {
+    return this.approvals.contextHash;
+  }
 
   emptyEvidence(): RslEvidence {
     return {
@@ -327,6 +366,8 @@ export class RslPolicy {
       usage: this.config.rslUsage,
       discoveredBy: [],
       licenseUrls: [],
+      licenseHashes: [],
+      approvalsApplied: 0,
     };
   }
 
@@ -399,13 +440,43 @@ export class RslPolicy {
     if (associations.length === 0) return this.emptyEvidence();
     let effective: Outcome = "permitted";
     let applicable = false;
+    let approvalsApplied = 0;
+    const licenseHashes: string[] = [];
+    let blocking:
+      | { outcome: Outcome; licenseHash: string; resource: string; obligations: string[] }
+      | null = null;
     for (const association of associations) {
       const parsed = await this.load(association);
       for (const content of applicableContents(parsed, target, association.htmlScope)) {
         applicable = true;
         for (const license of directChildren(content, "license")) {
-          const outcome = evaluateLicense(content, license, this.config);
-          if (outcomePriority(outcome) > outcomePriority(effective)) effective = outcome;
+          const hash = licenseHash(license);
+          const resource = content.getAttribute("url") ?? "";
+          licenseHashes.push(hash);
+          let evaluation = evaluateLicense(content, license, this.config);
+          if (
+            evaluation.outcome === "confirmation" &&
+            this.approvals.has({
+              licenseHash: hash,
+              resource,
+              usage: this.config.rslUsage,
+              userClass: this.config.rslUserClass,
+              geo: this.config.rslGeo,
+              obligations: evaluation.obligations,
+            })
+          ) {
+            approvalsApplied += 1;
+            evaluation = { outcome: "permitted", obligations: [] };
+          }
+          if (outcomePriority(evaluation.outcome) > outcomePriority(effective)) {
+            effective = evaluation.outcome;
+            blocking = {
+              outcome: evaluation.outcome,
+              licenseHash: hash,
+              resource,
+              obligations: evaluation.obligations,
+            };
+          }
         }
       }
     }
@@ -414,9 +485,17 @@ export class RslPolicy {
       usage: this.config.rslUsage,
       discoveredBy: [...new Set(associations.map((association) => association.method))],
       licenseUrls: [...new Set(associations.flatMap((association) => association.licenseUrl ?? []))],
+      licenseHashes: [...new Set(licenseHashes)],
+      approvalsApplied,
     };
     if (!applicable) return evidence;
-    const details = { usage: this.config.rslUsage, licenseUrl: evidence.licenseUrls[0] ?? null };
+    const details = {
+      usage: this.config.rslUsage,
+      licenseUrl: evidence.licenseUrls[0] ?? null,
+      licenseHash: blocking?.licenseHash ?? null,
+      resource: blocking?.resource ?? null,
+      obligations: blocking?.obligations.join(",") ?? "",
+    };
     if (effective === "prohibited") {
       throw new ReadError("RSL_PROHIBITED", "RSL prohibits this use of the content.", { details });
     }

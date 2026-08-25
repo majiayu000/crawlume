@@ -26,6 +26,7 @@ const usage = `Usage:
   diaoyan crawl <url> [options]
   diaoyan search <query> [options]
   diaoyan stats [--days <1-90>]
+  diaoyan rsl-audit [--limit <1-1000>]
 
 Options:
   --mode <auto|http|browser>                 Fetch strategy (default: auto)
@@ -37,7 +38,7 @@ Options:
   --include-subdomains                       Include child subdomains
   --keep-query                               Keep query parameters when deduplicating
   --markdown                                 Print only Markdown (read only)
-  --limit <count>                            Search results (default: 10, max: 20)
+  --limit <count>                            Search results (max: 20) or RSL audit records (max: 1000)
   --page <number>                            Search result page (default: 1)
   --language <code>                          Search language (default: all)
   --safe-search <0|1|2>                      Search filtering level (default: 1)
@@ -53,7 +54,8 @@ export type CliAction =
   | { kind: "map"; options: import("../types.js").MapSiteOptions }
   | { kind: "crawl"; options: import("../types.js").CrawlSiteOptions }
   | { kind: "search"; options: SearchWebOptions }
-  | { kind: "stats"; days: number };
+  | { kind: "stats"; days: number }
+  | { kind: "rsl-audit"; limit: number };
 
 function nextValue(argv: string[], index: number, flag: string): string {
   const value = argv[index + 1];
@@ -191,6 +193,29 @@ function parseStatsCli(argv: string[]): CliAction {
   return { kind: "stats", days };
 }
 
+function parseRslAuditCli(argv: string[]): CliAction {
+  let limit = 100;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--help" || argument === "-h") return { kind: "help" };
+    if (argument === "--limit") {
+      const value = nextValue(argv, index, argument);
+      limit = Number(value);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new ReadError("INVALID_ARGUMENT", "--limit must be an integer between 1 and 1000.", {
+          details: { value },
+        });
+      }
+      index += 1;
+      continue;
+    }
+    throw new ReadError("INVALID_ARGUMENT", "Unknown rsl-audit option.", {
+      details: { option: argument ?? null },
+    });
+  }
+  return { kind: "rsl-audit", limit };
+}
+
 export function parseCli(argv: string[]): CliAction {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     return { kind: "help" };
@@ -201,11 +226,12 @@ export function parseCli(argv: string[]): CliAction {
     command !== "map" &&
     command !== "crawl" &&
     command !== "search" &&
-    command !== "stats"
+    command !== "stats" &&
+    command !== "rsl-audit"
   ) {
     throw new ReadError(
       "INVALID_ARGUMENT",
-      "Supported commands are read, map, crawl, search, and stats.",
+      "Supported commands are read, map, crawl, search, stats, and rsl-audit.",
       { details: { command: argv[0] ?? null } },
     );
   }
@@ -214,6 +240,9 @@ export function parseCli(argv: string[]): CliAction {
   }
   if (command === "stats") {
     return parseStatsCli(argv.slice(1));
+  }
+  if (command === "rsl-audit") {
+    return parseRslAuditCli(argv.slice(1));
   }
 
   let url: string | null = null;
@@ -394,8 +423,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       process.stdout.write(`${JSON.stringify(await app.site.crawlSite(action.options), null, 2)}\n`);
     } else if (action.kind === "search") {
       process.stdout.write(`${JSON.stringify(await app.search.searchWeb(action.options), null, 2)}\n`);
-    } else {
+    } else if (action.kind === "stats") {
       process.stdout.write(`${JSON.stringify(app.metrics.getStats(action.days), null, 2)}\n`);
+    } else {
+      process.stdout.write(`${JSON.stringify(app.rslAudit.list(action.limit), null, 2)}\n`);
     }
     return 0;
   } catch (error) {

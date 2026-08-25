@@ -16,6 +16,7 @@ export function testConfig(): AppConfig {
     rslUsage: "ai-input",
     rslUserClass: null,
     rslGeo: null,
+    rslApprovalsPath: "/tmp/diaoyan-test/rsl-approvals.json",
     requestTimeoutMs: 2_000,
     browserTimeoutMs: 2_000,
     maxResponseBytes: 1_000_000,

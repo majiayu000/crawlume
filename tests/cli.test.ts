@@ -127,6 +127,14 @@ describe("diaoyan CLI", () => {
     expect(parseCli(["stats", "--days", "30"])).toEqual({ kind: "stats", days: 30 });
   });
 
+  it("parses bounded RSL audit queries", () => {
+    expect(parseCli(["rsl-audit"])).toEqual({ kind: "rsl-audit", limit: 100 });
+    expect(parseCli(["rsl-audit", "--limit", "250"])).toEqual({
+      kind: "rsl-audit",
+      limit: 250,
+    });
+  });
+
   it.each([
     [["read"], "read requires a URL"],
     [["write", "https://example.com"], "Supported commands"],
@@ -143,6 +151,7 @@ describe("diaoyan CLI", () => {
     [["search", "query", "--source", "remote"], "unsupported value"],
     [["stats", "--days", "0"], "between 1 and 90"],
     [["stats", "unexpected"], "Unknown stats option"],
+    [["rsl-audit", "--limit", "1001"], "between 1 and 1000"],
   ])("rejects invalid arguments", (argv, message) => {
     expect(() => parseCli(argv)).toThrow(message);
   });

@@ -15,6 +15,7 @@ export type AppConfig = {
   rslUsage: RslUsage;
   rslUserClass: RslUserClass | null;
   rslGeo: string | null;
+  rslApprovalsPath: string;
   requestTimeoutMs: number;
   browserTimeoutMs: number;
   maxResponseBytes: number;
@@ -174,6 +175,10 @@ export function loadConfig(): AppConfig {
       "DIAOYAN_AGENT_IDENTITY_URL is required when DIAOYAN_WEB_BOT_AUTH_JWK_PATH is set.",
     );
   }
+  const configuredApprovalsPath = process.env.DIAOYAN_RSL_APPROVALS_PATH;
+  if (configuredApprovalsPath !== undefined && !isAbsolute(configuredApprovalsPath)) {
+    throw new Error("DIAOYAN_RSL_APPROVALS_PATH must be an absolute path.");
+  }
   return {
     dataDir,
     cachePath: join(dataDir, "cache.sqlite"),
@@ -191,6 +196,7 @@ export function loadConfig(): AppConfig {
     rslUsage: enumValue("DIAOYAN_RSL_USAGE", rslUsages, "ai-input") ?? "ai-input",
     rslUserClass: enumValue("DIAOYAN_RSL_USER_CLASS", rslUserClasses, null),
     rslGeo: rslGeo(),
+    rslApprovalsPath: configuredApprovalsPath ?? join(dataDir, "rsl-approvals.json"),
     requestTimeoutMs: positiveInteger("DIAOYAN_REQUEST_TIMEOUT_MS", 20_000),
     browserTimeoutMs: positiveInteger("DIAOYAN_BROWSER_TIMEOUT_MS", 30_000),
     maxResponseBytes: positiveInteger("DIAOYAN_MAX_RESPONSE_BYTES", 5_000_000),

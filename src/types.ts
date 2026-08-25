@@ -37,6 +37,30 @@ export type RslEvidence = {
   usage: import("./config.js").RslUsage;
   discoveredBy: RslDiscoveryMethod[];
   licenseUrls: string[];
+  licenseHashes: string[];
+  approvalsApplied: number;
+};
+
+export type RslAccessAuditEntry = {
+  id: number;
+  occurredAt: string;
+  requestUrl: string | null;
+  finalUrl: string | null;
+  outcome: "success" | "failure";
+  errorCode: string | null;
+  fetchMethod: FetchMethod | null;
+  cached: boolean;
+  rslStatus: RslEvidence["status"] | "blocked" | null;
+  rslUsage: import("./config.js").RslUsage;
+  licenseUrls: string[];
+  licenseHashes: string[];
+  approvalsApplied: number;
+};
+
+export type RslAccessAuditResult = {
+  status: "ok";
+  generatedAt: string;
+  entries: RslAccessAuditEntry[];
 };
 
 export type ReadPageOptions = {
