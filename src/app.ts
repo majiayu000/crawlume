@@ -6,6 +6,7 @@ import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { LocalPageIndex } from "./index.js";
 import { CrawlJobService, CrawlJobStore } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
+import { PageMonitorService, PageMonitorStore } from "./monitors.js";
 import { ProxyPool } from "./proxy.js";
 import { ProfileManager } from "./profiles.js";
 import { ReaderService } from "./reader.js";
@@ -21,12 +22,24 @@ export type DiaoyanApp = {
   jobs: CrawlJobService;
   search: SearchService;
   metrics: CrawlerMetrics;
+  monitors: PageMonitorService;
   close(): Promise<void>;
 };
 
+async function captureClose(
+  operation: () => void | Promise<void>,
+  failures: unknown[],
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    failures.push(error);
+  }
+}
+
 export function createApp(
   config: AppConfig,
-  options: { runCrawlWorker?: boolean } = {},
+  options: { runCrawlWorker?: boolean; runMonitorWorker?: boolean } = {},
 ): DiaoyanApp {
   const urlPolicy = new UrlPolicy(undefined, config.allowDnsFakeIp);
   const proxyPool = new ProxyPool(config.proxyEndpoints);
@@ -63,6 +76,12 @@ export function createApp(
     site,
     options.runCrawlWorker ?? true,
   );
+  const monitors = new PageMonitorService(
+    new PageMonitorStore(config.cachePath),
+    reader,
+    urlPolicy,
+    options.runMonitorWorker ?? options.runCrawlWorker ?? true,
+  );
 
   return {
     reader,
@@ -71,13 +90,26 @@ export function createApp(
     jobs,
     search,
     metrics,
+    monitors,
     async close(): Promise<void> {
-      await jobs.close();
-      await browserFetcher.close();
-      reader.close();
-      localIndex?.close();
-      metrics.close();
-      await transport.close();
+      const failures: unknown[] = [];
+      const workerResults = await Promise.allSettled([jobs.close(), monitors.close()]);
+      for (const result of workerResults) {
+        if (result.status === "rejected") {
+          failures.push(result.reason);
+        }
+      }
+      await captureClose(async () => browserFetcher.close(), failures);
+      await captureClose(() => reader.close(), failures);
+      await captureClose(() => localIndex?.close(), failures);
+      await captureClose(() => metrics.close(), failures);
+      await captureClose(async () => transport.close(), failures);
+      if (failures.length === 1) {
+        throw failures[0];
+      }
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "Multiple crawler resources failed to close.");
+      }
     },
   };
 }

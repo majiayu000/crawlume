@@ -249,6 +249,50 @@ export type CrawlerStatsResult = {
   daily: CrawlerStatsDay[];
 };
 
+export const pageMonitorStatuses = ["scheduled", "running", "cancelled"] as const;
+export type PageMonitorStatus = (typeof pageMonitorStatuses)[number];
+
+export type PageMonitorInput = {
+  url: string;
+  mode?: FetchMode;
+  authProfile?: string;
+};
+
+export type PageMonitorSuccessRun = {
+  status: "ok";
+  startedAt: string;
+  completedAt: string;
+  changed: boolean | null;
+  previousContentHash: string | null;
+  contentHash: string;
+  page: InspectPageResult;
+};
+
+export type PageMonitorFailureRun = {
+  status: "error";
+  startedAt: string;
+  completedAt: string;
+  error: CrawlJobError;
+};
+
+export type PageMonitorRun = PageMonitorSuccessRun | PageMonitorFailureRun;
+
+export type PageMonitor = {
+  id: string;
+  status: PageMonitorStatus;
+  input: PageMonitorInput;
+  intervalSeconds: number;
+  createdAt: string;
+  startedAt: string | null;
+  nextRunAt: string | null;
+  lastContentHash: string | null;
+  lastChangedAt: string | null;
+  runCount: number;
+  changeCount: number;
+  failureCount: number;
+  lastRun: PageMonitorRun | null;
+};
+
 export interface PageFetcher {
   fetch(url: URL, authProfile?: string, signal?: AbortSignal): Promise<RawPage>;
 }

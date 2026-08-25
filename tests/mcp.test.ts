@@ -65,6 +65,24 @@ function jobResult(status: "queued" | "running" | "completed" | "cancelled" = "q
   };
 }
 
+function monitorResult(status: "scheduled" | "running" | "cancelled" = "scheduled") {
+  return {
+    id: "00000000-0000-4000-8000-000000000002",
+    status,
+    input: { url: "https://example.com/article", mode: "auto" as const },
+    intervalSeconds: 300,
+    createdAt: "2026-08-25T00:00:00.000Z",
+    startedAt: null,
+    nextRunAt: "2026-08-25T00:05:00.000Z",
+    lastContentHash: null,
+    lastChangedAt: null,
+    runCount: 0,
+    changeCount: 0,
+    failureCount: 0,
+    lastRun: null,
+  };
+}
+
 async function connect(app: DiaoyanApp): Promise<Client> {
   const server = createMcpServer(app);
   const client = new Client({ name: "diaoyan-test", version: "1.0.0" });
@@ -149,6 +167,12 @@ describe("MCP server", () => {
           daily: [],
         })),
       },
+      monitors: {
+        start: vi.fn(async () => monitorResult()),
+        get: vi.fn(() => monitorResult("running")),
+        list: vi.fn(() => [monitorResult()]),
+        cancel: vi.fn(() => ({ ...monitorResult("cancelled"), nextRunAt: null })),
+      },
       close: async () => undefined,
     } as unknown as DiaoyanApp;
     const client = await connect(app);
@@ -162,6 +186,10 @@ describe("MCP server", () => {
       "start_crawl",
       "get_crawl",
       "get_crawler_stats",
+      "start_monitor",
+      "get_monitor",
+      "list_monitors",
+      "cancel_monitor",
       "cancel_crawl",
       "read_page",
       "search_web",
@@ -226,6 +254,38 @@ describe("MCP server", () => {
       status: "ok",
       totals: { requests: 4, successes: 3, failures: 1 },
     });
+
+    const startedMonitor = await client.callTool({
+      name: "start_monitor",
+      arguments: { url: "https://example.com/article", intervalSeconds: 300 },
+    });
+    expect(startedMonitor.structuredContent).toMatchObject({
+      status: "scheduled",
+      intervalSeconds: 300,
+    });
+
+    const monitor = await client.callTool({
+      name: "get_monitor",
+      arguments: { monitorId: "00000000-0000-4000-8000-000000000002" },
+    });
+    expect(monitor.structuredContent).toMatchObject({ status: "running" });
+
+    const monitors = await client.callTool({
+      name: "list_monitors",
+      arguments: { limit: 10 },
+    });
+    expect(monitors.structuredContent).toMatchObject({
+      monitors: [expect.objectContaining({ intervalSeconds: 300 })],
+    });
+
+    const cancelledMonitor = await client.callTool({
+      name: "cancel_monitor",
+      arguments: { monitorId: "00000000-0000-4000-8000-000000000002" },
+    });
+    expect(cancelledMonitor.structuredContent).toMatchObject({
+      status: "cancelled",
+      nextRunAt: null,
+    });
   });
 
   it("returns structured tool errors with isError", async () => {
@@ -263,6 +323,18 @@ describe("MCP server", () => {
         },
       },
       profiles: { list: () => [] },
+      monitors: {
+        start: async () => {
+          throw new ReadError("ACCESS_DENIED", "The site denied access.");
+        },
+        get: () => {
+          throw new ReadError("MONITOR_NOT_FOUND", "The page monitor does not exist.");
+        },
+        list: () => [],
+        cancel: () => {
+          throw new ReadError("MONITOR_NOT_FOUND", "The page monitor does not exist.");
+        },
+      },
       close: async () => undefined,
     } as unknown as DiaoyanApp;
     const client = await connect(app);
@@ -273,6 +345,15 @@ describe("MCP server", () => {
     expect(response.isError).toBe(true);
     expect(response.content).toEqual([
       expect.objectContaining({ type: "text", text: expect.stringContaining("ACCESS_DENIED") }),
+    ]);
+
+    const missingMonitor = await client.callTool({
+      name: "get_monitor",
+      arguments: { monitorId: "00000000-0000-4000-8000-000000000099" },
+    });
+    expect(missingMonitor.isError).toBe(true);
+    expect(missingMonitor.content).toEqual([
+      expect.objectContaining({ type: "text", text: expect.stringContaining("MONITOR_NOT_FOUND") }),
     ]);
   });
 });

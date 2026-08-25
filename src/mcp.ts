@@ -64,6 +64,21 @@ const crawlerStatsInput = z.object({
   days: z.int().min(1).max(90).default(7),
 });
 
+const pageMonitorInput = z.object({
+  url: z.url().describe("Public http or https URL to monitor."),
+  mode: z.enum(fetchModes).default("auto"),
+  authProfile: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).optional(),
+  intervalSeconds: z.int().min(60).max(604_800),
+});
+
+const monitorIdInput = z.object({
+  monitorId: z.uuid().describe("Page monitor ID returned by start_monitor."),
+});
+
+const listMonitorsInput = z.object({
+  limit: z.int().min(1).max(100).default(20),
+});
+
 function successResult(value: Record<string, unknown>): CallToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -125,12 +140,13 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
 
 export function createMcpServer(app: DiaoyanApp): McpServer {
   const server = new McpServer(
-    { name: "diaoyan-web-reader", version: "0.9.0" },
+    { name: "diaoyan-web-reader", version: "0.9.1" },
     {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, start_crawl/get_crawl/cancel_crawl for durable asynchronous crawling, " +
-        "inspect_page for diagnostics, and get_crawler_stats for local operational metrics. " +
+        "inspect_page for diagnostics, get_crawler_stats for local operational metrics, " +
+        "and start_monitor/get_monitor/list_monitors/cancel_monitor for durable page-change monitoring. " +
         "Access failures are explicit: never treat an isError result as page content. " +
         "Authentication profiles must be created out-of-band by the user.",
     },
@@ -279,6 +295,78 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     async ({ jobId }): Promise<CallToolResult> => {
       try {
         return successResult({ ...app.jobs.cancel(jobId) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "start_monitor",
+    {
+      title: "Start page monitor",
+      description:
+        "Persist a single-page monitor, read it immediately to establish a hash baseline, then schedule live reads.",
+      inputSchema: pageMonitorInput,
+      annotations: { idempotentHint: false, openWorldHint: true },
+    },
+    async ({ url, mode, authProfile, intervalSeconds }): Promise<CallToolResult> => {
+      try {
+        const input = authProfile === undefined
+          ? { url, mode }
+          : { url, mode, authProfile };
+        return successResult({ ...(await app.monitors.start(input, intervalSeconds)) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_monitor",
+    {
+      title: "Get page monitor",
+      description: "Return the monitor schedule, counters, content hashes, and last structured run.",
+      inputSchema: monitorIdInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ monitorId }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.monitors.get(monitorId) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "list_monitors",
+    {
+      title: "List page monitors",
+      description: "List recently created scheduled, running, and cancelled page monitors.",
+      inputSchema: listMonitorsInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ limit }): Promise<CallToolResult> => {
+      try {
+        return successResult({ monitors: app.monitors.list(limit) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "cancel_monitor",
+    {
+      title: "Cancel page monitor",
+      description: "Permanently stop a page monitor and cooperatively cancel its current read.",
+      inputSchema: monitorIdInput,
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    async ({ monitorId }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.monitors.cancel(monitorId) });
       } catch (error) {
         return errorResult(error);
       }

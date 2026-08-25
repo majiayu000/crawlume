@@ -55,6 +55,10 @@ Available tools:
 - `get_crawl`: retrieve durable job status, result, or failure.
 - `cancel_crawl`: cancel a queued job or request cancellation of a running job.
 - `get_crawler_stats`: return local success, failure, cache, method, byte, retry, and duration aggregates.
+- `start_monitor`: persist a single-page live monitor and establish its first content-hash baseline.
+- `get_monitor`: return schedule, counters, hashes, and the last run or structured failure.
+- `list_monitors`: list recent scheduled, running, and cancelled monitors.
+- `cancel_monitor`: permanently stop a monitor and cooperatively cancel its current read.
 - `list_auth_profiles`: list dedicated browser profile names.
 
 Every blocked, authenticated, paid, challenged, unsupported, or incomplete response is returned as MCP `isError: true` with a stable error code.
@@ -82,6 +86,10 @@ This validation does not use an LLM, embeddings, an extra request, or another br
 Crawler statistics are also computed locally without storing URLs, hostnames, page content, search
 queries, proxy addresses, or Authorization Profile names. They measure observable resource proxies
 instead of inventing a monetary cost.
+
+Page monitors force a live read, reuse the extracted SHA-256 content hash, and schedule the next run
+from the previous completion time. The first success establishes a baseline; later runs report
+`changed: true|false`. Failures remain explicit and do not erase the last successful baseline.
 
 ## Command-line usage
 
@@ -118,6 +126,11 @@ It returns a UUID immediately; poll `get_crawl` at a task-appropriate interval a
 `cancel_crawl` when the result is no longer needed. Jobs and results survive process restarts in
 `cache.sqlite`. Normal CLI commands deliberately do not run or recover the background queue, so a
 single data directory should have one active MCP service process.
+
+For continuing change detection, call `start_monitor` with one public URL and an interval from 60
+seconds to 7 days. The MCP service runs it immediately and persists future schedules in
+`cache.sqlite`. Use `get_monitor` or `list_monitors` to observe changes and `cancel_monitor` to stop
+it permanently. Monitor runs never expand to linked pages and never use cached content.
 
 ## Create an authorized browser profile
 

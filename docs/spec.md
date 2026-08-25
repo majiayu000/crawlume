@@ -1,4 +1,4 @@
-# Diaoyan Crawler v0.9
+# Diaoyan Crawler v0.9.1
 
 ## 目标
 
@@ -83,6 +83,17 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 尝试和重试等待按 0 计，避免重复计算已经发生过的上游成本；无请求时成功率和缓存命中率返回
 `null`。
 
+### 页面变化 Monitor
+
+- `start_monitor`：持久化单 URL、读取模式、可选授权 Profile 和 60-604800 秒间隔，立即调度。
+- `get_monitor`：返回状态、下次运行、成功基线 Hash、计数和最后运行。
+- `list_monitors`：返回最近创建的监控，默认 20、最大 100。
+- `cancel_monitor`：永久停止监控；运行中任务收到协作式取消信号。
+
+每次 Monitor 强制实时读取。第一次成功建立基线并返回 `changed=null`，后续相同 Hash 返回
+`false`，不同 Hash 返回 `true` 并更新 `lastChangedAt`。失败写入结构化 `lastRun`，不清空成功
+基线，也不停止下一周期调度。
+
 ### `list_auth_profiles`
 
 列出本地专用浏览器 Profile。不得返回 Cookie、令牌或 Profile 内文件。
@@ -137,6 +148,16 @@ Search 暂不计入，避免把链接发现或搜索 Provider 成功率混入正
 统计仅报告可直接测量的数据，不估算代理、带宽、CPU、浏览器或第三方服务的货币费用。SQLite
 写入或查询失败必须显式失败，不得静默丢失数据。
 
+## 变化检测与定时调度
+
+长期 MCP 服务运行独立的单 Monitor Worker。Worker 只为最近的 `nextRunAt` 注册一次精确计时器，
+不固定频率空轮询。任务完成后从完成时间加间隔，避免慢任务重叠或追赶积压周期。普通 CLI 不
+恢复或执行 Monitor。
+
+遗留 `running` 状态在服务启动时恢复为立即到期的 `scheduled`。应用关闭时取消当前读取并重新
+排队，用户取消则进入永久 `cancelled`。Monitor 只读取创建时的一个 URL，不发现链接、不发送
+Webhook，也不把读取错误转换成“未变化”。
+
 ## 错误代码
 
 - `INVALID_URL`
@@ -163,6 +184,7 @@ Search 暂不计入，避免把链接发现或搜索 Provider 成功率混入正
 - `SEARCH_PROVIDER_NOT_CONFIGURED`
 - `SEARCH_PROVIDER_ERROR`
 - `JOB_NOT_FOUND`
+- `MONITOR_NOT_FOUND`
 - `CRAWL_CANCELLED`
 - `INTERNAL_ERROR`
 
@@ -209,7 +231,7 @@ Search 暂不计入，避免把链接发现或搜索 Provider 成功率混入正
 
 默认数据目录为平台用户数据目录下的 `diaoyan`，可通过 `DIAOYAN_DATA_DIR` 覆盖。
 
-- `cache.sqlite`: 成功正文缓存、持久 Crawl Job 和结果、隐私安全的运行聚合，以及显式启用时的本地 FTS5 全文索引。
+- `cache.sqlite`: 成功正文缓存、持久 Crawl Job、页面 Monitor、隐私安全的运行聚合，以及显式启用时的本地 FTS5 全文索引。
 - `profiles/<name>/`: 专用 Chromium Profile。
 
 Profile 名称只允许字母、数字、点、下划线和连字符。
@@ -223,12 +245,13 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
 - 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
 - 单元测试覆盖低成本验收状态与稳定 warning code。
-- MCP 客户端可以列出并调用十个工具。
+- MCP 客户端可以列出并调用十四个工具。
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。
 - HTTP 和浏览器可使用管理员代理池，Profile 绑定稳定且结果不泄露代理配置。
 - 匿名浏览器复用有界实例并逐页隔离 Context，池容量等待可取消、超时和安全关闭。
 - 内容读取按 UTC 日持久聚合成功、失败、缓存、方法和成本证据，且不保存 URL 或正文。
+- 页面 Monitor 可建立 Hash 基线、检测变化、失败后继续调度、取消并在服务重启后恢复。
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。
