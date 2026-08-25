@@ -123,6 +123,32 @@ describe("MCP server", () => {
         cancel: vi.fn(() => jobResult("cancelled")),
       },
       profiles: { list: () => ["work"] },
+      metrics: {
+        getStats: vi.fn(() => ({
+          status: "ok" as const,
+          generatedAt: "2026-08-25T00:00:00.000Z",
+          since: "2026-08-19T00:00:00.000Z",
+          days: 7,
+          totals: {
+            requests: 4,
+            successes: 3,
+            failures: 1,
+            successRate: 0.75,
+            cacheHits: 1,
+            cacheHitRate: 1 / 3,
+          },
+          fetchMethods: { http: 2, browser: 1 },
+          cost: {
+            responseBytes: 1_000,
+            contentCharacters: 800,
+            attempts: 4,
+            retryDelayMs: 0,
+            durationMs: 500,
+          },
+          failureReasons: [{ code: "ACCESS_DENIED", count: 1 }],
+          daily: [],
+        })),
+      },
       close: async () => undefined,
     } as unknown as DiaoyanApp;
     const client = await connect(app);
@@ -135,6 +161,7 @@ describe("MCP server", () => {
       "crawl_site",
       "start_crawl",
       "get_crawl",
+      "get_crawler_stats",
       "cancel_crawl",
       "read_page",
       "search_web",
@@ -190,6 +217,15 @@ describe("MCP server", () => {
       arguments: { jobId: "00000000-0000-4000-8000-000000000001" },
     });
     expect(cancelled.structuredContent).toMatchObject({ status: "cancelled" });
+
+    const stats = await client.callTool({
+      name: "get_crawler_stats",
+      arguments: { days: 7 },
+    });
+    expect(stats.structuredContent).toMatchObject({
+      status: "ok",
+      totals: { requests: 4, successes: 3, failures: 1 },
+    });
   });
 
   it("returns structured tool errors with isError", async () => {

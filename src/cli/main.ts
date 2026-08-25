@@ -25,6 +25,7 @@ const usage = `Usage:
   diaoyan map <url> [options]
   diaoyan crawl <url> [options]
   diaoyan search <query> [options]
+  diaoyan stats [--days <1-90>]
 
 Options:
   --mode <auto|http|browser>                 Fetch strategy (default: auto)
@@ -42,6 +43,7 @@ Options:
   --safe-search <0|1|2>                      Search filtering level (default: 1)
   --time-range <day|month|year>              Optional search time range
   --source <auto|local|web>                  Search local index, web, or both (default: auto)
+  --days <count>                             Statistics window in UTC days (default: 7, max: 90)
   -h, --help                                 Show this help
 `;
 
@@ -50,7 +52,8 @@ export type CliAction =
   | { kind: "read"; options: ReadPageOptions; markdown: boolean }
   | { kind: "map"; options: import("../types.js").MapSiteOptions }
   | { kind: "crawl"; options: import("../types.js").CrawlSiteOptions }
-  | { kind: "search"; options: SearchWebOptions };
+  | { kind: "search"; options: SearchWebOptions }
+  | { kind: "stats"; days: number };
 
 function nextValue(argv: string[], index: number, flag: string): string {
   const value = argv[index + 1];
@@ -163,18 +166,54 @@ function parseSearchCli(argv: string[]): CliAction {
   };
 }
 
+function parseStatsCli(argv: string[]): CliAction {
+  let days = 7;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--help" || argument === "-h") {
+      return { kind: "help" };
+    }
+    if (argument === "--days") {
+      const value = nextValue(argv, index, argument);
+      days = Number(value);
+      if (!Number.isSafeInteger(days) || days < 1 || days > 90) {
+        throw new ReadError("INVALID_ARGUMENT", "--days must be an integer between 1 and 90.", {
+          details: { value },
+        });
+      }
+      index += 1;
+      continue;
+    }
+    throw new ReadError("INVALID_ARGUMENT", "Unknown stats option.", {
+      details: { option: argument ?? null },
+    });
+  }
+  return { kind: "stats", days };
+}
+
 export function parseCli(argv: string[]): CliAction {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     return { kind: "help" };
   }
   const command = argv[0];
-  if (command !== "read" && command !== "map" && command !== "crawl" && command !== "search") {
-    throw new ReadError("INVALID_ARGUMENT", "Supported commands are read, map, crawl, and search.", {
-      details: { command: argv[0] ?? null },
-    });
+  if (
+    command !== "read" &&
+    command !== "map" &&
+    command !== "crawl" &&
+    command !== "search" &&
+    command !== "stats"
+  ) {
+    throw new ReadError(
+      "INVALID_ARGUMENT",
+      "Supported commands are read, map, crawl, search, and stats.",
+      { details: { command: argv[0] ?? null } },
+    );
   }
   if (command === "search") {
     return parseSearchCli(argv.slice(1));
+  }
+  if (command === "stats") {
+    return parseStatsCli(argv.slice(1));
   }
 
   let url: string | null = null;
@@ -353,8 +392,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       process.stdout.write(`${JSON.stringify(await app.site.mapSite(action.options), null, 2)}\n`);
     } else if (action.kind === "crawl") {
       process.stdout.write(`${JSON.stringify(await app.site.crawlSite(action.options), null, 2)}\n`);
-    } else {
+    } else if (action.kind === "search") {
       process.stdout.write(`${JSON.stringify(await app.search.searchWeb(action.options), null, 2)}\n`);
+    } else {
+      process.stdout.write(`${JSON.stringify(app.metrics.getStats(action.days), null, 2)}\n`);
     }
     return 0;
   } catch (error) {

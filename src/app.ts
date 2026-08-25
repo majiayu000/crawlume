@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { LocalPageIndex } from "./index.js";
 import { CrawlJobService, CrawlJobStore } from "./jobs.js";
+import { CrawlerMetrics } from "./metrics.js";
 import { ProxyPool } from "./proxy.js";
 import { ProfileManager } from "./profiles.js";
 import { ReaderService } from "./reader.js";
@@ -19,6 +20,7 @@ export type DiaoyanApp = {
   site: SiteService;
   jobs: CrawlJobService;
   search: SearchService;
+  metrics: CrawlerMetrics;
   close(): Promise<void>;
 };
 
@@ -32,6 +34,7 @@ export function createApp(
   const robots = new RobotsPolicy(config, transport);
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
+  const metrics = new CrawlerMetrics(config.cachePath);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
   const crawlPolicy = new CrawlRequestPolicy(config);
   const httpFetcher = new HttpPageFetcher(transport, robots);
@@ -44,6 +47,7 @@ export function createApp(
     browserFetcher,
     localIndex,
     crawlPolicy,
+    metrics,
   );
   const site = new SiteService(urlPolicy, reader, httpFetcher, browserFetcher, crawlPolicy);
   const searchProvider = config.searxngUrl === null
@@ -66,11 +70,13 @@ export function createApp(
     site,
     jobs,
     search,
+    metrics,
     async close(): Promise<void> {
       await jobs.close();
       await browserFetcher.close();
       reader.close();
       localIndex?.close();
+      metrics.close();
       await transport.close();
     },
   };

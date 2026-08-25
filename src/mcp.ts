@@ -60,6 +60,10 @@ const crawlJobInput = z.object({
   jobId: z.uuid().describe("Crawl job ID returned by start_crawl."),
 });
 
+const crawlerStatsInput = z.object({
+  days: z.int().min(1).max(90).default(7),
+});
+
 function successResult(value: Record<string, unknown>): CallToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -121,12 +125,12 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
 
 export function createMcpServer(app: DiaoyanApp): McpServer {
   const server = new McpServer(
-    { name: "diaoyan-web-reader", version: "0.8.0" },
+    { name: "diaoyan-web-reader", version: "0.9.0" },
     {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, start_crawl/get_crawl/cancel_crawl for durable asynchronous crawling, " +
-        "and inspect_page for diagnostics. " +
+        "inspect_page for diagnostics, and get_crawler_stats for local operational metrics. " +
         "Access failures are explicit: never treat an isError result as page content. " +
         "Authentication profiles must be created out-of-band by the user.",
     },
@@ -275,6 +279,24 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     async ({ jobId }): Promise<CallToolResult> => {
       try {
         return successResult({ ...app.jobs.cancel(jobId) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_crawler_stats",
+    {
+      title: "Get crawler statistics",
+      description:
+        "Return privacy-preserving daily success, failure, cache, method, byte, retry, and duration aggregates.",
+      inputSchema: crawlerStatsInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ days }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.metrics.getStats(days) });
       } catch (error) {
         return errorResult(error);
       }

@@ -122,6 +122,11 @@ describe("diaoyan CLI", () => {
     });
   });
 
+  it("parses crawler statistics with a bounded UTC day window", () => {
+    expect(parseCli(["stats"])).toEqual({ kind: "stats", days: 7 });
+    expect(parseCli(["stats", "--days", "30"])).toEqual({ kind: "stats", days: 30 });
+  });
+
   it.each([
     [["read"], "read requires a URL"],
     [["write", "https://example.com"], "Supported commands"],
@@ -136,6 +141,8 @@ describe("diaoyan CLI", () => {
     [["search", "query", "--limit", "21"], "between 1 and 20"],
     [["search", "query", "--time-range", "week"], "unsupported value"],
     [["search", "query", "--source", "remote"], "unsupported value"],
+    [["stats", "--days", "0"], "between 1 and 90"],
+    [["stats", "unexpected"], "Unknown stats option"],
   ])("rejects invalid arguments", (argv, message) => {
     expect(() => parseCli(argv)).toThrow(message);
   });

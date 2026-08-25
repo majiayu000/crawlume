@@ -4,8 +4,9 @@ import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
 import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { extractPage } from "./extract.js";
-import { ReadError } from "./errors.js";
+import { normalizeError, ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
+import { CrawlerMetrics } from "./metrics.js";
 import type {
   InspectPageResult,
   PageReadArtifact,
@@ -43,6 +44,7 @@ export class ReaderService {
     private readonly browserFetcher: PageFetcher,
     private readonly localIndex: LocalPageIndex | null = null,
     private readonly crawlPolicy: CrawlRequestPolicy | null = null,
+    private readonly metrics: CrawlerMetrics | null = null,
   ) {}
 
   async readPage(options: ReadPageOptions): Promise<ReadPageResult> {
@@ -50,6 +52,19 @@ export class ReaderService {
   }
 
   async readPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
+    const startedAt = Date.now();
+    let result: PageReadArtifact;
+    try {
+      result = await this.executeReadPageArtifact(options);
+    } catch (error) {
+      this.metrics?.recordFailure(normalizeError(error), Date.now() - startedAt);
+      throw error;
+    }
+    this.metrics?.recordSuccess(result, Date.now() - startedAt);
+    return result;
+  }
+
+  private async executeReadPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
     const mode = options.mode ?? "auto";
     const cacheMode = options.cacheMode ?? "prefer-cache";
     const maxAgeSeconds = options.maxAgeSeconds ?? this.config.defaultCacheSeconds;

@@ -54,6 +54,7 @@ Available tools:
 - `start_crawl`: persist and start a bounded asynchronous crawl job.
 - `get_crawl`: retrieve durable job status, result, or failure.
 - `cancel_crawl`: cancel a queued job or request cancellation of a running job.
+- `get_crawler_stats`: return local success, failure, cache, method, byte, retry, and duration aggregates.
 - `list_auth_profiles`: list dedicated browser profile names.
 
 Every blocked, authenticated, paid, challenged, unsupported, or incomplete response is returned as MCP `isError: true` with a stable error code.
@@ -78,6 +79,10 @@ Successful reads include a zero-external-call validation result:
 
 This validation does not use an LLM, embeddings, an extra request, or another browser pass.
 
+Crawler statistics are also computed locally without storing URLs, hostnames, page content, search
+queries, proxy addresses, or Authorization Profile names. They measure observable resource proxies
+instead of inventing a monetary cost.
+
 ## Command-line usage
 
 Use the same reader directly without an MCP client:
@@ -91,9 +96,11 @@ pnpm cli -- crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 
 DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli -- search MiniMax H3 推理优化 --language zh-CN
 pnpm cli -- crawl https://example.com/docs --max-pages 20
 pnpm cli -- search inference optimization --source local
+pnpm cli -- stats --days 7
 ```
 
-After installing or linking the package, use `diaoyan search`, `diaoyan read`, `diaoyan map`, or `diaoyan crawl`.
+After installing or linking the package, use `diaoyan search`, `diaoyan read`, `diaoyan map`,
+`diaoyan crawl`, or `diaoyan stats`.
 JSON is the default output so scripts and Agents can inspect evidence and stable error codes;
 `--markdown` prints only the extracted page body. Run `diaoyan --help` for all options.
 

@@ -208,6 +208,47 @@ export type SearchWebResult = {
   warnings: SearchWarning[];
 };
 
+export type CrawlerStatsDay = {
+  date: string;
+  requests: number;
+  successes: number;
+  failures: number;
+  cacheHits: number;
+  responseBytes: number;
+  durationMs: number;
+};
+
+export type CrawlerStatsResult = {
+  status: "ok";
+  generatedAt: string;
+  since: string;
+  days: number;
+  totals: {
+    requests: number;
+    successes: number;
+    failures: number;
+    successRate: number | null;
+    cacheHits: number;
+    cacheHitRate: number | null;
+  };
+  fetchMethods: {
+    http: number;
+    browser: number;
+  };
+  cost: {
+    responseBytes: number;
+    contentCharacters: number;
+    attempts: number;
+    retryDelayMs: number;
+    durationMs: number;
+  };
+  failureReasons: Array<{
+    code: string;
+    count: number;
+  }>;
+  daily: CrawlerStatsDay[];
+};
+
 export interface PageFetcher {
   fetch(url: URL, authProfile?: string, signal?: AbortSignal): Promise<RawPage>;
 }

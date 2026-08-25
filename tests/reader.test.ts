@@ -4,18 +4,21 @@ import { PageCache } from "../src/cache.js";
 import { CrawlRequestPolicy } from "../src/crawl-policy.js";
 import { ReadError } from "../src/errors.js";
 import { LocalPageIndex } from "../src/index.js";
+import { CrawlerMetrics } from "../src/metrics.js";
 import { ReaderService } from "../src/reader.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
 import type { PageFetcher, RawPage } from "../src/types.js";
 import { publicResolver, rawPage, StubFetcher, testConfig } from "./helpers.js";
 
 const readers: ReaderService[] = [];
+const metricsStores: CrawlerMetrics[] = [];
 
 function readerWith(
   http: StubFetcher,
   browser: StubFetcher,
   localIndex: LocalPageIndex | null = null,
   crawlPolicy: CrawlRequestPolicy | null = null,
+  metrics: CrawlerMetrics | null = null,
 ): ReaderService {
   const reader = new ReaderService(
     testConfig(),
@@ -25,6 +28,7 @@ function readerWith(
     browser,
     localIndex,
     crawlPolicy,
+    metrics,
   );
   readers.push(reader);
   return reader;
@@ -33,6 +37,9 @@ function readerWith(
 afterEach(() => {
   while (readers.length > 0) {
     readers.pop()?.close();
+  }
+  while (metricsStores.length > 0) {
+    metricsStores.pop()?.close();
   }
 });
 
@@ -73,6 +80,45 @@ describe("ReaderService", () => {
     expect(first.cached).toBe(false);
     expect(second.cached).toBe(true);
     expect(http.calls).toBe(1);
+  });
+
+  it("records live and cached reads in crawler statistics", async () => {
+    const metrics = new CrawlerMetrics(":memory:");
+    metricsStores.push(metrics);
+    const http = new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() }));
+    const reader = readerWith(http, new StubFetcher(new Error("unused")), null, null, metrics);
+
+    await reader.readPage({ url: "https://example.com/article", mode: "http" });
+    await reader.readPage({ url: "https://example.com/article", mode: "http" });
+
+    expect(metrics.getStats(1)).toMatchObject({
+      totals: { requests: 2, successes: 2, failures: 0, cacheHits: 1 },
+      fetchMethods: { http: 1, browser: 0 },
+      cost: { attempts: 1 },
+    });
+  });
+
+  it("records normalized reader failures in crawler statistics", async () => {
+    const metrics = new CrawlerMetrics(":memory:");
+    metricsStores.push(metrics);
+    const reader = readerWith(
+      new StubFetcher(new ReadError("ACCESS_DENIED", "denied")),
+      new StubFetcher(new Error("unused")),
+      null,
+      null,
+      metrics,
+    );
+
+    await expect(reader.readPage({
+      url: "https://example.com/denied",
+      mode: "http",
+      cacheMode: "live",
+    })).rejects.toMatchObject({ code: "ACCESS_DENIED" });
+
+    expect(metrics.getStats(1)).toMatchObject({
+      totals: { requests: 1, successes: 0, failures: 1 },
+      failureReasons: [{ code: "ACCESS_DENIED", count: 1 }],
+    });
   });
 
   it("reports a cache-only miss", async () => {
