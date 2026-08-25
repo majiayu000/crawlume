@@ -17,6 +17,7 @@ export function testConfig(): AppConfig {
     rslUserClass: null,
     rslGeo: null,
     rslApprovalsPath: "/tmp/diaoyan-test/rsl-approvals.json",
+    rslClientsPath: "/tmp/diaoyan-test/rsl-clients.json",
     requestTimeoutMs: 2_000,
     browserTimeoutMs: 2_000,
     maxResponseBytes: 1_000_000,

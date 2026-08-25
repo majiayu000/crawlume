@@ -151,9 +151,9 @@ HTTP RSL Link、HTML RSL link 和 inline script。外部 RSL 文件继续经过 
 响应大小和内容类型校验；声明存在但无法安全判断时返回 `RSL_INVALID`，不得静默放行。
 
 管理员通过 `DIAOYAN_RSL_USAGE` 声明稳定用途，默认 `ai-input`；可选配置真实的 user class 与 geo。
-明确禁止返回 `RSL_PROHIBITED`，License Server 返回 `RSL_LICENSE_REQUIRED`，付费或 custom 流程返回
-`RSL_PAYMENT_REQUIRED`，归因、standard、reporting、legal 或 terms 返回
-`RSL_CONFIRMATION_REQUIRED`。首版不自动购买、接受协议、提交报告或获取 OLP Token。
+明确禁止返回 `RSL_PROHIBITED`，缺少对应 OLP client 的 License Server 返回
+`RSL_LICENSE_REQUIRED`，付费或 custom 流程返回 `RSL_PAYMENT_REQUIRED`，未批准的归因、standard、
+reporting、legal 或 terms 返回 `RSL_CONFIRMATION_REQUIRED`。服务不自动购买许可或提交报告。
 
 新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
 支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS 与媒体容器元数据
@@ -170,6 +170,18 @@ HTTP RSL Link、HTML RSL link 和 inline script。外部 RSL 文件继续经过 
 状态、RSL 决策、许可 URL/Hash 和批准数量。审计不保存正文、标题、authProfile、Token、Cookie、
 客户端密钥或代理配置。写入失败必须使读取失败。`diaoyan rsl-audit` 和 `get_rsl_audit` 只读返回
 最近最多 1000 条安全字段。完整约束见 `docs/rsl-approval-audit-spec.md`。
+
+## RSL OLP 与 CAP
+
+管理员可在 mode-0600 的 `DIAOYAN_RSL_CLIENTS_PATH` 中为精确 HTTPS License Server 配置 OAuth
+client。只有已经满足用途/用户/地区约束、没有付费或 reporting 条款、且其非付款义务已精确批准的
+许可可以请求 OLP `/token`。请求使用直连 HTTPS、HTTP Basic、表单编码、64 KiB 响应上限且禁止
+重定向；返回的 opaque Token 只保存在进程内存。
+
+HTTP 主文档通过 robots 预声明或一次 401/402 challenge 获得 Token 后使用
+`Authorization: License <token>`。浏览器只对主 frame 导航使用 robots 预声明的 Token。每个
+重定向目标独立重新判断，不继承前一目标的 Header。证据与逐次审计只记录实际应用 Token 的数量，
+不记录 Token 或 client ID。完整边界见 `docs/rsl-olp-cap-spec.md`。
 
 ## 浏览器 Worker 池
 

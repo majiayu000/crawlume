@@ -18,6 +18,7 @@ type AuditRow = {
   license_urls_json: string;
   license_hashes_json: string;
   approvals_applied: number;
+  license_tokens_applied: number;
 };
 
 function safeUrl(value: string | null): string | null {
@@ -73,9 +74,18 @@ export class RslAccessAudit {
         rsl_usage TEXT NOT NULL,
         license_urls_json TEXT NOT NULL,
         license_hashes_json TEXT NOT NULL,
-        approvals_applied INTEGER NOT NULL CHECK(approvals_applied >= 0)
+        approvals_applied INTEGER NOT NULL CHECK(approvals_applied >= 0),
+        license_tokens_applied INTEGER NOT NULL DEFAULT 0 CHECK(license_tokens_applied >= 0)
       ) STRICT;
     `);
+    const columns = this.database.prepare("PRAGMA table_info(rsl_access_audit)").all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((column) => column.name === "license_tokens_applied")) {
+      this.database.exec(
+        "ALTER TABLE rsl_access_audit ADD COLUMN license_tokens_applied INTEGER NOT NULL DEFAULT 0 CHECK(license_tokens_applied >= 0)",
+      );
+    }
   }
 
   recordSuccess(result: ReadPageResult): void {
@@ -91,6 +101,7 @@ export class RslAccessAudit {
       licenseUrls: (rsl?.licenseUrls ?? []).map((url) => safeUrl(url)).filter((url) => url !== null),
       licenseHashes: rsl?.licenseHashes ?? [],
       approvalsApplied: rsl?.approvalsApplied ?? 0,
+      licenseTokensApplied: rsl?.licenseTokensApplied ?? 0,
     });
   }
 
@@ -108,6 +119,7 @@ export class RslAccessAudit {
       licenseUrls: licenseUrl === null ? [] : [licenseUrl],
       licenseHashes: licenseHash === null ? [] : [licenseHash],
       approvalsApplied: 0,
+      licenseTokensApplied: 0,
     });
   }
 
@@ -121,7 +133,7 @@ export class RslAccessAudit {
       .prepare(
         `SELECT id, occurred_at, request_url, final_url, outcome, error_code, fetch_method,
                 cached, rsl_status, rsl_usage, license_urls_json, license_hashes_json,
-                approvals_applied
+                approvals_applied, license_tokens_applied
          FROM rsl_access_audit
          ORDER BY id DESC
          LIMIT ?`,
@@ -151,6 +163,7 @@ export class RslAccessAudit {
         licenseUrls: safeJsonArray(row.license_urls_json),
         licenseHashes: safeJsonArray(row.license_hashes_json),
         approvalsApplied: row.approvals_applied,
+        licenseTokensApplied: row.license_tokens_applied,
       })),
     };
   }
@@ -170,14 +183,16 @@ export class RslAccessAudit {
     licenseUrls: string[];
     licenseHashes: string[];
     approvalsApplied: number;
+    licenseTokensApplied: number;
   }): void {
     try {
       this.database
         .prepare(
           `INSERT INTO rsl_access_audit(
              occurred_at, request_url, final_url, outcome, error_code, fetch_method, cached,
-             rsl_status, rsl_usage, license_urls_json, license_hashes_json, approvals_applied
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             rsl_status, rsl_usage, license_urls_json, license_hashes_json, approvals_applied,
+             license_tokens_applied
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           new Date(this.now()).toISOString(),
@@ -192,6 +207,7 @@ export class RslAccessAudit {
           JSON.stringify(values.licenseUrls),
           JSON.stringify(values.licenseHashes),
           values.approvalsApplied,
+          values.licenseTokensApplied,
         );
     } catch (error) {
       if (error instanceof ReadError) throw error;

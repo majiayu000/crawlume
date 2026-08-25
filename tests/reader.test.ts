@@ -89,6 +89,30 @@ describe("ReaderService", () => {
     expect(http.calls).toBe(1);
   });
 
+  it("never persists CAP-authorized content in the page cache or local index", async () => {
+    const index = new LocalPageIndex(":memory:");
+    const http = new StubFetcher(rawPage({
+      fetchedAt: new Date().toISOString(),
+      rsl: {
+        status: "permitted",
+        usage: "ai-input",
+        discoveredBy: ["robots"],
+        licenseUrls: ["https://example.com/license.xml"],
+        licenseHashes: [`sha256:${"c".repeat(64)}`],
+        approvalsApplied: 0,
+        licenseTokensApplied: 1,
+      },
+    }));
+    const reader = readerWith(http, new StubFetcher(new Error("unused")), index);
+
+    await reader.readPage({ url: "https://example.com/licensed", mode: "http" });
+    await reader.readPage({ url: "https://example.com/licensed", mode: "http" });
+
+    expect(http.calls).toBe(2);
+    expect(index.count()).toBe(0);
+    index.close();
+  });
+
   it("records live and cached reads in crawler statistics", async () => {
     const metrics = new CrawlerMetrics(":memory:");
     metricsStores.push(metrics);
@@ -245,6 +269,7 @@ describe("ReaderService", () => {
       licenseUrls: ["https://example.com/license.xml"],
       licenseHashes: ["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
       approvalsApplied: 0,
+      licenseTokensApplied: 0,
     };
     const page = await readerWith(
       new StubFetcher(rawPage({ rsl })),

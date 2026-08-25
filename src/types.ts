@@ -39,6 +39,7 @@ export type RslEvidence = {
   licenseUrls: string[];
   licenseHashes: string[];
   approvalsApplied: number;
+  licenseTokensApplied: number;
 };
 
 export type RslAccessAuditEntry = {
@@ -55,6 +56,7 @@ export type RslAccessAuditEntry = {
   licenseUrls: string[];
   licenseHashes: string[];
   approvalsApplied: number;
+  licenseTokensApplied: number;
 };
 
 export type RslAccessAuditResult = {

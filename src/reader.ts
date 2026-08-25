@@ -134,8 +134,10 @@ export class ReaderService {
       },
     };
 
-    this.cache.put(key, result);
-    this.localIndex?.put(result);
+    if ((result.evidence.rsl?.licenseTokensApplied ?? 0) === 0) {
+      this.cache.put(key, result);
+      this.localIndex?.put(result);
+    }
     return result;
   }
 

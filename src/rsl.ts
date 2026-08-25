@@ -8,6 +8,8 @@ import type { TransportResponse } from "./fetch/http.js";
 import type { RslDiscoveryMethod, RslEvidence } from "./types.js";
 import type { HttpTransport } from "./fetch/http.js";
 import { RslApprovalStore } from "./rsl-approvals.js";
+import { normalizeRslServer } from "./rsl-client-credentials.js";
+import { RslOlpClient } from "./rsl-olp.js";
 
 const RSL_NAMESPACE = "https://rslstandard.org/rsl";
 const RSL_MEDIA_TYPE = "application/rsl+xml";
@@ -53,6 +55,12 @@ type Outcome = "permitted" | "prohibited" | "license" | "payment" | "confirmatio
 type LicenseEvaluation = {
   outcome: Outcome;
   obligations: string[];
+  server: string | null;
+};
+
+export type RslAccessDecision = {
+  evidence: RslEvidence;
+  authorization: string | null;
 };
 
 function directChildren(element: Element, localName?: string): Element[] {
@@ -152,15 +160,21 @@ function constraintOutcome(
 }
 
 function evaluateLicense(content: Element, license: Element, config: AppConfig): LicenseEvaluation {
+  let server: string | null = null;
+  const declaredServer = content.getAttribute("server");
+  if (declaredServer !== null) {
+    try {
+      server = normalizeRslServer(declaredServer);
+    } catch {
+      throw new ReadError("RSL_INVALID", "The RSL License Server must be a valid HTTPS URL.");
+    }
+  }
   const usageConstraint = constraintOutcome(license, "usage", config.rslUsage, usageMatches);
   const userConstraint = constraintOutcome(license, "user", config.rslUserClass);
   const geoConstraint = constraintOutcome(license, "geo", config.rslGeo);
   const constraints = [usageConstraint, userConstraint, geoConstraint];
   if (constraints.includes("prohibited")) {
-    return { outcome: "prohibited", obligations: [] };
-  }
-  if (content.getAttribute("server") !== null) {
-    return { outcome: "license", obligations: [] };
+    return { outcome: "prohibited", obligations: [], server };
   }
   const obligations: string[] = [];
   const payment = directChildren(license, "payment")[0];
@@ -176,7 +190,7 @@ function evaluateLicense(content: Element, license: Element, config: AppConfig):
       paymentType === null ||
       ["purchase", "subscription", "training", "crawl", "use", "contribution"].includes(paymentType)
     ) {
-      return { outcome: "payment", obligations: [] };
+      return { outcome: "payment", obligations: [], server };
     }
     if (paymentType !== "free" && paymentType !== "attribution") {
       throw new ReadError("RSL_INVALID", "The RSL document contains an unsupported payment type.", {
@@ -202,9 +216,9 @@ function evaluateLicense(content: Element, license: Element, config: AppConfig):
     constraints.includes("confirmation") ||
     normalizedObligations.length > 0
   ) {
-    return { outcome: "confirmation", obligations: normalizedObligations };
+    return { outcome: "confirmation", obligations: normalizedObligations, server };
   }
-  return { outcome: "permitted", obligations: [] };
+  return { outcome: "permitted", obligations: [], server };
 }
 
 function licenseHash(license: Element): string {
@@ -348,12 +362,14 @@ function outcomePriority(outcome: Outcome): number {
 export class RslPolicy {
   private readonly cache = new Map<string, CachedRsl>();
   private readonly approvals: RslApprovalStore;
+  private readonly olp: RslOlpClient;
 
   constructor(
     private readonly config: AppConfig,
     private readonly transport: HttpTransport,
   ) {
     this.approvals = new RslApprovalStore(config.rslApprovalsPath);
+    this.olp = new RslOlpClient(config.rslClientsPath, transport);
   }
 
   get approvalContextHash(): string {
@@ -368,10 +384,29 @@ export class RslPolicy {
       licenseUrls: [],
       licenseHashes: [],
       approvalsApplied: 0,
+      licenseTokensApplied: 0,
     };
   }
 
   async evaluateRobots(target: URL, licenseUrls: string[]): Promise<RslEvidence> {
+    return (await this.evaluate(
+      target,
+      licenseUrls.map((licenseUrl) => ({
+        method: "robots",
+        licenseUrl,
+        inlineXml: null,
+        htmlScope: false,
+      })),
+      false,
+      null,
+    )).evidence;
+  }
+
+  async authorizeRobots(
+    target: URL,
+    licenseUrls: string[],
+    presentedAuthorization: string | null = null,
+  ): Promise<RslAccessDecision> {
     return this.evaluate(
       target,
       licenseUrls.map((licenseUrl) => ({
@@ -380,10 +415,22 @@ export class RslPolicy {
         inlineXml: null,
         htmlScope: false,
       })),
+      true,
+      presentedAuthorization,
     );
   }
 
   async evaluateResponse(target: URL, response: TransportResponse): Promise<RslEvidence> {
+    return (await this.authorizeResponse(target, response, false)).evidence;
+  }
+
+  async authorizeResponse(
+    target: URL,
+    response: TransportResponse,
+    acquireToken = true,
+    presentedAuthorization: string | null = null,
+    refreshPresentedToken = false,
+  ): Promise<RslAccessDecision> {
     const associations: Association[] = rslLinksFromHeader(response.linkHeader).map((licenseUrl) => ({
       method: "http-link",
       licenseUrl,
@@ -396,7 +443,13 @@ export class RslPolicy {
     } else if (mediaType === "text/html" || mediaType === "application/xhtml+xml") {
       associations.push(...htmlAssociations(response.body));
     }
-    return this.evaluate(target, associations);
+    return this.evaluate(
+      target,
+      associations,
+      acquireToken,
+      presentedAuthorization,
+      refreshPresentedToken,
+    );
   }
 
   private async load(association: Association): Promise<ParsedRsl> {
@@ -436,14 +489,35 @@ export class RslPolicy {
     return parsed;
   }
 
-  private async evaluate(target: URL, associations: Association[]): Promise<RslEvidence> {
-    if (associations.length === 0) return this.emptyEvidence();
+  private async evaluate(
+    target: URL,
+    associations: Association[],
+    acquireTokens: boolean,
+    presentedAuthorization: string | null,
+    refreshPresentedToken = false,
+  ): Promise<RslAccessDecision> {
+    if (associations.length === 0) {
+      return { evidence: this.emptyEvidence(), authorization: null };
+    }
     let effective: Outcome = "permitted";
     let applicable = false;
-    let approvalsApplied = 0;
+    const appliedApprovals = new Set<string>();
     const licenseHashes: string[] = [];
+    let authorization: string | null = null;
+    const tokenRequirements = new Map<string, {
+      server: string;
+      licenseHash: string;
+      licenseXml: string;
+      resource: string;
+    }>();
     let blocking:
-      | { outcome: Outcome; licenseHash: string; resource: string; obligations: string[] }
+      | {
+          outcome: Outcome;
+          licenseHash: string;
+          resource: string;
+          obligations: string[];
+          server: string | null;
+        }
       | null = null;
     for (const association of associations) {
       const parsed = await this.load(association);
@@ -465,36 +539,53 @@ export class RslPolicy {
               obligations: evaluation.obligations,
             })
           ) {
-            approvalsApplied += 1;
-            evaluation = { outcome: "permitted", obligations: [] };
+            appliedApprovals.add(JSON.stringify([hash, resource]));
+            evaluation = { ...evaluation, outcome: "permitted", obligations: [] };
           }
-          if (outcomePriority(evaluation.outcome) > outcomePriority(effective)) {
-            effective = evaluation.outcome;
+          let policyOutcome = evaluation.outcome;
+          if (evaluation.outcome === "permitted" && evaluation.server !== null) {
+            if (!acquireTokens) {
+              policyOutcome = "license";
+            } else {
+              tokenRequirements.set(JSON.stringify([evaluation.server, hash, resource]), {
+                server: evaluation.server,
+                licenseHash: hash,
+                licenseXml: license.outerHTML,
+                resource,
+              });
+            }
+          }
+          if (outcomePriority(policyOutcome) > outcomePriority(effective)) {
+            effective = policyOutcome;
             blocking = {
-              outcome: evaluation.outcome,
+              outcome: policyOutcome,
               licenseHash: hash,
               resource,
               obligations: evaluation.obligations,
+              server: evaluation.server,
             };
           }
         }
       }
     }
-    const evidence: RslEvidence = {
+    const evidenceBase = {
       status: applicable ? "permitted" : "not-applicable",
       usage: this.config.rslUsage,
       discoveredBy: [...new Set(associations.map((association) => association.method))],
       licenseUrls: [...new Set(associations.flatMap((association) => association.licenseUrl ?? []))],
       licenseHashes: [...new Set(licenseHashes)],
-      approvalsApplied,
-    };
-    if (!applicable) return evidence;
+      approvalsApplied: appliedApprovals.size,
+    } satisfies Omit<RslEvidence, "licenseTokensApplied">;
+    if (!applicable) {
+      return { evidence: { ...evidenceBase, licenseTokensApplied: 0 }, authorization: null };
+    }
     const details = {
       usage: this.config.rslUsage,
-      licenseUrl: evidence.licenseUrls[0] ?? null,
+      licenseUrl: evidenceBase.licenseUrls[0] ?? null,
       licenseHash: blocking?.licenseHash ?? null,
       resource: blocking?.resource ?? null,
       obligations: blocking?.obligations.join(",") ?? "",
+      licenseServer: blocking?.server ?? null,
     };
     if (effective === "prohibited") {
       throw new ReadError("RSL_PROHIBITED", "RSL prohibits this use of the content.", { details });
@@ -518,6 +609,45 @@ export class RslPolicy {
         { details },
       );
     }
-    return evidence;
+    if (tokenRequirements.size > 1) {
+      const first = tokenRequirements.values().next().value;
+      throw new ReadError(
+        "RSL_LICENSE_REQUIRED",
+        "The resource requires multiple License Tokens, which is not supported.",
+        {
+          details: {
+            licenseHash: first?.licenseHash ?? null,
+            resource: first?.resource ?? null,
+          },
+        },
+      );
+    }
+    const requirement = tokenRequirements.values().next().value;
+    if (requirement !== undefined) {
+      if (refreshPresentedToken && presentedAuthorization !== null) {
+        this.olp.invalidate(presentedAuthorization);
+      }
+      try {
+        authorization = await this.olp.acquire(requirement);
+      } catch (error) {
+        if (error instanceof ReadError) {
+          throw new ReadError(error.code, error.message, {
+            retryable: error.retryable,
+            details: {
+              ...error.details,
+              licenseHash: requirement.licenseHash,
+              resource: requirement.resource,
+            },
+          });
+        }
+        throw error;
+      }
+    }
+    const evidence: RslEvidence = {
+      ...evidenceBase,
+      licenseTokensApplied:
+        authorization !== null && authorization === presentedAuthorization ? 1 : 0,
+    };
+    return { evidence, authorization };
   }
 }

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -40,6 +41,7 @@ function result(overrides: Partial<ReadPageResult> = {}): ReadPageResult {
         licenseUrls: ["https://licenses.example/license.xml?token=secret"],
         licenseHashes: [`sha256:${"a".repeat(64)}`],
         approvalsApplied: 1,
+        licenseTokensApplied: 0,
       },
     },
     ...overrides,
@@ -72,6 +74,7 @@ describe("RslAccessAudit", () => {
         licenseUrls: ["https://licenses.example/license.xml"],
         licenseHashes: [`sha256:${"a".repeat(64)}`],
         approvalsApplied: 1,
+        licenseTokensApplied: 0,
       }),
     ]);
     const serialized = JSON.stringify(listed);
@@ -123,6 +126,42 @@ describe("RslAccessAudit", () => {
     stores.push(reopened);
     expect(reopened.list(1).entries).toMatchObject([{ cached: true }]);
     expect(() => reopened.list(1_001)).toThrow("between 1 and 1000");
+  });
+
+  it("migrates the v0.10.2 audit table without losing records", () => {
+    const directory = mkdtempSync(join(tmpdir(), "diaoyan-rsl-audit-migration-test-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "audit.sqlite");
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE rsl_access_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurred_at TEXT NOT NULL,
+        request_url TEXT,
+        final_url TEXT,
+        outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure')),
+        error_code TEXT NOT NULL,
+        fetch_method TEXT NOT NULL,
+        cached INTEGER NOT NULL CHECK(cached IN (0, 1)),
+        rsl_status TEXT NOT NULL,
+        rsl_usage TEXT NOT NULL,
+        license_urls_json TEXT NOT NULL,
+        license_hashes_json TEXT NOT NULL,
+        approvals_applied INTEGER NOT NULL CHECK(approvals_applied >= 0)
+      ) STRICT;
+      INSERT INTO rsl_access_audit(
+        occurred_at, request_url, final_url, outcome, error_code, fetch_method, cached,
+        rsl_status, rsl_usage, license_urls_json, license_hashes_json, approvals_applied
+      ) VALUES ('2026-08-25T00:00:00.000Z', NULL, NULL, 'success', '', 'http', 0,
+        'not-declared', 'ai-input', '[]', '[]', 0);
+    `);
+    legacy.close();
+
+    const migrated = new RslAccessAudit(path, "ai-input");
+    stores.push(migrated);
+    expect(migrated.list().entries).toMatchObject([{ licenseTokensApplied: 0 }]);
+    migrated.recordSuccess(result());
+    expect(migrated.list().entries[0]).toMatchObject({ licenseTokensApplied: 0 });
   });
 
   it("fails visibly when an audit record cannot be written", () => {

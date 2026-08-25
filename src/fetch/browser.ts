@@ -11,6 +11,12 @@ import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
 import { BrowserPool, type BrowserLease } from "../browser-pool.js";
 import type { RslPolicy } from "../rsl.js";
 
+function requestKey(url: URL): string {
+  const normalized = new URL(url);
+  normalized.hash = "";
+  return normalized.toString();
+}
+
 export function browserLaunchOptions(
   config: AppConfig,
   headless: boolean,
@@ -26,24 +32,29 @@ export function browserLaunchOptions(
   return { ...base, channel: config.browserChannel };
 }
 
-function browserError(error: unknown): ReadError {
+function browserError(error: unknown, redactCause = false): ReadError {
   if (error instanceof ReadError) {
-    return error;
+    return redactCause
+      ? new ReadError(error.code, error.message, {
+          retryable: error.retryable,
+          details: error.details,
+        })
+      : error;
   }
   const message = error instanceof Error ? error.message : String(error);
   if (/timeout/i.test(message)) {
     return new ReadError("FETCH_TIMEOUT", "The browser timed out while loading the page.", {
       retryable: true,
-      cause: error,
+      ...(redactCause ? {} : { cause: error }),
     });
   }
   if (/executable|browser.*not found|channel/i.test(message)) {
     return new ReadError("BROWSER_UNAVAILABLE", "A compatible local Chrome browser is unavailable.", {
-      cause: error,
+      ...(redactCause ? {} : { cause: error }),
     });
   }
   return new ReadError("BROWSER_UNAVAILABLE", "The browser could not load the page.", {
-    cause: error,
+    ...(redactCause ? {} : { cause: error }),
   });
 }
 
@@ -67,6 +78,7 @@ export class BrowserPageFetcher implements PageFetcher {
     let context: BrowserContext | null = null;
     let lease: BrowserLease | null = null;
     let profilePath: string | null = null;
+    let capAuthorizationUsed = false;
     const proxy = this.proxyPool.acquire(authProfile);
     let robotsRsl = this.rsl.emptyEvidence();
 
@@ -84,7 +96,10 @@ export class BrowserPageFetcher implements PageFetcher {
     try {
       await this.urlPolicy.assertPublic(url);
       await this.robots.assertAllowed(url);
-      robotsRsl = await this.rsl.evaluateRobots(url, await this.robots.licenseUrls(url));
+      robotsRsl = (await this.rsl.authorizeRobots(
+        url,
+        await this.robots.licenseUrls(url),
+      )).evidence;
 
       if (profilePath !== null) {
         context = await chromium.launchPersistentContext(profilePath, {
@@ -102,6 +117,7 @@ export class BrowserPageFetcher implements PageFetcher {
 
       const page = context.pages()[0] ?? (await context.newPage());
       let blockedNavigation: ReadError | null = null;
+      const presentedAuthorizations = new Map<string, string>();
       await context.route("**/*", async (route) => {
         const request = route.request();
         const requestUrl = request.url();
@@ -114,10 +130,21 @@ export class BrowserPageFetcher implements PageFetcher {
           await this.urlPolicy.assertPublic(parsed);
           if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
             await this.robots.assertAllowed(parsed);
-            robotsRsl = await this.rsl.evaluateRobots(
+            const decision = await this.rsl.authorizeRobots(
               parsed,
               await this.robots.licenseUrls(parsed),
             );
+            robotsRsl = decision.authorization === null
+              ? decision.evidence
+              : { ...decision.evidence, licenseTokensApplied: 1 };
+            if (decision.authorization !== null) {
+              capAuthorizationUsed = true;
+              presentedAuthorizations.set(requestKey(parsed), decision.authorization);
+              await route.continue({
+                headers: { ...request.headers(), authorization: decision.authorization },
+              });
+              return;
+            }
           }
           await route.continue();
         } catch (error) {
@@ -184,7 +211,8 @@ export class BrowserPageFetcher implements PageFetcher {
         }
         policyBody = originalBody.toString("utf8");
       }
-      const responseRsl = await this.rsl.evaluateResponse(finalParsed, {
+      const presentedAuthorization = presentedAuthorizations.get(requestKey(finalParsed)) ?? null;
+      const responseDecision = await this.rsl.authorizeResponse(finalParsed, {
         url: finalParsed,
         status: response.status(),
         contentType: responseHeaders["content-type"] ?? "text/html",
@@ -194,7 +222,18 @@ export class BrowserPageFetcher implements PageFetcher {
         proxyUsed: proxy !== null,
         agentIdentity: agentIdentityEvidence(this.config, false),
         linkHeader: responseHeaders.link ?? null,
-      });
+      }, presentedAuthorization !== null, presentedAuthorization);
+      if (
+        responseDecision.authorization !== null &&
+        responseDecision.authorization !== presentedAuthorization
+      ) {
+        throw new ReadError(
+          "RSL_LICENSE_REQUIRED",
+          "The browser response requires a License Token that was not declared before navigation.",
+          { details: { url: finalParsed.toString() } },
+        );
+      }
+      const responseRsl = responseDecision.evidence;
       const rsl =
         responseRsl.status === "permitted" || robotsRsl.status === "not-declared"
           ? responseRsl
@@ -221,7 +260,7 @@ export class BrowserPageFetcher implements PageFetcher {
         rsl,
       };
     } catch (error) {
-      throw browserError(error);
+      throw browserError(error, capAuthorizationUsed);
     } finally {
       await context?.close().catch(() => undefined);
       await lease?.release();

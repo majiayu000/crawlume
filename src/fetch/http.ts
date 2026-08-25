@@ -23,7 +23,13 @@ export type TransportResponse = {
   linkHeader: string | null;
 };
 
-type BeforeRequest = (url: URL) => Promise<void>;
+export type FormResponse = {
+  status: number;
+  contentType: string;
+  body: string;
+};
+
+type BeforeRequest = (url: URL) => Promise<{ authorization: string } | void>;
 
 function safeLookup(policy: UrlPolicy): LookupFunction {
   return (hostname, options, callback): void => {
@@ -137,13 +143,14 @@ export class HttpTransport {
 
     for (let redirects = 0; redirects <= this.config.maxRedirects; redirects += 1) {
       await this.urlPolicy.assertPublic(current);
-      await options.beforeRequest?.(current);
+      const access = await options.beforeRequest?.(current);
 
       let response;
       try {
         const headers = this.identity.headers(current, {
           "accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
           "accept-language": "en-US,en;q=0.8",
+          ...(access === undefined ? {} : { "authorization": access.authorization }),
           "user-agent": this.config.userAgent,
         });
         response = await fetch(current, {
@@ -162,7 +169,11 @@ export class HttpTransport {
         throw new ReadError(
           isTimeout ? "FETCH_TIMEOUT" : "UPSTREAM_ERROR",
           isTimeout ? "The page request timed out." : "The page request failed.",
-          { retryable: true, details: { url: current.toString() }, cause: error },
+          {
+            retryable: true,
+            details: { url: current.toString() },
+            ...(access === undefined ? { cause: error } : {}),
+          },
         );
       }
 
@@ -207,6 +218,58 @@ export class HttpTransport {
     throw new ReadError("UPSTREAM_ERROR", "The page exceeded the redirect limit.");
   }
 
+  async postForm(
+    url: URL,
+    form: URLSearchParams,
+    authorization: string,
+    maxBytes: number,
+  ): Promise<FormResponse> {
+    if (url.protocol !== "https:") {
+      throw new ReadError("UPSTREAM_ERROR", "Authenticated form requests require HTTPS.");
+    }
+    await this.urlPolicy.assertPublic(url);
+    let response;
+    try {
+      response = await fetch(url, {
+        dispatcher: this.directDispatcher,
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          "accept": "application/json",
+          "authorization": authorization,
+          "content-type": "application/x-www-form-urlencoded",
+          "user-agent": this.config.userAgent,
+        },
+        body: form.toString(),
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+      });
+    } catch (error) {
+      const isTimeout =
+        error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
+      throw new ReadError(
+        isTimeout ? "FETCH_TIMEOUT" : "UPSTREAM_ERROR",
+        isTimeout ? "The authenticated request timed out." : "The authenticated request failed.",
+        { retryable: true },
+      );
+    }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new ReadError("UPSTREAM_ERROR", "The authenticated request returned a redirect.");
+    }
+    const contentLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      await response.body?.cancel();
+      throw new ReadError("RESPONSE_TOO_LARGE", "The authenticated response was too large.");
+    }
+    const body = await readLimitedBody(response.body, maxBytes);
+    return {
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "",
+      body: body.text,
+    };
+  }
+
   async close(): Promise<void> {
     await Promise.all([
       this.directDispatcher.close(),
@@ -237,36 +300,96 @@ export class HttpPageFetcher implements PageFetcher {
 
   async fetch(url: URL): Promise<RawPage> {
     let robotsRsl = this.rsl.emptyEvidence();
-    const response = await this.transport.fetch(url, {
-      beforeRequest: async (nextUrl) => {
-        await this.robots.assertAllowed(nextUrl);
-        robotsRsl = await this.rsl.evaluateRobots(nextUrl, await this.robots.licenseUrls(nextUrl));
-      },
-    });
-    const responseRsl = await this.rsl.evaluateResponse(response.url, response);
-    const rsl =
-      responseRsl.status === "permitted" || robotsRsl.status === "not-declared"
-        ? responseRsl
-        : robotsRsl;
-    const statusError = errorForHttpStatus(
-      response.status,
-      response.url.toString(),
-      response.retryAfterMs,
-    );
-    if (statusError !== null) {
-      throw statusError;
+    let challenge: {
+      url: string;
+      authorization: string;
+      evidence: ReturnType<RslPolicy["emptyEvidence"]>;
+    } | null = null;
+
+    for (let capAttempt = 0; capAttempt < 2; capAttempt += 1) {
+      const presented = new Map<string, string>();
+      const response = await this.transport.fetch(url, {
+        beforeRequest: async (nextUrl) => {
+          await this.robots.assertAllowed(nextUrl);
+          const decision = await this.rsl.authorizeRobots(
+            nextUrl,
+            await this.robots.licenseUrls(nextUrl),
+          );
+          const nextUrlString = nextUrl.toString();
+          const authorization =
+            challenge !== null && challenge.url === nextUrlString
+              ? challenge.authorization
+              : decision.authorization;
+          robotsRsl = authorization === decision.authorization && authorization !== null
+            ? { ...decision.evidence, licenseTokensApplied: 1 }
+            : decision.evidence;
+          if (authorization !== null) {
+            presented.set(nextUrlString, authorization);
+            return { authorization };
+          }
+        },
+      });
+      const presentedAuthorization = presented.get(response.url.toString()) ?? null;
+      const responseDecision = await this.rsl.authorizeResponse(
+        response.url,
+        response,
+        presentedAuthorization !== null || response.status === 401 || response.status === 402,
+        presentedAuthorization,
+        presentedAuthorization !== null && (response.status === 401 || response.status === 402),
+      );
+      if (
+        responseDecision.authorization !== null &&
+        responseDecision.authorization !== presentedAuthorization
+      ) {
+        if (capAttempt === 1) {
+          throw new ReadError(
+            "RSL_LICENSE_REQUIRED",
+            "The resource changed its License Token requirement after authorization.",
+            { details: { url: response.url.toString() } },
+          );
+        }
+        challenge = {
+          url: response.url.toString(),
+          authorization: responseDecision.authorization,
+          evidence: responseDecision.evidence,
+        };
+        continue;
+      }
+      const challengeEvidence =
+        challenge !== null &&
+        challenge.url === response.url.toString() &&
+        challenge.authorization === presentedAuthorization
+          ? { ...challenge.evidence, licenseTokensApplied: 1 }
+          : null;
+      const responseRsl =
+        responseDecision.evidence.status === "not-declared" && challengeEvidence !== null
+          ? challengeEvidence
+          : responseDecision.evidence;
+      const rsl =
+        responseRsl.status === "permitted" || robotsRsl.status === "not-declared"
+          ? responseRsl
+          : robotsRsl;
+      const statusError = errorForHttpStatus(
+        response.status,
+        response.url.toString(),
+        response.retryAfterMs,
+      );
+      if (statusError !== null) {
+        throw statusError;
+      }
+      return {
+        body: response.body,
+        fetchedAt: new Date().toISOString(),
+        method: "http",
+        httpStatus: response.status,
+        contentType: response.contentType,
+        responseBytes: response.responseBytes,
+        finalUrl: response.url.toString(),
+        proxyUsed: response.proxyUsed,
+        agentIdentity: response.agentIdentity,
+        rsl,
+      };
     }
-    return {
-      body: response.body,
-      fetchedAt: new Date().toISOString(),
-      method: "http",
-      httpStatus: response.status,
-      contentType: response.contentType,
-      responseBytes: response.responseBytes,
-      finalUrl: response.url.toString(),
-      proxyUsed: response.proxyUsed,
-      agentIdentity: response.agentIdentity,
-      rsl,
-    };
+    throw new ReadError("RSL_LICENSE_REQUIRED", "The CAP authorization attempt was exhausted.");
   }
 }

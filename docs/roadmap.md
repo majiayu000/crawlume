@@ -81,7 +81,7 @@
 - 公开 Agent 身份说明（已完成首版）。
 - Web Bot Auth 签名（已完成 `cloudflare-legacy` HTTP 兼容档）。
 - RSL Core 发现与保守策略（已完成首版）。
-- OLP License Token 与 CAP 请求授权。
+- OLP License Token 与 CAP 请求授权（已完成无付费许可首版）。
 - 精确许可批准与用户确认边界（已完成首版）。
 - 访问与内容使用审计（已完成首版）。
 - 付费许可预算与结算边界。

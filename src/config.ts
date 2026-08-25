@@ -16,6 +16,7 @@ export type AppConfig = {
   rslUserClass: RslUserClass | null;
   rslGeo: string | null;
   rslApprovalsPath: string;
+  rslClientsPath: string;
   requestTimeoutMs: number;
   browserTimeoutMs: number;
   maxResponseBytes: number;
@@ -179,6 +180,10 @@ export function loadConfig(): AppConfig {
   if (configuredApprovalsPath !== undefined && !isAbsolute(configuredApprovalsPath)) {
     throw new Error("DIAOYAN_RSL_APPROVALS_PATH must be an absolute path.");
   }
+  const configuredClientsPath = process.env.DIAOYAN_RSL_CLIENTS_PATH;
+  if (configuredClientsPath !== undefined && !isAbsolute(configuredClientsPath)) {
+    throw new Error("DIAOYAN_RSL_CLIENTS_PATH must be an absolute path.");
+  }
   return {
     dataDir,
     cachePath: join(dataDir, "cache.sqlite"),
@@ -197,6 +202,7 @@ export function loadConfig(): AppConfig {
     rslUserClass: enumValue("DIAOYAN_RSL_USER_CLASS", rslUserClasses, null),
     rslGeo: rslGeo(),
     rslApprovalsPath: configuredApprovalsPath ?? join(dataDir, "rsl-approvals.json"),
+    rslClientsPath: configuredClientsPath ?? join(dataDir, "rsl-clients.json"),
     requestTimeoutMs: positiveInteger("DIAOYAN_REQUEST_TIMEOUT_MS", 20_000),
     browserTimeoutMs: positiveInteger("DIAOYAN_BROWSER_TIMEOUT_MS", 30_000),
     maxResponseBytes: positiveInteger("DIAOYAN_MAX_RESPONSE_BYTES", 5_000_000),

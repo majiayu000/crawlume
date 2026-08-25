@@ -164,6 +164,7 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_RSL_USER_CLASS` | unset | Optional operator class used for RSL decisions |
 | `DIAOYAN_RSL_GEO` | unset | Optional two-letter uppercase region used for RSL decisions |
 | `DIAOYAN_RSL_APPROVALS_PATH` | `<data-dir>/rsl-approvals.json` | Absolute path to the administrator-managed approval file |
+| `DIAOYAN_RSL_CLIENTS_PATH` | `<data-dir>/rsl-clients.json` | Absolute path to mode-0600 OLP client credentials |
 | `DIAOYAN_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
 | `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
 | `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
@@ -230,10 +231,11 @@ export DIAOYAN_RSL_USER_CLASS=personal
 export DIAOYAN_RSL_GEO=CN
 ```
 
-Clearly free and permitted content continues. Prohibited use, License Token requirements, payment,
+Clearly free and permitted content continues. A free License Server declaration can use OLP/CAP only
+when the administrator has configured an exact client. Prohibited use, payment, unapproved
 attribution, reporting, or legal terms fail with dedicated `RSL_*` error codes. This release never
-purchases or accepts a license automatically. `not-declared` evidence means only that no supported
-RSL association was found; it is not a legal clearance. See the
+purchases a license automatically. `not-declared` evidence means only that no supported RSL
+association was found; it is not a legal clearance. See the
 [RSL policy specification](docs/rsl-policy-spec.md) for supported discovery surfaces and limits.
 
 Static approvals can acknowledge attribution, standard-license, legal, or supplemental-term
@@ -260,6 +262,26 @@ Set the file to mode `0600` on POSIX systems and restart the service after editi
 not bypass prohibitions, payment, reporting, or License Token requirements. Inspect the latest safe
 access records with `diaoyan rsl-audit --limit 100` or the read-only `get_rsl_audit` MCP tool.
 
+For a free license that declares `<content server="https://licenses.example">`, configure the OLP
+client issued by that server in a separate administrator-only file:
+
+```json
+{
+  "version": 1,
+  "clients": [{
+    "server": "https://licenses.example",
+    "clientId": "diaoyan-client",
+    "clientSecret": "replace-with-secret"
+  }]
+}
+```
+
+Save it at `DIAOYAN_RSL_CLIENTS_PATH`, set mode `0600`, and restart. Diaoyan requests `/token`
+directly over HTTPS, keeps the opaque Token in process memory only, and sends it only as a CAP
+header for a matching main-document request. Token requests do not use the page proxy and never
+follow redirects. Paid, reporting, registration, introspection, and EMS flows remain blocked or out
+of scope; see the [OLP/CAP specification](docs/rsl-olp-cap-spec.md).
+
 Project documents:
 
 - [Technical contract](docs/spec.md)
@@ -270,3 +292,4 @@ Project documents:
 - [Agent identity and Web Bot Auth](docs/agent-identity-spec.md)
 - [RSL discovery and policy](docs/rsl-policy-spec.md)
 - [RSL approvals and access audit](docs/rsl-approval-audit-spec.md)
+- [RSL OLP Token and CAP authorization](docs/rsl-olp-cap-spec.md)

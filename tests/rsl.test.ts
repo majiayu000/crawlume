@@ -177,6 +177,7 @@ describe("RSL policy", () => {
       licenseUrls: [],
       licenseHashes: [],
       approvalsApplied: 0,
+      licenseTokensApplied: 0,
     });
   });
 
@@ -244,5 +245,10 @@ describe("RSL configuration", () => {
   it("requires an absolute administrator approval path", () => {
     vi.stubEnv("DIAOYAN_RSL_APPROVALS_PATH", "relative/approvals.json");
     expect(() => loadConfig()).toThrow("DIAOYAN_RSL_APPROVALS_PATH must be an absolute path");
+  });
+
+  it("requires an absolute OLP client path", () => {
+    vi.stubEnv("DIAOYAN_RSL_CLIENTS_PATH", "relative/clients.json");
+    expect(() => loadConfig()).toThrow("DIAOYAN_RSL_CLIENTS_PATH must be an absolute path");
   });
 });
