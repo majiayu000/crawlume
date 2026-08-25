@@ -75,6 +75,7 @@ describe("RslAccessAudit", () => {
         licenseHashes: [`sha256:${"a".repeat(64)}`],
         approvalsApplied: 1,
         licenseTokensApplied: 0,
+        payment: null,
       }),
     ]);
     const serialized = JSON.stringify(listed);
@@ -82,6 +83,44 @@ describe("RslAccessAudit", () => {
     expect(serialized).not.toContain("Sensitive title");
     expect(serialized).not.toContain("private-profile");
     expect(serialized).not.toContain("secret");
+  });
+
+  it("records a bounded payment quote without settlement data or protocol payloads", () => {
+    const audit = new RslAccessAudit(":memory:", "ai-input");
+    stores.push(audit);
+    audit.recordFailure(
+      "https://example.com/paid?key=secret",
+      new ReadError("RSL_PAYMENT_REQUIRED", "payment", {
+        details: {
+          licenseUrl: "https://example.com/license.xml?key=secret",
+          paymentType: "crawl",
+          paymentAmount: "0.01",
+          paymentCurrency: "USD",
+          paymentProtocols: "application/x402+json",
+          pricingAuthority: "runtime",
+          budgetStatus: "disabled",
+          settlementStatus: "not-attempted",
+          protocolPayload: "do-not-store",
+        },
+      }),
+    );
+
+    const listed = audit.list().entries[0];
+    expect(listed).toMatchObject({
+      outcome: "failure",
+      errorCode: "RSL_PAYMENT_REQUIRED",
+      payment: {
+        paymentType: "crawl",
+        paymentAmount: "0.01",
+        paymentCurrency: "USD",
+        paymentProtocols: ["application/x402+json"],
+        pricingAuthority: "runtime",
+        budgetStatus: "disabled",
+        settlementStatus: "not-attempted",
+      },
+    });
+    expect(JSON.stringify(listed)).not.toContain("do-not-store");
+    expect(JSON.stringify(listed)).not.toContain("secret");
   });
 
   it("records RSL and ordinary failures as final outcomes", () => {
@@ -159,7 +198,9 @@ describe("RslAccessAudit", () => {
 
     const migrated = new RslAccessAudit(path, "ai-input");
     stores.push(migrated);
-    expect(migrated.list().entries).toMatchObject([{ licenseTokensApplied: 0 }]);
+    expect(migrated.list().entries).toMatchObject([
+      { licenseTokensApplied: 0, payment: null },
+    ]);
     migrated.recordSuccess(result());
     expect(migrated.list().entries[0]).toMatchObject({ licenseTokensApplied: 0 });
   });

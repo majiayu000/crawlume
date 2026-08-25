@@ -155,6 +155,11 @@ HTTP RSL Link、HTML RSL link 和 inline script。外部 RSL 文件继续经过 
 `RSL_LICENSE_REQUIRED`，付费或 custom 流程返回 `RSL_PAYMENT_REQUIRED`，未批准的归因、standard、
 reporting、legal 或 terms 返回 `RSL_CONFIRMATION_REQUIRED`。服务不自动购买许可或提交报告。
 
+付费声明必须严格解析 type、静态 amount/currency、`accepts` 协议媒体类型和 custom 流程位置。
+合法声明仍 fail closed，但 `RSL_PAYMENT_REQUIRED` details 返回结构化 quote；访问审计持久记录同一
+quote，并固定标记预算 `disabled`、结算 `not-attempted`。服务不执行协议 payload，不调用钱包、
+x402 facilitator、支付 Provider 或 custom endpoint。完整边界见 `docs/rsl-payment-boundary-spec.md`。
+
 新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
 支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS 与媒体容器元数据
 尚未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见 `docs/rsl-policy-spec.md`。
@@ -167,7 +172,7 @@ reporting、legal 或 terms 返回 `RSL_CONFIRMATION_REQUIRED`。服务不自动
 页面缓存键同步变化。禁止、付费、reporting 和 License Server 不能由静态批准放行。
 
 每次最终页面读取向 `cache.sqlite` 的独立审计表写入成功或失败、去 query 的 URL、fetch/cache
-状态、RSL 决策、许可 URL/Hash 和批准数量。审计不保存正文、标题、authProfile、Token、Cookie、
+状态、RSL 决策、许可 URL/Hash、批准数量和安全付款 quote。审计不保存正文、标题、authProfile、Token、Cookie、
 客户端密钥或代理配置。写入失败必须使读取失败。`diaoyan rsl-audit` 和 `get_rsl_audit` 只读返回
 最近最多 1000 条安全字段。完整约束见 `docs/rsl-approval-audit-spec.md`。
 

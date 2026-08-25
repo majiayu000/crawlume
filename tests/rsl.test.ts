@@ -219,6 +219,31 @@ describe("RSL policy", () => {
       ),
     ).rejects.toMatchObject({ code: "RSL_INVALID" });
   });
+
+  it("returns a structured quote without claiming budget or settlement", async () => {
+    const licenseUrl = "https://example.com/license.xml";
+    const xml = document(
+      '<content url="/"><license><payment type="crawl"><amount currency="USD">0.01</amount><accepts type="application/x402+json">{"scheme":"exact"}</accepts></payment></license></content>',
+    );
+
+    await expect(
+      policy(new Map([[licenseUrl, response(licenseUrl, xml)]])).evaluateRobots(
+        new URL("https://example.com/article"),
+        [licenseUrl],
+      ),
+    ).rejects.toMatchObject({
+      code: "RSL_PAYMENT_REQUIRED",
+      details: {
+        paymentType: "crawl",
+        paymentAmount: "0.01",
+        paymentCurrency: "USD",
+        paymentProtocols: "application/x402+json",
+        pricingAuthority: "runtime",
+        budgetStatus: "disabled",
+        settlementStatus: "not-attempted",
+      },
+    });
+  });
 });
 
 describe("RSL Link parsing", () => {

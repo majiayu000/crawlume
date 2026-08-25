@@ -10,6 +10,11 @@ import type { HttpTransport } from "./fetch/http.js";
 import { RslApprovalStore } from "./rsl-approvals.js";
 import { normalizeRslServer } from "./rsl-client-credentials.js";
 import { RslOlpClient } from "./rsl-olp.js";
+import {
+  evaluateRslPayment,
+  rslUrlObligation,
+  type RslPaymentQuote,
+} from "./rsl-payment.js";
 
 const RSL_NAMESPACE = "https://rslstandard.org/rsl";
 const RSL_MEDIA_TYPE = "application/rsl+xml";
@@ -56,6 +61,7 @@ type LicenseEvaluation = {
   outcome: Outcome;
   obligations: string[];
   server: string | null;
+  paymentQuote: RslPaymentQuote | null;
 };
 
 export type RslAccessDecision = {
@@ -121,17 +127,6 @@ function usageMatches(token: string, usage: string): boolean {
   return token === "ai-all" && usage.startsWith("ai-");
 }
 
-function urlObligation(kind: "standard" | "terms", value: string): string {
-  const trimmed = value.trim();
-  try {
-    const parsed = new URL(trimmed);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
-  } catch {
-    throw new ReadError("RSL_INVALID", `The RSL ${kind} obligation must be an absolute HTTP(S) URL.`);
-  }
-  return `${kind}:${trimmed}`;
-}
-
 function constraintOutcome(
   license: Element,
   type: "usage" | "user" | "geo",
@@ -174,51 +169,39 @@ function evaluateLicense(content: Element, license: Element, config: AppConfig):
   const geoConstraint = constraintOutcome(license, "geo", config.rslGeo);
   const constraints = [usageConstraint, userConstraint, geoConstraint];
   if (constraints.includes("prohibited")) {
-    return { outcome: "prohibited", obligations: [], server };
+    return { outcome: "prohibited", obligations: [], server, paymentQuote: null };
   }
   const obligations: string[] = [];
-  const payment = directChildren(license, "payment")[0];
-  if (payment !== undefined) {
-    const paymentType = payment.getAttribute("type");
-    const hasAmount = directChildren(payment, "amount").length > 0;
-    const hasCustom = directChildren(payment, "custom").length > 0;
-    const hasPaymentMethod = directChildren(payment, "accepts").length > 0;
-    if (
-      hasAmount ||
-      hasCustom ||
-      hasPaymentMethod ||
-      paymentType === null ||
-      ["purchase", "subscription", "training", "crawl", "use", "contribution"].includes(paymentType)
-    ) {
-      return { outcome: "payment", obligations: [], server };
-    }
-    if (paymentType !== "free" && paymentType !== "attribution") {
-      throw new ReadError("RSL_INVALID", "The RSL document contains an unsupported payment type.", {
-        details: { paymentType },
-      });
-    }
-    if (paymentType === "attribution" || directChildren(payment, "standard").length > 0) {
-      if (paymentType === "attribution") obligations.push("attribution");
-      for (const standard of directChildren(payment, "standard")) {
-        obligations.push(urlObligation("standard", standard.textContent ?? ""));
-      }
-    }
+  const payment = evaluateRslPayment(license);
+  if (payment.outcome === "payment") {
+    return {
+      outcome: "payment",
+      obligations: [],
+      server,
+      paymentQuote: payment.quote,
+    };
   }
+  obligations.push(...payment.obligations);
   if (userConstraint === "confirmation") obligations.push("missing-user-context");
   if (geoConstraint === "confirmation") obligations.push("missing-geo-context");
   for (const _reporting of directChildren(license, "reporting")) obligations.push("reporting");
   if (directChildren(license, "legal").length > 0) obligations.push("legal");
   for (const terms of directChildren(content, "terms")) {
-    obligations.push(urlObligation("terms", terms.textContent ?? ""));
+    obligations.push(rslUrlObligation("terms", terms.textContent ?? ""));
   }
   const normalizedObligations = [...new Set(obligations)].sort();
   if (
     constraints.includes("confirmation") ||
     normalizedObligations.length > 0
   ) {
-    return { outcome: "confirmation", obligations: normalizedObligations, server };
+    return {
+      outcome: "confirmation",
+      obligations: normalizedObligations,
+      server,
+      paymentQuote: null,
+    };
   }
-  return { outcome: "permitted", obligations: [], server };
+  return { outcome: "permitted", obligations: [], server, paymentQuote: null };
 }
 
 function licenseHash(license: Element): string {
@@ -517,6 +500,7 @@ export class RslPolicy {
           resource: string;
           obligations: string[];
           server: string | null;
+          paymentQuote: RslPaymentQuote | null;
         }
       | null = null;
     for (const association of associations) {
@@ -563,6 +547,7 @@ export class RslPolicy {
               resource,
               obligations: evaluation.obligations,
               server: evaluation.server,
+              paymentQuote: evaluation.paymentQuote,
             };
           }
         }
@@ -586,6 +571,13 @@ export class RslPolicy {
       resource: blocking?.resource ?? null,
       obligations: blocking?.obligations.join(",") ?? "",
       licenseServer: blocking?.server ?? null,
+      paymentType: blocking?.paymentQuote?.paymentType ?? null,
+      paymentAmount: blocking?.paymentQuote?.paymentAmount ?? null,
+      paymentCurrency: blocking?.paymentQuote?.paymentCurrency ?? null,
+      paymentProtocols: blocking?.paymentQuote?.paymentProtocols.join(",") ?? "",
+      pricingAuthority: blocking?.paymentQuote?.pricingAuthority ?? null,
+      budgetStatus: effective === "payment" ? "disabled" : null,
+      settlementStatus: effective === "payment" ? "not-attempted" : null,
     };
     if (effective === "prohibited") {
       throw new ReadError("RSL_PROHIBITED", "RSL prohibits this use of the content.", { details });

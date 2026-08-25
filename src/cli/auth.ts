@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   const profileName = argument("--profile");
   const inputUrl = argument("--url");
   if (profileName === null || inputUrl === null) {
-    throw new Error("Usage: pnpm auth -- --profile <name> --url <https://site.example/login>");
+    throw new Error("Usage: pnpm auth --profile <name> --url <https://site.example/login>");
   }
 
   const config = loadConfig();

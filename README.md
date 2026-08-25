@@ -96,15 +96,15 @@ from the previous completion time. The first success establishes a baseline; lat
 Use the same reader directly without an MCP client:
 
 ```bash
-pnpm cli -- read https://httpbin.org/html
-pnpm cli -- read https://httpbin.org/html --markdown
-pnpm cli -- read https://example.com/app --mode browser --cache-mode live
-pnpm cli -- map https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 20 --max-depth 2
-pnpm cli -- crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 5 --max-depth 1
-DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli -- search MiniMax H3 推理优化 --language zh-CN
-pnpm cli -- crawl https://example.com/docs --max-pages 20
-pnpm cli -- search inference optimization --source local
-pnpm cli -- stats --days 7
+pnpm cli read https://httpbin.org/html
+pnpm cli read https://httpbin.org/html --markdown
+pnpm cli read https://example.com/app --mode browser --cache-mode live
+pnpm cli map https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 20 --max-depth 2
+pnpm cli crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 5 --max-depth 1
+DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli search MiniMax H3 推理优化 --language zh-CN
+pnpm cli crawl https://example.com/docs --max-pages 20
+pnpm cli search inference optimization --source local
+pnpm cli stats --days 7
 ```
 
 After installing or linking the package, use `diaoyan search`, `diaoyan read`, `diaoyan map`,
@@ -137,7 +137,7 @@ it permanently. Monitor runs never expand to linked pages and never use cached c
 Use a dedicated profile rather than copying a personal Chrome profile:
 
 ```bash
-pnpm auth -- --profile research --url https://example.com/login
+pnpm auth --profile research --url https://example.com/login
 ```
 
 Log in manually in the opened Chrome window and press Enter in the terminal. The profile remains outside the repository. An Agent can then call:
@@ -238,6 +238,13 @@ purchases a license automatically. `not-declared` evidence means only that no su
 association was found; it is not a legal clearance. See the
 [RSL policy specification](docs/rsl-policy-spec.md) for supported discovery surfaces and limits.
 
+Paid declarations return `RSL_PAYMENT_REQUIRED` with a bounded quote: payment type, static amount
+and currency when declared, accepted protocol media types, and whether pricing is declared or
+runtime-authoritative. The access audit records the same quote with `budgetStatus: disabled` and
+`settlementStatus: not-attempted`. Diaoyan does not call a wallet, x402 facilitator, payment
+provider, or custom licensing endpoint. See the
+[RSL payment boundary specification](docs/rsl-payment-boundary-spec.md).
+
 Static approvals can acknowledge attribution, standard-license, legal, or supplemental-term
 obligations only when the exact license Hash, resource, runtime context, obligations, and expiry all
 match. The file is administrator-managed and is never written through MCP or the ordinary CLI:
@@ -293,3 +300,4 @@ Project documents:
 - [RSL discovery and policy](docs/rsl-policy-spec.md)
 - [RSL approvals and access audit](docs/rsl-approval-audit-spec.md)
 - [RSL OLP Token and CAP authorization](docs/rsl-olp-cap-spec.md)
+- [RSL paid-license quote boundary](docs/rsl-payment-boundary-spec.md)

@@ -57,6 +57,17 @@ export type RslAccessAuditEntry = {
   licenseHashes: string[];
   approvalsApplied: number;
   licenseTokensApplied: number;
+  payment: RslPaymentAudit | null;
+};
+
+export type RslPaymentAudit = {
+  paymentType: string | null;
+  paymentAmount: string | null;
+  paymentCurrency: string | null;
+  paymentProtocols: string[];
+  pricingAuthority: "declared" | "runtime" | "unspecified";
+  budgetStatus: "disabled";
+  settlementStatus: "not-attempted";
 };
 
 export type RslAccessAuditResult = {

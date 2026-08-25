@@ -1,5 +1,7 @@
 # RSL OLP 与 CAP 实现规格（v0.10.3）
 
+> 本文保留 v0.10.3 的免费 Token 授权边界；v0.10.4 的付费声明解析与 quote-only 边界见 `rsl-payment-boundary-spec.md`。真实付款仍未启用。
+
 ## 目标
 
 为长期运行的 Agent 提供 RSL 1.0 的最小安全授权闭环：从站点声明的 HTTPS License Server 获取 OLP License Token，并在受保护资源请求中使用 CAP `Authorization: License <token>`。
@@ -73,7 +75,7 @@
 ## 暂不实现
 
 - 自动注册客户端。
-- 预算、付款、退款、账单和结算。
+- 真实预算执行、付款、退款、账单和结算。
 - `/introspect`、`/key` 与 EMS。
 - Token 落盘或跨实例共享。
 - 多个 License Token 同时组合到一个资源请求。

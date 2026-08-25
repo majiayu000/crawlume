@@ -2,7 +2,12 @@ import { DatabaseSync } from "node:sqlite";
 
 import type { RslUsage } from "./config.js";
 import { ReadError } from "./errors.js";
-import type { ReadPageResult, RslAccessAuditEntry, RslAccessAuditResult } from "./types.js";
+import type {
+  ReadPageResult,
+  RslAccessAuditEntry,
+  RslAccessAuditResult,
+  RslPaymentAudit,
+} from "./types.js";
 
 type AuditRow = {
   id: number;
@@ -19,6 +24,7 @@ type AuditRow = {
   license_hashes_json: string;
   approvals_applied: number;
   license_tokens_applied: number;
+  payment_quote_json: string;
 };
 
 function safeUrl(value: string | null): string | null {
@@ -49,6 +55,53 @@ function safeJsonArray(value: string): string[] {
   }
 }
 
+function paymentAudit(error: ReadError): RslPaymentAudit | null {
+  if (error.code !== "RSL_PAYMENT_REQUIRED") return null;
+  const protocols = stringDetail(error.details.paymentProtocols)
+    ?.split(",")
+    .filter((value) => value.length > 0) ?? [];
+  const authority = stringDetail(error.details.pricingAuthority);
+  return {
+    paymentType: stringDetail(error.details.paymentType),
+    paymentAmount: stringDetail(error.details.paymentAmount),
+    paymentCurrency: stringDetail(error.details.paymentCurrency),
+    paymentProtocols: protocols,
+    pricingAuthority:
+      authority === "declared" || authority === "runtime" ? authority : "unspecified",
+    budgetStatus: "disabled",
+    settlementStatus: "not-attempted",
+  };
+}
+
+function safePaymentAudit(value: string): RslPaymentAudit | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new ReadError("INTERNAL_ERROR", "An RSL payment audit record is malformed.");
+  }
+  if (parsed === null) return null;
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ReadError("INTERNAL_ERROR", "An RSL payment audit record is malformed.");
+  }
+  const record = parsed as Record<string, unknown>;
+  const nullableStrings = [record.paymentType, record.paymentAmount, record.paymentCurrency];
+  if (
+    nullableStrings.some((item) => item !== null && typeof item !== "string") ||
+    !Array.isArray(record.paymentProtocols) ||
+    record.paymentProtocols.length > 16 ||
+    record.paymentProtocols.some(
+      (item) => typeof item !== "string" || item.length === 0 || item.length > 200,
+    ) ||
+    !["declared", "runtime", "unspecified"].includes(String(record.pricingAuthority)) ||
+    record.budgetStatus !== "disabled" ||
+    record.settlementStatus !== "not-attempted"
+  ) {
+    throw new ReadError("INTERNAL_ERROR", "An RSL payment audit record is malformed.");
+  }
+  return record as RslPaymentAudit;
+}
+
 export class RslAccessAudit {
   private readonly database: DatabaseSync;
 
@@ -75,7 +128,8 @@ export class RslAccessAudit {
         license_urls_json TEXT NOT NULL,
         license_hashes_json TEXT NOT NULL,
         approvals_applied INTEGER NOT NULL CHECK(approvals_applied >= 0),
-        license_tokens_applied INTEGER NOT NULL DEFAULT 0 CHECK(license_tokens_applied >= 0)
+        license_tokens_applied INTEGER NOT NULL DEFAULT 0 CHECK(license_tokens_applied >= 0),
+        payment_quote_json TEXT NOT NULL DEFAULT 'null'
       ) STRICT;
     `);
     const columns = this.database.prepare("PRAGMA table_info(rsl_access_audit)").all() as Array<{
@@ -84,6 +138,11 @@ export class RslAccessAudit {
     if (!columns.some((column) => column.name === "license_tokens_applied")) {
       this.database.exec(
         "ALTER TABLE rsl_access_audit ADD COLUMN license_tokens_applied INTEGER NOT NULL DEFAULT 0 CHECK(license_tokens_applied >= 0)",
+      );
+    }
+    if (!columns.some((column) => column.name === "payment_quote_json")) {
+      this.database.exec(
+        "ALTER TABLE rsl_access_audit ADD COLUMN payment_quote_json TEXT NOT NULL DEFAULT 'null'",
       );
     }
   }
@@ -102,6 +161,7 @@ export class RslAccessAudit {
       licenseHashes: rsl?.licenseHashes ?? [],
       approvalsApplied: rsl?.approvalsApplied ?? 0,
       licenseTokensApplied: rsl?.licenseTokensApplied ?? 0,
+      payment: null,
     });
   }
 
@@ -120,6 +180,7 @@ export class RslAccessAudit {
       licenseHashes: licenseHash === null ? [] : [licenseHash],
       approvalsApplied: 0,
       licenseTokensApplied: 0,
+      payment: paymentAudit(error),
     });
   }
 
@@ -133,7 +194,7 @@ export class RslAccessAudit {
       .prepare(
         `SELECT id, occurred_at, request_url, final_url, outcome, error_code, fetch_method,
                 cached, rsl_status, rsl_usage, license_urls_json, license_hashes_json,
-                approvals_applied, license_tokens_applied
+                approvals_applied, license_tokens_applied, payment_quote_json
          FROM rsl_access_audit
          ORDER BY id DESC
          LIMIT ?`,
@@ -164,6 +225,7 @@ export class RslAccessAudit {
         licenseHashes: safeJsonArray(row.license_hashes_json),
         approvalsApplied: row.approvals_applied,
         licenseTokensApplied: row.license_tokens_applied,
+        payment: safePaymentAudit(row.payment_quote_json),
       })),
     };
   }
@@ -184,6 +246,7 @@ export class RslAccessAudit {
     licenseHashes: string[];
     approvalsApplied: number;
     licenseTokensApplied: number;
+    payment: RslPaymentAudit | null;
   }): void {
     try {
       this.database
@@ -191,8 +254,8 @@ export class RslAccessAudit {
           `INSERT INTO rsl_access_audit(
              occurred_at, request_url, final_url, outcome, error_code, fetch_method, cached,
              rsl_status, rsl_usage, license_urls_json, license_hashes_json, approvals_applied,
-             license_tokens_applied
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             license_tokens_applied, payment_quote_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           new Date(this.now()).toISOString(),
@@ -208,6 +271,7 @@ export class RslAccessAudit {
           JSON.stringify(values.licenseHashes),
           values.approvalsApplied,
           values.licenseTokensApplied,
+          JSON.stringify(values.payment),
         );
     } catch (error) {
       if (error instanceof ReadError) throw error;
