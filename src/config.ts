@@ -12,6 +12,9 @@ export type AppConfig = {
   webBotAuthJwkPath: string | null;
   webBotAuthProfile: "cloudflare-legacy";
   webBotAuthTtlSeconds: number;
+  rslUsage: RslUsage;
+  rslUserClass: RslUserClass | null;
+  rslGeo: string | null;
   requestTimeoutMs: number;
   browserTimeoutMs: number;
   maxResponseBytes: number;
@@ -32,6 +35,43 @@ export type AppConfig = {
   proxyEndpoints: ProxyEndpoint[];
   searxngUrl: string | null;
 };
+
+export const rslUsages = ["ai-train", "ai-input", "ai-index", "search"] as const;
+export type RslUsage = (typeof rslUsages)[number];
+export const rslUserClasses = [
+  "commercial",
+  "non-commercial",
+  "education",
+  "government",
+  "personal",
+] as const;
+export type RslUserClass = (typeof rslUserClasses)[number];
+
+function enumValue<const T extends readonly string[]>(
+  name: string,
+  values: T,
+  fallback: T[number] | null,
+): T[number] | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.length === 0) {
+    return fallback;
+  }
+  if (!(values as readonly string[]).includes(raw)) {
+    throw new Error(`${name} must be one of: ${values.join(", ")}.`);
+  }
+  return raw as T[number];
+}
+
+function rslGeo(): string | null {
+  const raw = process.env.DIAOYAN_RSL_GEO;
+  if (raw === undefined || raw.length === 0) {
+    return null;
+  }
+  if (!/^[A-Z]{2}$/.test(raw)) {
+    throw new Error("DIAOYAN_RSL_GEO must be two uppercase ASCII letters.");
+  }
+  return raw;
+}
 
 function agentIdentityUrl(): string | null {
   const raw = process.env.DIAOYAN_AGENT_IDENTITY_URL;
@@ -148,6 +188,9 @@ export function loadConfig(): AppConfig {
       10,
       300,
     ),
+    rslUsage: enumValue("DIAOYAN_RSL_USAGE", rslUsages, "ai-input") ?? "ai-input",
+    rslUserClass: enumValue("DIAOYAN_RSL_USER_CLASS", rslUserClasses, null),
+    rslGeo: rslGeo(),
     requestTimeoutMs: positiveInteger("DIAOYAN_REQUEST_TIMEOUT_MS", 20_000),
     browserTimeoutMs: positiveInteger("DIAOYAN_BROWSER_TIMEOUT_MS", 30_000),
     maxResponseBytes: positiveInteger("DIAOYAN_MAX_RESPONSE_BYTES", 5_000_000),

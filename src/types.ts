@@ -30,6 +30,15 @@ export type AgentIdentityEvidence = {
   profile: "cloudflare-legacy" | null;
 };
 
+export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline";
+
+export type RslEvidence = {
+  status: "not-declared" | "not-applicable" | "permitted";
+  usage: import("./config.js").RslUsage;
+  discoveredBy: RslDiscoveryMethod[];
+  licenseUrls: string[];
+};
+
 export type ReadPageOptions = {
   url: string;
   mode?: FetchMode;
@@ -45,6 +54,7 @@ export type FetchEvidence = {
   finalUrl: string;
   proxyUsed?: boolean;
   agentIdentity?: AgentIdentityEvidence;
+  rsl?: RslEvidence;
 };
 
 export type RawPage = FetchEvidence & {
@@ -89,6 +99,7 @@ export type ReadPageResult = {
     totalRetryDelayMs?: number;
     proxyUsed?: boolean;
     agentIdentity?: AgentIdentityEvidence;
+    rsl?: RslEvidence;
   };
 };
 

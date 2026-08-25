@@ -9,6 +9,7 @@ import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
 import { BrowserPool, type BrowserLease } from "../browser-pool.js";
+import type { RslPolicy } from "../rsl.js";
 
 export function browserLaunchOptions(
   config: AppConfig,
@@ -54,6 +55,7 @@ export class BrowserPageFetcher implements PageFetcher {
     private readonly urlPolicy: UrlPolicy,
     private readonly robots: RobotsPolicy,
     private readonly profiles: ProfileManager,
+    private readonly rsl: RslPolicy,
     private readonly proxyPool = new ProxyPool(config.proxyEndpoints),
     private readonly browserPool = new BrowserPool(
       config,
@@ -66,6 +68,7 @@ export class BrowserPageFetcher implements PageFetcher {
     let lease: BrowserLease | null = null;
     let profilePath: string | null = null;
     const proxy = this.proxyPool.acquire(authProfile);
+    let robotsRsl = this.rsl.emptyEvidence();
 
     if (authProfile !== undefined) {
       profilePath = this.profiles.require(authProfile);
@@ -81,6 +84,7 @@ export class BrowserPageFetcher implements PageFetcher {
     try {
       await this.urlPolicy.assertPublic(url);
       await this.robots.assertAllowed(url);
+      robotsRsl = await this.rsl.evaluateRobots(url, await this.robots.licenseUrls(url));
 
       if (profilePath !== null) {
         context = await chromium.launchPersistentContext(profilePath, {
@@ -110,6 +114,10 @@ export class BrowserPageFetcher implements PageFetcher {
           await this.urlPolicy.assertPublic(parsed);
           if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
             await this.robots.assertAllowed(parsed);
+            robotsRsl = await this.rsl.evaluateRobots(
+              parsed,
+              await this.robots.licenseUrls(parsed),
+            );
           }
           await route.continue();
         } catch (error) {
@@ -145,15 +153,6 @@ export class BrowserPageFetcher implements PageFetcher {
       const finalUrl = page.url();
       const finalParsed = this.urlPolicy.parse(finalUrl);
       await this.urlPolicy.assertPublic(finalParsed);
-      const statusError = errorForHttpStatus(
-        response.status(),
-        finalUrl,
-        parseRetryAfterMs(response.headers()["retry-after"] ?? null),
-      );
-      if (statusError !== null) {
-        throw statusError;
-      }
-
       const body = await page.content();
       const responseBytes = Buffer.byteLength(body);
       if (responseBytes > this.config.maxResponseBytes) {
@@ -166,6 +165,49 @@ export class BrowserPageFetcher implements PageFetcher {
         });
       }
 
+      const responseHeaders = response.headers();
+      const responseMediaType = (responseHeaders["content-type"] ?? "")
+        .split(";", 1)[0]
+        ?.trim()
+        .toLowerCase();
+      let policyBody = body;
+      if (responseMediaType === "application/rsl+xml") {
+        const originalBody = await response.body();
+        if (originalBody.byteLength > this.config.maxResponseBytes) {
+          throw new ReadError("RESPONSE_TOO_LARGE", "The RSL response exceeded the size limit.", {
+            details: {
+              maxResponseBytes: this.config.maxResponseBytes,
+              responseBytes: originalBody.byteLength,
+              url: finalUrl,
+            },
+          });
+        }
+        policyBody = originalBody.toString("utf8");
+      }
+      const responseRsl = await this.rsl.evaluateResponse(finalParsed, {
+        url: finalParsed,
+        status: response.status(),
+        contentType: responseHeaders["content-type"] ?? "text/html",
+        body: policyBody,
+        responseBytes,
+        retryAfterMs: parseRetryAfterMs(responseHeaders["retry-after"] ?? null),
+        proxyUsed: proxy !== null,
+        agentIdentity: agentIdentityEvidence(this.config, false),
+        linkHeader: responseHeaders.link ?? null,
+      });
+      const rsl =
+        responseRsl.status === "permitted" || robotsRsl.status === "not-declared"
+          ? responseRsl
+          : robotsRsl;
+      const statusError = errorForHttpStatus(
+        response.status(),
+        finalUrl,
+        parseRetryAfterMs(responseHeaders["retry-after"] ?? null),
+      );
+      if (statusError !== null) {
+        throw statusError;
+      }
+
       return {
         body,
         fetchedAt: new Date().toISOString(),
@@ -176,6 +218,7 @@ export class BrowserPageFetcher implements PageFetcher {
         finalUrl,
         proxyUsed: proxy !== null,
         agentIdentity: agentIdentityEvidence(this.config, false),
+        rsl,
       };
     } catch (error) {
       throw browserError(error);

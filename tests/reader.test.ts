@@ -229,4 +229,23 @@ describe("ReaderService", () => {
 
     expect(page.evidence.agentIdentity).toEqual(agentIdentity);
   });
+
+  it("preserves RSL policy evidence", async () => {
+    const rsl = {
+      status: "permitted" as const,
+      usage: "ai-input" as const,
+      discoveredBy: ["robots" as const],
+      licenseUrls: ["https://example.com/license.xml"],
+    };
+    const page = await readerWith(
+      new StubFetcher(rawPage({ rsl })),
+      new StubFetcher(new Error("unused")),
+    ).readPage({
+      url: "https://example.com/article",
+      mode: "http",
+      cacheMode: "live",
+    });
+
+    expect(page.evidence.rsl).toEqual(rsl);
+  });
 });

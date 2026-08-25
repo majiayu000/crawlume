@@ -144,6 +144,21 @@ JWK 不得出现在工具输入、返回、缓存或错误 details。
 请求使用的 User-Agent、公开身份 URL、`signed` 状态和兼容档，不得把浏览器结果标成已签名。
 旧缓存结果可以没有该字段。完整约束见 `docs/agent-identity-spec.md`。
 
+## RSL 许可策略
+
+页面正文进入提取、缓存或 Agent 上下文前，必须检查当前 User-Agent group 的 robots `License:`、
+HTTP RSL Link、HTML RSL link 和 inline script。外部 RSL 文件继续经过 URL policy、DNS、重定向、
+响应大小和内容类型校验；声明存在但无法安全判断时返回 `RSL_INVALID`，不得静默放行。
+
+管理员通过 `DIAOYAN_RSL_USAGE` 声明稳定用途，默认 `ai-input`；可选配置真实的 user class 与 geo。
+明确禁止返回 `RSL_PROHIBITED`，License Server 返回 `RSL_LICENSE_REQUIRED`，付费或 custom 流程返回
+`RSL_PAYMENT_REQUIRED`，归因、standard、reporting、legal 或 terms 返回
+`RSL_CONFIRMATION_REQUIRED`。首版不自动购买、接受协议、提交报告或获取 OLP Token。
+
+新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
+支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS 与媒体容器元数据
+尚未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见 `docs/rsl-policy-spec.md`。
+
 ## 浏览器 Worker 池
 
 无授权 Profile 的动态页面使用进程内浏览器池。默认最多 2 个 Chrome 实例，每个实例最多 4 个

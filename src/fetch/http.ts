@@ -9,6 +9,7 @@ import type { PageFetcher, RawPage } from "../types.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool } from "../proxy.js";
+import type { RslPolicy } from "../rsl.js";
 
 export type TransportResponse = {
   url: URL;
@@ -19,6 +20,7 @@ export type TransportResponse = {
   retryAfterMs: number | null;
   proxyUsed: boolean;
   agentIdentity: ReturnType<AgentIdentity["evidence"]>;
+  linkHeader: string | null;
 };
 
 type BeforeRequest = (url: URL) => Promise<void>;
@@ -198,6 +200,7 @@ export class HttpTransport {
         retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
         proxyUsed: proxy !== null,
         agentIdentity: this.identity.evidence(),
+        linkHeader: response.headers.get("link"),
       };
     }
 
@@ -229,12 +232,22 @@ export class HttpPageFetcher implements PageFetcher {
   constructor(
     private readonly transport: HttpTransport,
     private readonly robots: RobotsPolicy,
+    private readonly rsl: RslPolicy,
   ) {}
 
   async fetch(url: URL): Promise<RawPage> {
+    let robotsRsl = this.rsl.emptyEvidence();
     const response = await this.transport.fetch(url, {
-      beforeRequest: async (nextUrl) => this.robots.assertAllowed(nextUrl),
+      beforeRequest: async (nextUrl) => {
+        await this.robots.assertAllowed(nextUrl);
+        robotsRsl = await this.rsl.evaluateRobots(nextUrl, await this.robots.licenseUrls(nextUrl));
+      },
     });
+    const responseRsl = await this.rsl.evaluateResponse(response.url, response);
+    const rsl =
+      responseRsl.status === "permitted" || robotsRsl.status === "not-declared"
+        ? responseRsl
+        : robotsRsl;
     const statusError = errorForHttpStatus(
       response.status,
       response.url.toString(),
@@ -253,6 +266,7 @@ export class HttpPageFetcher implements PageFetcher {
       finalUrl: response.url.toString(),
       proxyUsed: response.proxyUsed,
       agentIdentity: response.agentIdentity,
+      rsl,
     };
   }
 }

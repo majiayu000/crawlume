@@ -160,6 +160,9 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_WEB_BOT_AUTH_JWK_PATH` | unset | Absolute path to a mode-0600 Ed25519 private JWK; enables HTTP signing |
 | `DIAOYAN_WEB_BOT_AUTH_PROFILE` | `cloudflare-legacy` | Wire compatibility profile; currently only this value is supported |
 | `DIAOYAN_WEB_BOT_AUTH_TTL_SECONDS` | `60` | Signature lifetime from 10 to 300 seconds |
+| `DIAOYAN_RSL_USAGE` | `ai-input` | Intended use: `ai-train`, `ai-input`, `ai-index`, or `search` |
+| `DIAOYAN_RSL_USER_CLASS` | unset | Optional operator class used for RSL decisions |
+| `DIAOYAN_RSL_GEO` | unset | Optional two-letter uppercase region used for RSL decisions |
 | `DIAOYAN_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
 | `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
 | `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
@@ -213,6 +216,25 @@ reports `signed: false`; signing never bypasses robots, login, payment, or site 
 [Agent identity specification](docs/agent-identity-spec.md) for the exact compatibility and key
 requirements.
 
+### RSL license policy
+
+Diaoyan checks RSL 1.0 declarations in applicable `robots.txt` groups, HTTP Link headers, HTML links,
+and inline RSL scripts before extracted content is cached or returned to an Agent. The default
+purpose is `ai-input`, matching grounding and RAG use. Configure user class or region only when the
+operator can state those facts accurately:
+
+```bash
+export DIAOYAN_RSL_USAGE=ai-input
+export DIAOYAN_RSL_USER_CLASS=personal
+export DIAOYAN_RSL_GEO=CN
+```
+
+Clearly free and permitted content continues. Prohibited use, License Token requirements, payment,
+attribution, reporting, or legal terms fail with dedicated `RSL_*` error codes. This release never
+purchases or accepts a license automatically. `not-declared` evidence means only that no supported
+RSL association was found; it is not a legal clearance. See the
+[RSL policy specification](docs/rsl-policy-spec.md) for supported discovery surfaces and limits.
+
 Project documents:
 
 - [Technical contract](docs/spec.md)
@@ -221,3 +243,4 @@ Project documents:
 - [Roadmap](docs/roadmap.md)
 - [Search provider setup](docs/search.md)
 - [Agent identity and Web Bot Auth](docs/agent-identity-spec.md)
+- [RSL discovery and policy](docs/rsl-policy-spec.md)

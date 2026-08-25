@@ -18,6 +18,70 @@ type RobotsParser = (
 const require = createRequire(import.meta.url);
 const robotsParser = require("robots-parser") as RobotsParser;
 
+export function parseRobotsLicenseUrls(text: string, userAgent: string): string[] {
+  type Group = { agents: string[]; licenses: string[] };
+  const globals: string[] = [];
+  const groups: Group[] = [];
+  let group: Group | null = null;
+  let groupHasDirectives = false;
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, "").trim();
+    if (line.length === 0) {
+      continue;
+    }
+    const separator = line.indexOf(":");
+    if (separator === -1) {
+      continue;
+    }
+    const field = line.slice(0, separator).trim().toLowerCase();
+    const value = line.slice(separator + 1).trim();
+    if (field === "user-agent") {
+      if (group === null || groupHasDirectives) {
+        group = { agents: [], licenses: [] };
+        groups.push(group);
+        groupHasDirectives = false;
+      }
+      if (value.length > 0) {
+        group.agents.push(value.toLowerCase());
+      }
+      continue;
+    }
+    if (group === null) {
+      if (field === "license" && /^https?:\/\//i.test(value)) {
+        globals.push(value);
+      }
+      continue;
+    }
+    groupHasDirectives = true;
+    if (field === "license" && /^https?:\/\//i.test(value)) {
+      group.licenses.push(value);
+    }
+  }
+
+  const product = userAgent.split(/[\s/]/, 1)[0]?.toLowerCase() ?? userAgent.toLowerCase();
+  let bestLength = -1;
+  const selected: string[] = [];
+  for (const candidate of groups) {
+    const matchingLengths = candidate.agents
+      .filter((agent) => agent === "*" || product.includes(agent))
+      .map((agent) => (agent === "*" ? 0 : agent.length));
+    const matchLength = matchingLengths.length === 0 ? -1 : Math.max(...matchingLengths);
+    if (matchLength < bestLength) {
+      continue;
+    }
+    if (matchLength > bestLength) {
+      selected.length = 0;
+      bestLength = matchLength;
+    }
+    if (matchLength >= 0) {
+      selected.push(...candidate.licenses);
+    }
+  }
+  const applicable = selected.length > 0 ? selected : globals;
+  return [...new Set(applicable)];
+}
+
 export class RobotsPolicy {
   private readonly cache = new Map<string, CachedRobots>();
 
@@ -37,6 +101,11 @@ export class RobotsPolicy {
         details: { url: url.toString(), robotsUrl: cached.robotsUrl },
       });
     }
+  }
+
+  async licenseUrls(url: URL): Promise<string[]> {
+    const cached = await this.load(url.origin);
+    return cached.text === null ? [] : parseRobotsLicenseUrls(cached.text, this.config.userAgent);
   }
 
   private async load(origin: string): Promise<CachedRobots> {

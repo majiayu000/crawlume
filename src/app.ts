@@ -14,6 +14,7 @@ import { RobotsPolicy } from "./security/robots.js";
 import { UrlPolicy } from "./security/url-policy.js";
 import { SiteService } from "./site.js";
 import { SearchService, SearxngProvider } from "./search.js";
+import { RslPolicy } from "./rsl.js";
 
 export type DiaoyanApp = {
   reader: ReaderService;
@@ -45,13 +46,14 @@ export function createApp(
   const proxyPool = new ProxyPool(config.proxyEndpoints);
   const transport = new HttpTransport(config, urlPolicy, proxyPool);
   const robots = new RobotsPolicy(config, transport);
+  const rsl = new RslPolicy(config, transport);
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
   const metrics = new CrawlerMetrics(config.cachePath);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
   const crawlPolicy = new CrawlRequestPolicy(config);
-  const httpFetcher = new HttpPageFetcher(transport, robots);
-  const browserFetcher = new BrowserPageFetcher(config, urlPolicy, robots, profiles, proxyPool);
+  const httpFetcher = new HttpPageFetcher(transport, robots, rsl);
+  const browserFetcher = new BrowserPageFetcher(config, urlPolicy, robots, profiles, rsl, proxyPool);
   const reader = new ReaderService(
     config,
     urlPolicy,

@@ -17,9 +17,25 @@ import type {
 import { UrlPolicy } from "./security/url-policy.js";
 import { validateContent } from "./validation.js";
 
-function cacheKey(url: string, mode: string, authProfile: string | null): string {
+function cacheKey(
+  url: string,
+  mode: string,
+  authProfile: string | null,
+  config: AppConfig,
+): string {
   return createHash("sha256")
-    .update(JSON.stringify({ schema: 3, url, mode, authProfile }))
+    .update(
+      JSON.stringify({
+        schema: 4,
+        url,
+        mode,
+        authProfile,
+        userAgent: config.userAgent,
+        rslUsage: config.rslUsage,
+        rslUserClass: config.rslUserClass,
+        rslGeo: config.rslGeo,
+      }),
+    )
     .digest("hex");
 }
 
@@ -80,7 +96,7 @@ export class ReaderService {
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
     const authProfile = options.authProfile ?? null;
-    const key = cacheKey(url.toString(), mode, authProfile);
+    const key = cacheKey(url.toString(), mode, authProfile, this.config);
 
     if (cacheMode !== "live") {
       const cached = this.cache.get(key, maxAgeSeconds);
@@ -154,6 +170,7 @@ export class ReaderService {
         extractionMethod: extracted.extractionMethod,
         proxyUsed: page.proxyUsed ?? false,
         ...(page.agentIdentity === undefined ? {} : { agentIdentity: page.agentIdentity }),
+        ...(page.rsl === undefined ? {} : { rsl: page.rsl }),
       },
     };
   }
