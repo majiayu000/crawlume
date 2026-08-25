@@ -28,6 +28,14 @@ type Scope = {
   ignoreQueryParameters: boolean;
 };
 
+type CrawlExecutionOptions = CrawlSiteOptions & { signal?: AbortSignal };
+
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new ReadError("CRAWL_CANCELLED", "The crawl job was cancelled.");
+  }
+}
+
 function positiveInteger(value: number | undefined, fallback: number, maximum: number, name: string) {
   const resolved = value ?? fallback;
   if (!Number.isSafeInteger(resolved) || resolved <= 0 || resolved > maximum) {
@@ -167,7 +175,7 @@ export class SiteService {
     };
   }
 
-  async crawlSite(options: CrawlSiteOptions): Promise<CrawlSiteResult> {
+  async crawlSite(options: CrawlExecutionOptions): Promise<CrawlSiteResult> {
     const maxPages = positiveInteger(
       options.maxPages,
       defaultCrawlPages,
@@ -191,6 +199,7 @@ export class SiteService {
     let scannedPages = 0;
 
     while (queue.length > 0 && scannedPages < maxPages) {
+      throwIfCancelled(options.signal);
       const entry = queue.shift();
       if (entry === undefined) {
         break;
@@ -206,6 +215,7 @@ export class SiteService {
             : { maxAgeSeconds: options.maxAgeSeconds }),
           ...(options.authProfile === undefined ? {} : { authProfile: options.authProfile }),
         });
+        throwIfCancelled(options.signal);
         const { discoveredLinks, ...result } = artifact;
         pages.push({ ...entry, result });
         if (entry.depth >= maxDepth) {
@@ -213,6 +223,7 @@ export class SiteService {
         }
         this.enqueueLinks(discoveredLinks, entry, scope, queued, queue);
       } catch (error) {
+        throwIfCancelled(options.signal);
         if (entry.depth === 0) {
           throw error;
         }

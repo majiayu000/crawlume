@@ -110,7 +110,15 @@ describe("diaoyan CLI", () => {
         language: "zh-CN",
         safeSearch: 2,
         timeRange: "month",
+        source: "auto",
       },
+    });
+  });
+
+  it("selects local-only search", () => {
+    expect(parseCli(["search", "inference", "--source", "local"])).toMatchObject({
+      kind: "search",
+      options: { query: "inference", source: "local" },
     });
   });
 
@@ -127,6 +135,7 @@ describe("diaoyan CLI", () => {
     [["search"], "requires a query"],
     [["search", "query", "--limit", "21"], "between 1 and 20"],
     [["search", "query", "--time-range", "week"], "unsupported value"],
+    [["search", "query", "--source", "remote"], "unsupported value"],
   ])("rejects invalid arguments", (argv, message) => {
     expect(() => parseCli(argv)).toThrow(message);
   });

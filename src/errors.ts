@@ -21,6 +21,8 @@ export const errorCodes = [
   "CACHE_MISS",
   "SEARCH_PROVIDER_NOT_CONFIGURED",
   "SEARCH_PROVIDER_ERROR",
+  "JOB_NOT_FOUND",
+  "CRAWL_CANCELLED",
   "INTERNAL_ERROR",
 ] as const;
 

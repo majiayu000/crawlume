@@ -2,19 +2,25 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { PageCache } from "../src/cache.js";
 import { ReadError } from "../src/errors.js";
+import { LocalPageIndex } from "../src/index.js";
 import { ReaderService } from "../src/reader.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
 import { publicResolver, rawPage, StubFetcher, testConfig } from "./helpers.js";
 
 const readers: ReaderService[] = [];
 
-function readerWith(http: StubFetcher, browser: StubFetcher): ReaderService {
+function readerWith(
+  http: StubFetcher,
+  browser: StubFetcher,
+  localIndex: LocalPageIndex | null = null,
+): ReaderService {
   const reader = new ReaderService(
     testConfig(),
     new UrlPolicy(async () => publicResolver()),
     new PageCache(":memory:"),
     http,
     browser,
+    localIndex,
   );
   readers.push(reader);
   return reader;
@@ -73,5 +79,32 @@ describe("ReaderService", () => {
         cacheMode: "cache-only",
       }),
     ).rejects.toMatchObject({ code: "CACHE_MISS" });
+  });
+
+  it("automatically indexes public reads but excludes authorized reads", async () => {
+    const index = new LocalPageIndex(":memory:");
+    const reader = readerWith(
+      new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() })),
+      new StubFetcher(rawPage({ method: "browser", fetchedAt: new Date().toISOString() })),
+      index,
+    );
+    try {
+      await reader.readPage({
+        url: "https://example.com/article",
+        mode: "http",
+        cacheMode: "live",
+      });
+      await reader.readPage({
+        url: "https://example.com/private",
+        mode: "browser",
+        authProfile: "research",
+        cacheMode: "live",
+      });
+
+      expect(index.count()).toBe(1);
+      expect(index.search("complete article", 10, 1)).toHaveLength(1);
+    } finally {
+      index.close();
+    }
   });
 });

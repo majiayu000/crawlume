@@ -3,7 +3,14 @@ import { fetch } from "undici";
 import { z } from "zod";
 
 import { ReadError } from "./errors.js";
-import { searchTimeRanges, type SearchWebOptions, type SearchWebResult } from "./types.js";
+import { LocalPageIndex } from "./index.js";
+import {
+  searchSources,
+  searchTimeRanges,
+  type SearchResult,
+  type SearchWebOptions,
+  type SearchWebResult,
+} from "./types.js";
 
 const maximumQueryCharacters = 512;
 const maximumResults = 20;
@@ -18,11 +25,13 @@ type SearchResponse = {
 
 export type SearchRequester = (url: URL) => Promise<SearchResponse>;
 
+type ProviderSearchOptions = Required<Omit<SearchWebOptions, "timeRange" | "source">> & {
+  timeRange?: SearchWebOptions["timeRange"];
+};
+
 export interface SearchProvider {
   readonly name: string;
-  search(options: Required<Omit<SearchWebOptions, "timeRange">> & {
-    timeRange?: SearchWebOptions["timeRange"];
-  }): Promise<SearchWebResult>;
+  search(options: ProviderSearchOptions): Promise<SearchWebResult>;
 }
 
 const searxngResponse = z.object({
@@ -140,11 +149,7 @@ export class SearxngProvider implements SearchProvider {
     this.requester = requester;
   }
 
-  async search(
-    options: Required<Omit<SearchWebOptions, "timeRange">> & {
-      timeRange?: SearchWebOptions["timeRange"];
-    },
-  ): Promise<SearchWebResult> {
+  async search(options: ProviderSearchOptions): Promise<SearchWebResult> {
     const base = new URL(this.baseUrl);
     if (!base.pathname.endsWith("/")) {
       base.pathname += "/";
@@ -221,6 +226,7 @@ export class SearxngProvider implements SearchProvider {
         title: htmlToText(item.title),
         url: normalizedUrl,
         snippet: htmlToText(item.content ?? ""),
+        source: "web" as const,
         engines,
         score: item.score ?? null,
         publishedAt: item.publishedDate ?? null,
@@ -239,20 +245,18 @@ export class SearxngProvider implements SearchProvider {
       page: options.page,
       results,
       totalResults: parsed.data.number_of_results ?? null,
+      warnings: [],
     };
   }
 }
 
 export class SearchService {
-  constructor(private readonly provider: SearchProvider | null) {}
+  constructor(
+    private readonly provider: SearchProvider | null,
+    private readonly localIndex: LocalPageIndex | null = null,
+  ) {}
 
   async searchWeb(options: SearchWebOptions): Promise<SearchWebResult> {
-    if (this.provider === null) {
-      throw new ReadError(
-        "SEARCH_PROVIDER_NOT_CONFIGURED",
-        "No search provider is configured. Set DIAOYAN_SEARXNG_URL to a SearXNG instance.",
-      );
-    }
     const query = options.query.replace(/\s+/g, " ").trim();
     if (query.length === 0 || query.length > maximumQueryCharacters) {
       throw new ReadError(
@@ -294,13 +298,141 @@ export class SearchService {
       });
     }
 
-    return this.provider.search({
+    const source = options.source ?? "auto";
+    if (!searchSources.includes(source)) {
+      throw new ReadError("INVALID_ARGUMENT", "source must be auto, local, or web.", {
+        details: { source },
+      });
+    }
+
+    const normalized: ProviderSearchOptions = {
       query,
       limit,
       page,
       language,
       safeSearch,
       ...(options.timeRange === undefined ? {} : { timeRange: options.timeRange }),
-    });
+    };
+
+    if (source === "web" || (source === "auto" && page > 1)) {
+      return this.searchProvider(normalized);
+    }
+    if (source === "local") {
+      return this.searchLocal(normalized);
+    }
+    return this.searchAuto(normalized);
   }
+
+  private searchLocal(options: ProviderSearchOptions): SearchWebResult {
+    if (this.localIndex === null) {
+      throw new ReadError(
+        "SEARCH_PROVIDER_NOT_CONFIGURED",
+        "The local page index is not available.",
+      );
+    }
+    return this.localResult(
+      options,
+      this.localIndex.search(options.query, options.limit, options.page, options.timeRange),
+    );
+  }
+
+  private async searchProvider(options: ProviderSearchOptions): Promise<SearchWebResult> {
+    if (this.provider === null) {
+      throw new ReadError(
+        "SEARCH_PROVIDER_NOT_CONFIGURED",
+        "No web search provider is configured. Set DIAOYAN_SEARXNG_URL or use source=local.",
+      );
+    }
+    return this.provider.search(options);
+  }
+
+  private async searchAuto(options: ProviderSearchOptions): Promise<SearchWebResult> {
+    const localResults = this.localIndex?.search(
+      options.query,
+      options.limit,
+      1,
+      options.timeRange,
+    ) ?? [];
+    if (localResults.length >= options.limit) {
+      return this.localResult(options, localResults);
+    }
+    if (this.provider === null) {
+      if ((this.localIndex?.count() ?? 0) > 0) {
+        return this.localResult(options, localResults);
+      }
+      throw new ReadError(
+        "SEARCH_PROVIDER_NOT_CONFIGURED",
+        "No indexed pages or web search provider are available. Read or crawl pages first, or set DIAOYAN_SEARXNG_URL.",
+      );
+    }
+
+    try {
+      const web = await this.provider.search(options);
+      if (localResults.length === 0) {
+        return web;
+      }
+      return {
+        status: "ok",
+        query: options.query,
+        provider: `local+${this.provider.name}`,
+        searchedAt: new Date().toISOString(),
+        page: 1,
+        results: mergeResults(localResults, web.results, options.limit),
+        totalResults: null,
+        warnings: [],
+      };
+    } catch (error) {
+      if (localResults.length === 0) {
+        throw error;
+      }
+      const normalized = error instanceof ReadError
+        ? error
+        : new ReadError("SEARCH_PROVIDER_ERROR", "The web search provider failed.", {
+            retryable: true,
+            cause: error,
+          });
+      return {
+        ...this.localResult(options, localResults),
+        status: "partial",
+        provider: `local+${this.provider.name}`,
+        warnings: [{
+          code: normalized.code,
+          message: normalized.message,
+          retryable: normalized.retryable,
+        }],
+      };
+    }
+  }
+
+  private localResult(options: ProviderSearchOptions, results: SearchResult[]): SearchWebResult {
+    return {
+      status: "ok",
+      query: options.query,
+      provider: "local",
+      searchedAt: new Date().toISOString(),
+      page: options.page,
+      results,
+      totalResults: null,
+      warnings: [],
+    };
+  }
+}
+
+function mergeResults(local: SearchResult[], web: SearchResult[], limit: number): SearchResult[] {
+  const seen = new Set<string>();
+  const merged: SearchResult[] = [];
+  for (const result of [...local, ...web]) {
+    const url = new URL(result.url);
+    url.hash = "";
+    const key = url.toString();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(result);
+    if (merged.length >= limit) {
+      break;
+    }
+  }
+  return merged;
 }

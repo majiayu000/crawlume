@@ -15,6 +15,7 @@ export type AppConfig = {
   browserChannel: string;
   browserExecutable: string | null;
   allowDnsFakeIp: boolean;
+  localIndexEnabled: boolean;
   searxngUrl: string | null;
 };
 
@@ -70,6 +71,7 @@ export function loadConfig(): AppConfig {
     browserChannel: process.env.DIAOYAN_BROWSER_CHANNEL ?? "chrome",
     browserExecutable: process.env.DIAOYAN_BROWSER_EXECUTABLE ?? null,
     allowDnsFakeIp: booleanFlag("DIAOYAN_ALLOW_DNS_FAKE_IP", false),
+    localIndexEnabled: booleanFlag("DIAOYAN_LOCAL_INDEX_ENABLED", false),
     searxngUrl: process.env.DIAOYAN_SEARXNG_URL ?? null,
   };
 }

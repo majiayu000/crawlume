@@ -6,6 +6,7 @@ import { normalizeError } from "./errors.js";
 import {
   cacheModes,
   fetchModes,
+  searchSources,
   searchTimeRanges,
   type CrawlSiteOptions,
   type MapSiteOptions,
@@ -52,6 +53,11 @@ const searchWebInput = z.object({
   language: z.string().regex(/^(?:all|[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?)$/).default("all"),
   safeSearch: z.union([z.literal(0), z.literal(1), z.literal(2)]).default(1),
   timeRange: z.enum(searchTimeRanges).optional(),
+  source: z.enum(searchSources).default("auto"),
+});
+
+const crawlJobInput = z.object({
+  jobId: z.uuid().describe("Crawl job ID returned by start_crawl."),
 });
 
 function successResult(value: Record<string, unknown>): CallToolResult {
@@ -108,17 +114,19 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
     page: args.page,
     language: args.language,
     safeSearch: args.safeSearch,
+    source: args.source,
     ...(args.timeRange === undefined ? {} : { timeRange: args.timeRange }),
   };
 }
 
 export function createMcpServer(app: DiaoyanApp): McpServer {
   const server = new McpServer(
-    { name: "diaoyan-web-reader", version: "0.3.0" },
+    { name: "diaoyan-web-reader", version: "0.5.0" },
     {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
-        "crawl_site for bounded multi-page reading, and inspect_page for diagnostics. " +
+        "crawl_site for synchronous bounded reading, start_crawl/get_crawl/cancel_crawl for durable asynchronous crawling, " +
+        "and inspect_page for diagnostics. " +
         "Access failures are explicit: never treat an isError result as page content. " +
         "Authentication profiles must be created out-of-band by the user.",
     },
@@ -127,10 +135,10 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
   server.registerTool(
     "search_web",
     {
-      title: "Search the web",
+      title: "Search pages",
       description:
-        "Search through the configured provider and return normalized result URLs and snippets. " +
-        "Requires DIAOYAN_SEARXNG_URL for the current SearXNG provider.",
+        "Search the local page index, a configured web provider, or both, and return normalized URLs and snippets. " +
+        "Use source=local for no-network search; web discovery requires DIAOYAN_SEARXNG_URL.",
       inputSchema: searchWebInput,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
@@ -214,6 +222,59 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     async (args): Promise<CallToolResult> => {
       try {
         return successResult({ ...(await app.site.crawlSite(toCrawlOptions(args))) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "start_crawl",
+    {
+      title: "Start crawl job",
+      description:
+        "Persist a bounded crawl job and return immediately. Use get_crawl to retrieve status and results.",
+      inputSchema: crawlSiteInput,
+      annotations: { idempotentHint: false, openWorldHint: true },
+    },
+    async (args): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.jobs.start(toCrawlOptions(args)) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_crawl",
+    {
+      title: "Get crawl job",
+      description: "Return the durable crawl job status, result, or structured failure.",
+      inputSchema: crawlJobInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ jobId }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.jobs.get(jobId) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "cancel_crawl",
+    {
+      title: "Cancel crawl job",
+      description:
+        "Cancel a queued crawl or request cooperative cancellation of the currently running page crawl.",
+      inputSchema: crawlJobInput,
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    async ({ jobId }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.jobs.cancel(jobId) });
       } catch (error) {
         return errorResult(error);
       }

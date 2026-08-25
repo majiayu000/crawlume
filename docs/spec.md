@@ -1,4 +1,4 @@
-# Diaoyan Web Reader v0.3
+# Diaoyan Crawler v0.5
 
 ## 目标
 
@@ -10,7 +10,7 @@ v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、�
 
 ### `search_web`
 
-通过管理员配置的 SearXNG JSON API 搜索网页，返回标准化的标题、URL、摘要、来源引擎、日期和 Provider 分数。
+搜索本地 SQLite 全文索引、管理员配置的 SearXNG JSON API，或组合两者，返回标准化的标题、URL、摘要、来源、日期和 Provider 分数。
 
 - `query`：必填，最多 512 字符。
 - `limit`：默认 10，最大 20。
@@ -18,8 +18,14 @@ v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、�
 - `language`：默认 `all`。
 - `safeSearch`：`0`、`1` 或 `2`，默认 1。
 - `timeRange`：可选的 `day`、`month` 或 `year`。
+- `source`：`auto`、`local` 或 `web`，默认 `auto`。
 
-未配置 Provider 时必须返回 `SEARCH_PROVIDER_NOT_CONFIGURED`。实例禁用 JSON、返回错误状态或响应结构异常时必须返回 `SEARCH_PROVIDER_ERROR`，不得伪造空成功结果。
+仅当管理员显式设置 `DIAOYAN_LOCAL_INDEX_ENABLED=1` 时，成功公开读取才写入本地 FTS5；
+爬虫默认不建设记忆索引，授权 Profile 页面始终不得索引。启用后，`auto` 第 1 页本地优先，并由
+SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足失败但已有本地命中时必须返回
+`partial` 和 warning。没有本地语料且未配置 Provider 时必须返回
+`SEARCH_PROVIDER_NOT_CONFIGURED`。实例禁用 JSON、返回错误状态或响应结构异常时必须返回
+`SEARCH_PROVIDER_ERROR`，不得伪造空成功结果。
 
 ### `read_page`
 
@@ -57,6 +63,16 @@ v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、�
 使用与 `read_page` 相同的读取、缓存、完整性和授权规则，边发现边读取同主机页面。默认最多 10 页、深度 2，硬上限 50 页。每页返回 Markdown、证据、发现来源和深度。
 
 起始页失败时整个调用失败；后续页面失败时返回 `partial` 与逐页结构化错误。
+
+### 异步 Crawl Job
+
+- `start_crawl`：持久化与 `crawl_site` 相同的输入并立即返回 UUID 和 `queued` 状态。
+- `get_crawl`：返回 `queued`、`running`、`completed`、`failed` 或 `cancelled`，以及结果或错误。
+- `cancel_crawl`：立即取消排队任务，或协作式取消运行任务。
+
+任务保存在 `cache.sqlite`。长期 MCP 服务启动时恢复被中断的运行任务；普通 CLI 进程不得恢复或
+执行后台队列。每个数据目录只允许一个主动 Worker 服务进程。页面级 `partial` 结果属于任务
+`completed`，不得混淆任务执行与页面抓取质量。
 
 ### `list_auth_profiles`
 
@@ -97,6 +113,8 @@ v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、�
 - `CACHE_MISS`
 - `SEARCH_PROVIDER_NOT_CONFIGURED`
 - `SEARCH_PROVIDER_ERROR`
+- `JOB_NOT_FOUND`
+- `CRAWL_CANCELLED`
 - `INTERNAL_ERROR`
 
 不得用成功响应包装上述失败。
@@ -142,7 +160,7 @@ v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、�
 
 默认数据目录为平台用户数据目录下的 `diaoyan`，可通过 `DIAOYAN_DATA_DIR` 覆盖。
 
-- `cache.sqlite`: 成功正文缓存。
+- `cache.sqlite`: 成功正文缓存、持久 Crawl Job 和结果，以及显式启用时的本地 FTS5 全文索引。
 - `profiles/<name>/`: 专用 Chromium Profile。
 
 Profile 名称只允许字母、数字、点、下划线和连字符。
@@ -156,6 +174,8 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
 - 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
 - 单元测试覆盖低成本验收状态与稳定 warning code。
-- MCP 客户端可以列出并调用六个工具。
+- MCP 客户端可以列出并调用九个工具。
+- 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
+- 异步任务可完成、失败、取消并在服务重启后恢复。
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。

@@ -154,4 +154,16 @@ describe("SiteService", () => {
     expect(result.pages).toHaveLength(2);
     expect(result.truncated).toBe(true);
   });
+
+  it("stops a crawl before fetching when its job signal is cancelled", async () => {
+    const root = "https://example.com/";
+    const { service, http } = serviceWith(new Map([[root, page(root, [], true)]]));
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      service.crawlSite({ url: root, mode: "http", signal: controller.signal }),
+    ).rejects.toMatchObject({ code: "CRAWL_CANCELLED" });
+    expect(http.calls).toEqual([]);
+  });
 });

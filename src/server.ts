@@ -11,7 +11,7 @@ import { loadConfig } from "./config.js";
 import { createMcpServer } from "./mcp.js";
 
 export async function main(): Promise<void> {
-  const app = createApp(loadConfig());
+  const app = createApp(loadConfig(), { runCrawlWorker: true });
   const server = createMcpServer(app);
   const transport = new StdioServerTransport();
   let closing = false;

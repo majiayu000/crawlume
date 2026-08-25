@@ -7,6 +7,9 @@ export type CacheMode = (typeof cacheModes)[number];
 export const searchTimeRanges = ["day", "month", "year"] as const;
 export type SearchTimeRange = (typeof searchTimeRanges)[number];
 
+export const searchSources = ["auto", "local", "web"] as const;
+export type SearchSource = (typeof searchSources)[number];
+
 export type FetchMethod = "http" | "browser";
 export type ExtractionMethod = "readability" | "document" | "plain";
 export type ContentStatus = "usable" | "uncertain";
@@ -136,6 +139,33 @@ export type CrawlSiteResult = {
   truncated: boolean;
 };
 
+export const crawlJobStatuses = [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type CrawlJobStatus = (typeof crawlJobStatuses)[number];
+
+export type CrawlJobError = {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details: Record<string, boolean | number | string | null>;
+};
+
+export type CrawlJob = {
+  id: string;
+  status: CrawlJobStatus;
+  input: CrawlSiteOptions;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  result: CrawlSiteResult | null;
+  error: CrawlJobError | null;
+};
+
 export type SearchWebOptions = {
   query: string;
   limit?: number;
@@ -143,26 +173,35 @@ export type SearchWebOptions = {
   language?: string;
   safeSearch?: 0 | 1 | 2;
   timeRange?: SearchTimeRange;
+  source?: SearchSource;
 };
 
 export type SearchResult = {
   title: string;
   url: string;
   snippet: string;
+  source: "local" | "web";
   engines: string[];
   score: number | null;
   publishedAt: string | null;
   thumbnailUrl: string | null;
 };
 
+export type SearchWarning = {
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
 export type SearchWebResult = {
-  status: "ok";
+  status: "ok" | "partial";
   query: string;
   provider: string;
   searchedAt: string;
   page: number;
   results: SearchResult[];
   totalResults: number | null;
+  warnings: SearchWarning[];
 };
 
 export interface PageFetcher {

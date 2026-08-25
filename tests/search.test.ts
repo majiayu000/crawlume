@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { SearchService, SearxngProvider } from "../src/search.js";
+import { LocalPageIndex } from "../src/index.js";
 import type { SearchRequester } from "../src/search.js";
+import type { PageReadArtifact, SearchWebResult } from "../src/types.js";
 
 function jsonResponse(value: unknown, status = 200) {
   const body = JSON.stringify(value);
@@ -27,6 +29,72 @@ describe("SearchService", () => {
       code: "INVALID_ARGUMENT",
     });
     expect(provider.search).not.toHaveBeenCalled();
+  });
+
+  it("searches the local index without a web provider", async () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    try {
+      const result = await new SearchService(null, index).searchWeb({
+        query: "MiniMax H3",
+        source: "local",
+      });
+      expect(result).toMatchObject({
+        status: "ok",
+        provider: "local",
+        results: [{ source: "local", url: "https://example.com/h3" }],
+        warnings: [],
+      });
+    } finally {
+      index.close();
+    }
+  });
+
+  it("prefers local results and fills from the web without duplicate URLs", async () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    const provider = {
+      name: "test-web",
+      search: vi.fn(async (): Promise<SearchWebResult> => webResult()),
+    };
+    try {
+      const result = await new SearchService(provider, index).searchWeb({
+        query: "MiniMax H3",
+        limit: 3,
+      });
+      expect(result.provider).toBe("local+test-web");
+      expect(result.results.map(({ url }) => url)).toEqual([
+        "https://example.com/h3",
+        "https://example.com/other",
+      ]);
+      expect(result.results[0]?.source).toBe("local");
+    } finally {
+      index.close();
+    }
+  });
+
+  it("reports partial results when web fill fails after a local match", async () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    const provider = {
+      name: "broken-web",
+      search: vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    };
+    try {
+      const result = await new SearchService(provider, index).searchWeb({
+        query: "MiniMax H3",
+        limit: 3,
+      });
+      expect(result).toMatchObject({
+        status: "partial",
+        provider: "local+broken-web",
+        warnings: [{ code: "SEARCH_PROVIDER_ERROR", retryable: true }],
+      });
+    } finally {
+      index.close();
+    }
   });
 });
 
@@ -99,6 +167,7 @@ describe("SearxngProvider", () => {
         title: "MiniMax H3",
         url: "https://example.com/h3",
         snippet: "Fast inference",
+        source: "web",
         engines: ["bing", "google"],
         score: 3.5,
         publishedAt: "2026-07-31T00:00:00Z",
@@ -108,6 +177,7 @@ describe("SearxngProvider", () => {
         title: "Guide",
         url: "https://example.com/guide",
         snippet: "",
+        source: "web",
         engines: ["brave"],
         score: null,
         publishedAt: null,
@@ -140,3 +210,64 @@ describe("SearxngProvider", () => {
     });
   });
 });
+
+function indexedPage(): PageReadArtifact {
+  return {
+    status: "ok",
+    sourceUrl: "https://example.com/h3",
+    finalUrl: "https://example.com/h3",
+    fetchedAt: new Date().toISOString(),
+    fetchMethod: "http",
+    authProfile: null,
+    cached: false,
+    title: "MiniMax H3",
+    byline: null,
+    publishedTime: null,
+    contentMarkdown: "MiniMax H3 inference optimization guide.",
+    contentHash: "hash",
+    completeness: "complete",
+    validation: { status: "usable", warnings: [] },
+    discoveredLinks: [],
+    evidence: {
+      httpStatus: 200,
+      contentType: "text/html",
+      responseBytes: 100,
+      contentCharacters: 40,
+      extractionMethod: "readability",
+    },
+  };
+}
+
+function webResult(): SearchWebResult {
+  return {
+    status: "ok",
+    query: "MiniMax H3",
+    provider: "test-web",
+    searchedAt: new Date().toISOString(),
+    page: 1,
+    results: [
+      {
+        title: "Duplicate",
+        url: "https://example.com/h3#details",
+        snippet: "duplicate",
+        source: "web",
+        engines: ["test"],
+        score: 1,
+        publishedAt: null,
+        thumbnailUrl: null,
+      },
+      {
+        title: "Other",
+        url: "https://example.com/other",
+        snippet: "other",
+        source: "web",
+        engines: ["test"],
+        score: 0.5,
+        publishedAt: null,
+        thumbnailUrl: null,
+      },
+    ],
+    totalResults: 2,
+    warnings: [],
+  };
+}

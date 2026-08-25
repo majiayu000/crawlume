@@ -52,6 +52,19 @@ function siteResult() {
   };
 }
 
+function jobResult(status: "queued" | "running" | "completed" | "cancelled" = "queued") {
+  return {
+    id: "00000000-0000-4000-8000-000000000001",
+    status,
+    input: { url: "https://example.com/", maxPages: 2 },
+    createdAt: "2026-08-25T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    result: null,
+    error: null,
+  };
+}
+
 async function connect(app: DiaoyanApp): Promise<Client> {
   const server = createMcpServer(app);
   const client = new Client({ name: "diaoyan-test", version: "1.0.0" });
@@ -93,6 +106,7 @@ describe("MCP server", () => {
               title: "MiniMax H3",
               url: "https://example.com/h3",
               snippet: "Inference guide",
+              source: "web" as const,
               engines: ["bing"],
               score: 1,
               publishedAt: null,
@@ -100,7 +114,13 @@ describe("MCP server", () => {
             },
           ],
           totalResults: 1,
+          warnings: [],
         })),
+      },
+      jobs: {
+        start: vi.fn(() => jobResult()),
+        get: vi.fn(() => jobResult("running")),
+        cancel: vi.fn(() => jobResult("cancelled")),
       },
       profiles: { list: () => ["work"] },
       close: async () => undefined,
@@ -113,6 +133,9 @@ describe("MCP server", () => {
       "list_auth_profiles",
       "map_site",
       "crawl_site",
+      "start_crawl",
+      "get_crawl",
+      "cancel_crawl",
       "read_page",
       "search_web",
     ].sort());
@@ -149,6 +172,24 @@ describe("MCP server", () => {
       provider: "searxng",
       totalResults: 1,
     });
+
+    const started = await client.callTool({
+      name: "start_crawl",
+      arguments: { url: "https://example.com/", maxPages: 2 },
+    });
+    expect(started.structuredContent).toMatchObject({ status: "queued", input: { maxPages: 2 } });
+
+    const job = await client.callTool({
+      name: "get_crawl",
+      arguments: { jobId: "00000000-0000-4000-8000-000000000001" },
+    });
+    expect(job.structuredContent).toMatchObject({ status: "running" });
+
+    const cancelled = await client.callTool({
+      name: "cancel_crawl",
+      arguments: { jobId: "00000000-0000-4000-8000-000000000001" },
+    });
+    expect(cancelled.structuredContent).toMatchObject({ status: "cancelled" });
   });
 
   it("returns structured tool errors with isError", async () => {
@@ -172,6 +213,17 @@ describe("MCP server", () => {
       search: {
         searchWeb: async () => {
           throw new ReadError("SEARCH_PROVIDER_NOT_CONFIGURED", "Search is not configured.");
+        },
+      },
+      jobs: {
+        start: () => {
+          throw new ReadError("ACCESS_DENIED", "The site denied access.");
+        },
+        get: () => {
+          throw new ReadError("JOB_NOT_FOUND", "The crawl job does not exist.");
+        },
+        cancel: () => {
+          throw new ReadError("JOB_NOT_FOUND", "The crawl job does not exist.");
         },
       },
       profiles: { list: () => [] },

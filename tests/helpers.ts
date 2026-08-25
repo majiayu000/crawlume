@@ -18,6 +18,7 @@ export function testConfig(): AppConfig {
     browserChannel: "chrome",
     browserExecutable: null,
     allowDnsFakeIp: false,
+    localIndexEnabled: false,
     searxngUrl: null,
   };
 }

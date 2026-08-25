@@ -13,8 +13,10 @@ import {
   type CacheMode,
   type FetchMode,
   type ReadPageOptions,
+  type SearchSource,
   type SearchTimeRange,
   type SearchWebOptions,
+  searchSources,
   searchTimeRanges,
 } from "../types.js";
 
@@ -39,6 +41,7 @@ Options:
   --language <code>                          Search language (default: all)
   --safe-search <0|1|2>                      Search filtering level (default: 1)
   --time-range <day|month|year>              Optional search time range
+  --source <auto|local|web>                  Search local index, web, or both (default: auto)
   -h, --help                                 Show this help
 `;
 
@@ -75,6 +78,7 @@ function parseSearchCli(argv: string[]): CliAction {
   let language = "all";
   let safeSearch: 0 | 1 | 2 = 1;
   let timeRange: SearchTimeRange | undefined;
+  let source: SearchSource = "auto";
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -126,6 +130,11 @@ function parseSearchCli(argv: string[]): CliAction {
       index += 1;
       continue;
     }
+    if (argument === "--source") {
+      source = parseChoice(nextValue(argv, index, argument), searchSources, argument);
+      index += 1;
+      continue;
+    }
     if (argument?.startsWith("-")) {
       throw new ReadError("INVALID_ARGUMENT", "Unknown search option.", {
         details: { option: argument },
@@ -148,6 +157,7 @@ function parseSearchCli(argv: string[]): CliAction {
       page,
       language,
       safeSearch,
+      source,
       ...(timeRange === undefined ? {} : { timeRange }),
     },
   };
@@ -331,7 +341,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       process.stdout.write(usage);
       return 0;
     }
-    app = createApp(loadConfig());
+    app = createApp(loadConfig(), { runCrawlWorker: false });
     if (action.kind === "read") {
       const result = await app.reader.readPage(action.options);
       process.stdout.write(

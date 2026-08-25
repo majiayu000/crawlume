@@ -1,6 +1,9 @@
-# Diaoyan Web Reader
+# Diaoyan Crawler
 
-Diaoyan is a local, fail-visible MCP web reader for long-running agents. It reads public pages with honest HTTP requests, renders JavaScript pages with a real local Chrome browser when necessary, and can reuse a dedicated user-authorized browser profile.
+Diaoyan is a self-hosted, fail-visible crawling gateway for long-running Agents. It discovers and
+crawls bounded sites, persists asynchronous jobs, reads public pages with honest HTTP requests,
+renders JavaScript pages with a real local Chrome browser when necessary, and can reuse a dedicated
+user-authorized browser profile.
 
 It does not impersonate AI crawlers, solve CAPTCHAs, or bypass login, payment, robots, or site access controls.
 
@@ -43,11 +46,14 @@ on systems whose DNS returns ordinary public addresses.
 
 Available tools:
 
-- `search_web`: search through a configured SearXNG provider.
+- `search_web`: search the local page index, a configured SearXNG provider, or both.
 - `read_page`: return complete Markdown plus source evidence.
 - `inspect_page`: run the same checks without returning the body.
 - `map_site`: discover a bounded set of same-site links.
 - `crawl_site`: read a bounded set of same-site pages with per-page evidence and failures.
+- `start_crawl`: persist and start a bounded asynchronous crawl job.
+- `get_crawl`: retrieve durable job status, result, or failure.
+- `cancel_crawl`: cancel a queued job or request cancellation of a running job.
 - `list_auth_profiles`: list dedicated browser profile names.
 
 Every blocked, authenticated, paid, challenged, unsupported, or incomplete response is returned as MCP `isError: true` with a stable error code.
@@ -71,15 +77,28 @@ pnpm cli -- read https://example.com/app --mode browser --cache-mode live
 pnpm cli -- map https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 20 --max-depth 2
 pnpm cli -- crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 5 --max-depth 1
 DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli -- search MiniMax H3 推理优化 --language zh-CN
+pnpm cli -- crawl https://example.com/docs --max-pages 20
+pnpm cli -- search inference optimization --source local
 ```
 
 After installing or linking the package, use `diaoyan search`, `diaoyan read`, `diaoyan map`, or `diaoyan crawl`.
 JSON is the default output so scripts and Agents can inspect evidence and stable error codes;
 `--markdown` prints only the extracted page body. Run `diaoyan --help` for all options.
 
+The crawler does not build a memory index by default. Set `DIAOYAN_LOCAL_INDEX_ENABLED=1` only when
+you explicitly want successful public `read` and `crawl` results added to SQLite FTS5. With that
+optional feature enabled, `--source auto` returns local matches first and asks SearXNG to fill the
+remaining slots; `--source local` stays offline. Pages read with `--auth-profile` are never indexed.
+
 `map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
 for deduplication unless `--keep-query` is supplied. Child-page failures are returned in a
 `failures` array; a failed starting page fails the whole call.
+
+For a long-running MCP server, use `start_crawl` when the Agent should not hold one tool call open.
+It returns a UUID immediately; poll `get_crawl` at a task-appropriate interval and use
+`cancel_crawl` when the result is no longer needed. Jobs and results survive process restarts in
+`cache.sqlite`. Normal CLI commands deliberately do not run or recover the background queue, so a
+single data directory should have one active MCP service process.
 
 ## Create an authorized browser profile
 
@@ -111,6 +130,7 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
 | `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
 | `DIAOYAN_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |
+| `DIAOYAN_LOCAL_INDEX_ENABLED` | `false` | Optionally index successful public pages in SQLite FTS5 |
 | `DIAOYAN_SEARXNG_URL` | unset | Trusted SearXNG instance base URL used by `search_web` |
 
 If Clash or another TUN resolver maps public domains into `198.18.0.0/15`, start the reader with

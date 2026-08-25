@@ -4,6 +4,7 @@ import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
 import { extractPage } from "./extract.js";
 import { ReadError } from "./errors.js";
+import { LocalPageIndex } from "./index.js";
 import type {
   InspectPageResult,
   PageReadArtifact,
@@ -37,6 +38,7 @@ export class ReaderService {
     private readonly cache: PageCache,
     private readonly httpFetcher: PageFetcher,
     private readonly browserFetcher: PageFetcher,
+    private readonly localIndex: LocalPageIndex | null = null,
   ) {}
 
   async readPage(options: ReadPageOptions): Promise<ReadPageResult> {
@@ -64,6 +66,7 @@ export class ReaderService {
     if (cacheMode !== "live") {
       const cached = this.cache.get(key, maxAgeSeconds);
       if (cached !== null) {
+        this.localIndex?.put(cached);
         return { ...cached, cached: true };
       }
       if (cacheMode === "cache-only") {
@@ -111,6 +114,7 @@ export class ReaderService {
     }
 
     this.cache.put(key, result);
+    this.localIndex?.put(result);
     return result;
   }
 

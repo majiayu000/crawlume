@@ -7,7 +7,7 @@ import { normalizeError, ReadError } from "../errors.js";
 async function main(): Promise<void> {
   const url = process.argv[2] ?? "https://httpbin.org/html";
   const requestedMode = process.argv[3] ?? "http";
-  const app = createApp(loadConfig());
+  const app = createApp(loadConfig(), { runCrawlWorker: false });
   try {
     if (requestedMode !== "http" && requestedMode !== "browser" && requestedMode !== "auto") {
       throw new ReadError("INVALID_ARGUMENT", "Mode must be http, browser, or auto.", {
