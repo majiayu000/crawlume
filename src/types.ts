@@ -76,6 +76,8 @@ export type ReadPageResult = {
     responseBytes: number;
     contentCharacters: number;
     extractionMethod: ExtractionMethod;
+    attempts?: number;
+    totalRetryDelayMs?: number;
   };
 };
 

@@ -12,6 +12,10 @@ export type AppConfig = {
   maxRedirects: number;
   robotsCacheSeconds: number;
   defaultCacheSeconds: number;
+  crawlMaxAttempts: number;
+  crawlRetryBaseMs: number;
+  crawlMaxRetryDelayMs: number;
+  crawlMinHostIntervalMs: number;
   browserChannel: string;
   browserExecutable: string | null;
   allowDnsFakeIp: boolean;
@@ -55,6 +59,18 @@ function booleanFlag(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be 1, 0, true, or false.`);
 }
 
+function integerInRange(name: string, fallback: number, minimum: number, maximum: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
+}
+
 export function loadConfig(): AppConfig {
   const dataDir = process.env.DIAOYAN_DATA_DIR ?? defaultDataDir();
   return {
@@ -68,6 +84,20 @@ export function loadConfig(): AppConfig {
     maxRedirects: positiveInteger("DIAOYAN_MAX_REDIRECTS", 5),
     robotsCacheSeconds: positiveInteger("DIAOYAN_ROBOTS_CACHE_SECONDS", 3_600),
     defaultCacheSeconds: positiveInteger("DIAOYAN_DEFAULT_CACHE_SECONDS", 900),
+    crawlMaxAttempts: integerInRange("DIAOYAN_CRAWL_MAX_ATTEMPTS", 3, 1, 10),
+    crawlRetryBaseMs: integerInRange("DIAOYAN_CRAWL_RETRY_BASE_MS", 500, 0, 60_000),
+    crawlMaxRetryDelayMs: integerInRange(
+      "DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS",
+      30_000,
+      1,
+      600_000,
+    ),
+    crawlMinHostIntervalMs: integerInRange(
+      "DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS",
+      250,
+      0,
+      60_000,
+    ),
     browserChannel: process.env.DIAOYAN_BROWSER_CHANNEL ?? "chrome",
     browserExecutable: process.env.DIAOYAN_BROWSER_EXECUTABLE ?? null,
     allowDnsFakeIp: booleanFlag("DIAOYAN_ALLOW_DNS_FAKE_IP", false),

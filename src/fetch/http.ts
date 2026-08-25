@@ -3,7 +3,7 @@ import type { LookupFunction } from "node:net";
 import { Agent, fetch } from "undici";
 
 import type { AppConfig } from "../config.js";
-import { errorForHttpStatus, ReadError } from "../errors.js";
+import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
 import type { PageFetcher, RawPage } from "../types.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
@@ -14,6 +14,7 @@ export type TransportResponse = {
   contentType: string;
   body: string;
   responseBytes: number;
+  retryAfterMs: number | null;
 };
 
 type BeforeRequest = (url: URL) => Promise<void>;
@@ -183,6 +184,7 @@ export class HttpTransport {
         contentType: response.headers.get("content-type") ?? "",
         body: body.text,
         responseBytes: body.bytes,
+        retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
       };
     }
 
@@ -204,7 +206,11 @@ export class HttpPageFetcher implements PageFetcher {
     const response = await this.transport.fetch(url, {
       beforeRequest: async (nextUrl) => this.robots.assertAllowed(nextUrl),
     });
-    const statusError = errorForHttpStatus(response.status, response.url.toString());
+    const statusError = errorForHttpStatus(
+      response.status,
+      response.url.toString(),
+      response.retryAfterMs,
+    );
     if (statusError !== null) {
       throw statusError;
     }

@@ -2,6 +2,7 @@ import { BrowserPageFetcher } from "./fetch/browser.js";
 import { HttpPageFetcher, HttpTransport } from "./fetch/http.js";
 import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
+import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { LocalPageIndex } from "./index.js";
 import { CrawlJobService, CrawlJobStore } from "./jobs.js";
 import { ProfileManager } from "./profiles.js";
@@ -30,6 +31,7 @@ export function createApp(
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
+  const crawlPolicy = new CrawlRequestPolicy(config);
   const httpFetcher = new HttpPageFetcher(transport, robots);
   const browserFetcher = new BrowserPageFetcher(config, urlPolicy, robots, profiles);
   const reader = new ReaderService(
@@ -39,8 +41,9 @@ export function createApp(
     httpFetcher,
     browserFetcher,
     localIndex,
+    crawlPolicy,
   );
-  const site = new SiteService(urlPolicy, reader, httpFetcher, browserFetcher);
+  const site = new SiteService(urlPolicy, reader, httpFetcher, browserFetcher, crawlPolicy);
   const searchProvider = config.searxngUrl === null
     ? null
     : new SearxngProvider(

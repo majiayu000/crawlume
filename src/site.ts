@@ -1,4 +1,5 @@
 import { extractLinks } from "./extract.js";
+import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { normalizeError, ReadError } from "./errors.js";
 import type { ReaderService } from "./reader.js";
 import type { UrlPolicy } from "./security/url-policy.js";
@@ -109,6 +110,7 @@ export class SiteService {
     private readonly reader: ReaderService,
     private readonly httpFetcher: PageFetcher,
     private readonly browserFetcher: PageFetcher,
+    private readonly crawlPolicy: CrawlRequestPolicy | null = null,
   ) {}
 
   async mapSite(options: MapSiteOptions): Promise<MapSiteResult> {
@@ -214,6 +216,7 @@ export class SiteService {
             ? {}
             : { maxAgeSeconds: options.maxAgeSeconds }),
           ...(options.authProfile === undefined ? {} : { authProfile: options.authProfile }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
         throwIfCancelled(options.signal);
         const { discoveredLinks, ...result } = artifact;
@@ -244,6 +247,18 @@ export class SiteService {
   }
 
   private async fetchForMap(
+    url: URL,
+    mode: "auto" | "http" | "browser",
+    authProfile: string | undefined,
+  ): Promise<RawPage> {
+    const operation = async (): Promise<RawPage> =>
+      this.fetchForMapOnce(url, mode, authProfile);
+    return this.crawlPolicy === null
+      ? operation()
+      : (await this.crawlPolicy.execute(url, operation)).value;
+  }
+
+  private async fetchForMapOnce(
     url: URL,
     mode: "auto" | "http" | "browser",
     authProfile: string | undefined,

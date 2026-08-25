@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PageCache } from "../src/cache.js";
+import { CrawlRequestPolicy } from "../src/crawl-policy.js";
 import { ReadError } from "../src/errors.js";
 import { LocalPageIndex } from "../src/index.js";
 import { ReaderService } from "../src/reader.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
+import type { PageFetcher, RawPage } from "../src/types.js";
 import { publicResolver, rawPage, StubFetcher, testConfig } from "./helpers.js";
 
 const readers: ReaderService[] = [];
@@ -13,6 +15,7 @@ function readerWith(
   http: StubFetcher,
   browser: StubFetcher,
   localIndex: LocalPageIndex | null = null,
+  crawlPolicy: CrawlRequestPolicy | null = null,
 ): ReaderService {
   const reader = new ReaderService(
     testConfig(),
@@ -21,6 +24,7 @@ function readerWith(
     http,
     browser,
     localIndex,
+    crawlPolicy,
   );
   readers.push(reader);
   return reader;
@@ -106,5 +110,44 @@ describe("ReaderService", () => {
     } finally {
       index.close();
     }
+  });
+
+  it("retries a transient page failure and exposes attempt evidence", async () => {
+    const responses: Array<RawPage | ReadError> = [
+      new ReadError("UPSTREAM_ERROR", "temporary", { retryable: true }),
+      rawPage({ fetchedAt: new Date().toISOString() }),
+    ];
+    const http: PageFetcher = {
+      async fetch() {
+        const response = responses.shift();
+        if (response instanceof Error) {
+          throw response;
+        }
+        if (response === undefined) {
+          throw new Error("test response exhausted");
+        }
+        return response;
+      },
+    };
+    const config = testConfig();
+    const reader = new ReaderService(
+      config,
+      new UrlPolicy(async () => publicResolver()),
+      new PageCache(":memory:"),
+      http,
+      new StubFetcher(new Error("unused")),
+      null,
+      new CrawlRequestPolicy(config),
+    );
+    readers.push(reader);
+
+    const page = await reader.readPage({
+      url: "https://example.com/article",
+      mode: "http",
+      cacheMode: "live",
+    });
+
+    expect(page.evidence).toMatchObject({ attempts: 2, totalRetryDelayMs: 0 });
+    expect(responses).toEqual([]);
   });
 });

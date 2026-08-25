@@ -1,4 +1,4 @@
-# Diaoyan Crawler v0.5
+# Diaoyan Crawler v0.6
 
 ## 目标
 
@@ -89,6 +89,16 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 
 `http` 和 `browser` 只使用指定路径，不自动切换。
 
+## 域名限速与重试
+
+页面读取和 Map 主请求共享进程内 hostname 限速。默认同主机尝试至少间隔 250ms，每页最多尝试
+3 次。只重试 `retryable=true` 的超时、429、上游错误等；访问拒绝、付费墙、登录墙、robots
+禁止和内容错误只尝试一次。退避默认从 500ms 指数增长，单次不超过 30000ms。
+
+429 的合法 `Retry-After` 必须被遵守；如果它超过管理员允许的最大等待，则保留失败而不是提前
+重试。异步 Crawl Job 取消可以打断退避等待。新鲜成功结果的 evidence 返回 `attempts` 和
+`totalRetryDelayMs`；最终失败在 details 返回同样证据。
+
 ## 错误代码
 
 - `INVALID_URL`
@@ -177,5 +187,6 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - MCP 客户端可以列出并调用九个工具。
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
+- retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。

@@ -77,8 +77,28 @@ export function normalizeError(error: unknown): ReadError {
   });
 }
 
-export function errorForHttpStatus(status: number, url: string): ReadError | null {
-  const details = { httpStatus: status, url };
+export function parseRetryAfterMs(value: string | null, now = Date.now()): number | null {
+  if (value === null) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (/^\d+$/.test(normalized)) {
+    const seconds = Number(normalized);
+    const milliseconds = seconds * 1_000;
+    return Number.isSafeInteger(milliseconds) ? milliseconds : null;
+  }
+  const date = Date.parse(normalized);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+export function errorForHttpStatus(
+  status: number,
+  url: string,
+  retryAfterMs: number | null = null,
+): ReadError | null {
+  const details = retryAfterMs === null
+    ? { httpStatus: status, url }
+    : { httpStatus: status, url, retryAfterMs };
   if (status === 401) {
     return new ReadError("AUTH_REQUIRED", "The page requires authentication.", { details });
   }

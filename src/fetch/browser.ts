@@ -1,7 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type LaunchOptions } from "playwright-core";
 
 import type { AppConfig } from "../config.js";
-import { errorForHttpStatus, ReadError } from "../errors.js";
+import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
 import type { PageFetcher, RawPage } from "../types.js";
 import { ProfileManager } from "../profiles.js";
 import { UrlPolicy } from "../security/url-policy.js";
@@ -125,7 +125,11 @@ export class BrowserPageFetcher implements PageFetcher {
       const finalUrl = page.url();
       const finalParsed = this.urlPolicy.parse(finalUrl);
       await this.urlPolicy.assertPublic(finalParsed);
-      const statusError = errorForHttpStatus(response.status(), finalUrl);
+      const statusError = errorForHttpStatus(
+        response.status(),
+        finalUrl,
+        parseRetryAfterMs(response.headers()["retry-after"] ?? null),
+      );
       if (statusError !== null) {
         throw statusError;
       }

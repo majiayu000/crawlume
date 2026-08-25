@@ -58,6 +58,10 @@ Available tools:
 
 Every blocked, authenticated, paid, challenged, unsupported, or incomplete response is returned as MCP `isError: true` with a stable error code.
 
+Transient timeouts, 429 responses, and retryable upstream failures use bounded retries. Fresh result
+evidence includes the actual attempt count and retry delay; access denial and other non-retryable
+failures are attempted once.
+
 Successful reads include a zero-external-call validation result:
 
 - `usable`: no low-cost warning signal was found.
@@ -127,6 +131,10 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
 | `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
 | `DIAOYAN_DEFAULT_CACHE_SECONDS` | `900` | Default successful-content TTL |
+| `DIAOYAN_CRAWL_MAX_ATTEMPTS` | `3` | Maximum attempts per page; set 1 to disable retry |
+| `DIAOYAN_CRAWL_RETRY_BASE_MS` | `500` | Exponential retry delay base |
+| `DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS` | `30000` | Maximum permitted retry or Retry-After wait |
+| `DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS` | `250` | Minimum interval between attempts to one hostname |
 | `DIAOYAN_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
 | `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
 | `DIAOYAN_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |

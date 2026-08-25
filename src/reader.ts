@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
+import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { extractPage } from "./extract.js";
 import { ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
@@ -31,6 +32,8 @@ function withoutLinks(result: PageReadArtifact): ReadPageResult {
   return page;
 }
 
+type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
+
 export class ReaderService {
   constructor(
     private readonly config: AppConfig,
@@ -39,13 +42,14 @@ export class ReaderService {
     private readonly httpFetcher: PageFetcher,
     private readonly browserFetcher: PageFetcher,
     private readonly localIndex: LocalPageIndex | null = null,
+    private readonly crawlPolicy: CrawlRequestPolicy | null = null,
   ) {}
 
   async readPage(options: ReadPageOptions): Promise<ReadPageResult> {
     return withoutLinks(await this.readPageArtifact(options));
   }
 
-  async readPageArtifact(options: ReadPageOptions): Promise<PageReadArtifact> {
+  async readPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
     const mode = options.mode ?? "auto";
     const cacheMode = options.cacheMode ?? "prefer-cache";
     const maxAgeSeconds = options.maxAgeSeconds ?? this.config.defaultCacheSeconds;
@@ -76,42 +80,19 @@ export class ReaderService {
       }
     }
 
-    let result: PageReadArtifact;
-    if (mode === "http") {
-      result = await this.fetchAndExtract(url, this.httpFetcher, null);
-    } else if (mode === "browser" || authProfile !== null) {
-      result = await this.fetchAndExtract(url, this.browserFetcher, authProfile);
-    } else {
-      try {
-        result = await this.fetchAndExtract(url, this.httpFetcher, null);
-      } catch (error) {
-        if (
-          !(error instanceof ReadError) ||
-          (error.code !== "SHELL_ONLY" && error.code !== "INCOMPLETE_CONTENT")
-        ) {
-          throw error;
-        }
-        try {
-          result = await this.fetchAndExtract(url, this.browserFetcher, null);
-        } catch (browserFailure) {
-          if (browserFailure instanceof ReadError && browserFailure.code === "BROWSER_UNAVAILABLE") {
-            throw new ReadError(
-              "BROWSER_UNAVAILABLE",
-              "HTTP returned incomplete content and the browser fallback is unavailable.",
-              {
-                details: {
-                  url: url.toString(),
-                  httpFailure: error.code,
-                  browserFailure: browserFailure.message,
-                },
-                cause: browserFailure,
-              },
-            );
-          }
-          throw browserFailure;
-        }
-      }
-    }
+    const operation = async (): Promise<PageReadArtifact> =>
+      this.fetchWithMode(url, mode, authProfile);
+    const attempt = this.crawlPolicy === null
+      ? { value: await operation(), attempts: 1, totalRetryDelayMs: 0 }
+      : await this.crawlPolicy.execute(url, operation, options.signal);
+    const result: PageReadArtifact = {
+      ...attempt.value,
+      evidence: {
+        ...attempt.value.evidence,
+        attempts: attempt.attempts,
+        totalRetryDelayMs: attempt.totalRetryDelayMs,
+      },
+    };
 
     this.cache.put(key, result);
     this.localIndex?.put(result);
@@ -157,5 +138,47 @@ export class ReaderService {
         extractionMethod: extracted.extractionMethod,
       },
     };
+  }
+
+  private async fetchWithMode(
+    url: URL,
+    mode: "auto" | "http" | "browser",
+    authProfile: string | null,
+  ): Promise<PageReadArtifact> {
+    if (mode === "http") {
+      return this.fetchAndExtract(url, this.httpFetcher, null);
+    }
+    if (mode === "browser" || authProfile !== null) {
+      return this.fetchAndExtract(url, this.browserFetcher, authProfile);
+    }
+    try {
+      return await this.fetchAndExtract(url, this.httpFetcher, null);
+    } catch (error) {
+      if (
+        !(error instanceof ReadError) ||
+        (error.code !== "SHELL_ONLY" && error.code !== "INCOMPLETE_CONTENT")
+      ) {
+        throw error;
+      }
+      try {
+        return await this.fetchAndExtract(url, this.browserFetcher, null);
+      } catch (browserFailure) {
+        if (browserFailure instanceof ReadError && browserFailure.code === "BROWSER_UNAVAILABLE") {
+          throw new ReadError(
+            "BROWSER_UNAVAILABLE",
+            "HTTP returned incomplete content and the browser fallback is unavailable.",
+            {
+              details: {
+                url: url.toString(),
+                httpFailure: error.code,
+                browserFailure: browserFailure.message,
+              },
+              cause: browserFailure,
+            },
+          );
+        }
+        throw browserFailure;
+      }
+    }
   }
 }
