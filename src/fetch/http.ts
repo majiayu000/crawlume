@@ -1,12 +1,13 @@
 import type { LookupFunction } from "node:net";
 
-import { Agent, fetch } from "undici";
+import { Agent, fetch, ProxyAgent, type Dispatcher } from "undici";
 
 import type { AppConfig } from "../config.js";
 import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
 import type { PageFetcher, RawPage } from "../types.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
+import { ProxyPool } from "../proxy.js";
 
 export type TransportResponse = {
   url: URL;
@@ -15,6 +16,7 @@ export type TransportResponse = {
   body: string;
   responseBytes: number;
   retryAfterMs: number | null;
+  proxyUsed: boolean;
 };
 
 type BeforeRequest = (url: URL) => Promise<void>;
@@ -103,13 +105,15 @@ async function readLimitedBody(
 }
 
 export class HttpTransport {
-  private readonly dispatcher: Agent;
+  private readonly directDispatcher: Agent;
+  private readonly proxyDispatchers = new Map<string, ProxyAgent>();
 
   constructor(
     private readonly config: AppConfig,
     private readonly urlPolicy: UrlPolicy,
+    private readonly proxyPool = new ProxyPool(config.proxyEndpoints),
   ) {
-    this.dispatcher = new Agent({
+    this.directDispatcher = new Agent({
       connect: { lookup: safeLookup(urlPolicy) },
       pipelining: 1,
       connections: 4,
@@ -122,6 +126,8 @@ export class HttpTransport {
   ): Promise<TransportResponse> {
     let current = initialUrl;
     const maxBytes = options.maxBytes ?? this.config.maxResponseBytes;
+    const proxy = this.proxyPool.acquire();
+    const dispatcher = this.dispatcherFor(proxy?.uri ?? null);
 
     for (let redirects = 0; redirects <= this.config.maxRedirects; redirects += 1) {
       await this.urlPolicy.assertPublic(current);
@@ -130,7 +136,7 @@ export class HttpTransport {
       let response;
       try {
         response = await fetch(current, {
-          dispatcher: this.dispatcher,
+          dispatcher,
           redirect: "manual",
           headers: {
             "accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
@@ -185,6 +191,7 @@ export class HttpTransport {
         body: body.text,
         responseBytes: body.bytes,
         retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+        proxyUsed: proxy !== null,
       };
     }
 
@@ -192,7 +199,23 @@ export class HttpTransport {
   }
 
   async close(): Promise<void> {
-    await this.dispatcher.close();
+    await Promise.all([
+      this.directDispatcher.close(),
+      ...[...this.proxyDispatchers.values()].map(async (dispatcher) => dispatcher.close()),
+    ]);
+  }
+
+  private dispatcherFor(proxyUri: string | null): Dispatcher {
+    if (proxyUri === null) {
+      return this.directDispatcher;
+    }
+    const existing = this.proxyDispatchers.get(proxyUri);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const dispatcher = new ProxyAgent(proxyUri);
+    this.proxyDispatchers.set(proxyUri, dispatcher);
+    return dispatcher;
   }
 }
 
@@ -222,6 +245,7 @@ export class HttpPageFetcher implements PageFetcher {
       contentType: response.contentType,
       responseBytes: response.responseBytes,
       finalUrl: response.url.toString(),
+      proxyUsed: response.proxyUsed,
     };
   }
 }

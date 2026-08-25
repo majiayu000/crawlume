@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { LocalPageIndex } from "./index.js";
 import { CrawlJobService, CrawlJobStore } from "./jobs.js";
+import { ProxyPool } from "./proxy.js";
 import { ProfileManager } from "./profiles.js";
 import { ReaderService } from "./reader.js";
 import { RobotsPolicy } from "./security/robots.js";
@@ -26,14 +27,15 @@ export function createApp(
   options: { runCrawlWorker?: boolean } = {},
 ): DiaoyanApp {
   const urlPolicy = new UrlPolicy(undefined, config.allowDnsFakeIp);
-  const transport = new HttpTransport(config, urlPolicy);
+  const proxyPool = new ProxyPool(config.proxyEndpoints);
+  const transport = new HttpTransport(config, urlPolicy, proxyPool);
   const robots = new RobotsPolicy(config, transport);
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
   const crawlPolicy = new CrawlRequestPolicy(config);
   const httpFetcher = new HttpPageFetcher(transport, robots);
-  const browserFetcher = new BrowserPageFetcher(config, urlPolicy, robots, profiles);
+  const browserFetcher = new BrowserPageFetcher(config, urlPolicy, robots, profiles, proxyPool);
   const reader = new ReaderService(
     config,
     urlPolicy,

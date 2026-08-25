@@ -150,4 +150,18 @@ describe("ReaderService", () => {
     expect(page.evidence).toMatchObject({ attempts: 2, totalRetryDelayMs: 0 });
     expect(responses).toEqual([]);
   });
+
+  it("reports proxy use without exposing proxy configuration", async () => {
+    const page = await readerWith(
+      new StubFetcher(rawPage({ proxyUsed: true })),
+      new StubFetcher(new Error("unused")),
+    ).readPage({
+      url: "https://example.com/article",
+      mode: "http",
+      cacheMode: "live",
+    });
+
+    expect(page.evidence.proxyUsed).toBe(true);
+    expect(JSON.stringify(page)).not.toContain("proxy.example");
+  });
 });

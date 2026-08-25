@@ -62,6 +62,10 @@ Transient timeouts, 429 responses, and retryable upstream failures use bounded r
 evidence includes the actual attempt count and retry delay; access denial and other non-retryable
 failures are attempted once.
 
+Operators can optionally route HTTP and browser traffic through a self-hosted or existing HTTP(S)
+proxy pool. Proxy addresses and credentials are configuration-only and never returned to Agents;
+fresh result evidence exposes only `proxyUsed: true|false`.
+
 Successful reads include a zero-external-call validation result:
 
 - `usable`: no low-cost warning signal was found.
@@ -139,11 +143,22 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
 | `DIAOYAN_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |
 | `DIAOYAN_LOCAL_INDEX_ENABLED` | `false` | Optionally index successful public pages in SQLite FTS5 |
+| `DIAOYAN_PROXY_URLS` | unset | Comma-separated administrator-controlled HTTP(S) proxy URLs |
 | `DIAOYAN_SEARXNG_URL` | unset | Trusted SearXNG instance base URL used by `search_web` |
 
 If Clash or another TUN resolver maps public domains into `198.18.0.0/15`, start the reader with
 `DIAOYAN_ALLOW_DNS_FAKE_IP=1`. This applies only to DNS answers; a URL containing a literal
 `198.18.x.x` address remains blocked by the SSRF policy.
+
+Proxy example using operator-owned infrastructure:
+
+```bash
+export DIAOYAN_PROXY_URLS=http://proxy-a.internal:8080,https://user:password@proxy-b.internal:8443
+```
+
+Ordinary page attempts rotate through the pool. Authorization Profiles use a stable proxy selected
+from their Profile name, including during `diaoyan-auth`. Proxy routing does not bypass URL policy,
+robots, authentication, payment, or access-denial checks.
 
 Project documents:
 

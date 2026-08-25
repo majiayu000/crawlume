@@ -136,6 +136,7 @@ export class ReaderService {
         responseBytes: page.responseBytes,
         contentCharacters: extracted.contentCharacters,
         extractionMethod: extracted.extractionMethod,
+        proxyUsed: page.proxyUsed ?? false,
       },
     };
   }

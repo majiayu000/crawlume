@@ -6,9 +6,17 @@ import type { PageFetcher, RawPage } from "../types.js";
 import { ProfileManager } from "../profiles.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
+import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
 
-export function browserLaunchOptions(config: AppConfig, headless: boolean): LaunchOptions {
-  const base: LaunchOptions = { headless };
+export function browserLaunchOptions(
+  config: AppConfig,
+  headless: boolean,
+  proxy: ProxyEndpoint | null = null,
+): LaunchOptions {
+  const base: LaunchOptions = {
+    headless,
+    ...(proxy === null ? {} : { proxy: proxy.browser }),
+  };
   if (config.browserExecutable !== null) {
     return { ...base, executablePath: config.browserExecutable };
   }
@@ -44,12 +52,14 @@ export class BrowserPageFetcher implements PageFetcher {
     private readonly urlPolicy: UrlPolicy,
     private readonly robots: RobotsPolicy,
     private readonly profiles: ProfileManager,
+    private readonly proxyPool = new ProxyPool(config.proxyEndpoints),
   ) {}
 
   async fetch(url: URL, authProfile?: string): Promise<RawPage> {
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
     let profilePath: string | null = null;
+    const proxy = this.proxyPool.acquire(authProfile);
 
     if (authProfile !== undefined) {
       profilePath = this.profiles.require(authProfile);
@@ -68,11 +78,11 @@ export class BrowserPageFetcher implements PageFetcher {
 
       if (profilePath !== null) {
         context = await chromium.launchPersistentContext(profilePath, {
-          ...browserLaunchOptions(this.config, true),
+          ...browserLaunchOptions(this.config, true, proxy),
           acceptDownloads: false,
         });
       } else {
-        browser = await chromium.launch(browserLaunchOptions(this.config, true));
+        browser = await chromium.launch(browserLaunchOptions(this.config, true, proxy));
         context = await browser.newContext({ acceptDownloads: false });
       }
 
@@ -154,6 +164,7 @@ export class BrowserPageFetcher implements PageFetcher {
         contentType: response.headers()["content-type"] ?? "text/html",
         responseBytes,
         finalUrl,
+        proxyUsed: proxy !== null,
       };
     } catch (error) {
       throw browserError(error);

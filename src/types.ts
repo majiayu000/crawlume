@@ -36,6 +36,7 @@ export type FetchEvidence = {
   contentType: string;
   responseBytes: number;
   finalUrl: string;
+  proxyUsed?: boolean;
 };
 
 export type RawPage = FetchEvidence & {
@@ -78,6 +79,7 @@ export type ReadPageResult = {
     extractionMethod: ExtractionMethod;
     attempts?: number;
     totalRetryDelayMs?: number;
+    proxyUsed?: boolean;
   };
 };
 

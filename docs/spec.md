@@ -1,4 +1,4 @@
-# Diaoyan Crawler v0.6
+# Diaoyan Crawler v0.7
 
 ## 目标
 
@@ -99,6 +99,16 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 重试。异步 Crawl Job 取消可以打断退避等待。新鲜成功结果的 evidence 返回 `attempts` 和
 `totalRetryDelayMs`；最终失败在 details 返回同样证据。
 
+## 管理员代理池
+
+`DIAOYAN_PROXY_URLS` 可配置逗号分隔的 HTTP(S) 代理。该配置只能由管理员提供，不接受 Agent
+工具参数。普通请求按进程内 round-robin 轮换；同一次 HTTP 重定向链和同一个浏览器上下文固定
+出口；授权 Profile 根据名称稳定绑定代理，手动登录与后续抓取保持一致。
+
+代理目标不改变 URL policy：初始 URL、重定向和浏览器子请求继续执行 SSRF 与公网校验。结果
+只返回 `evidence.proxyUsed`，不得返回代理 URI、池索引或凭证。代理连接失败沿用既有 retryable
+错误与 v0.6 退避策略。
+
 ## 错误代码
 
 - `INVALID_URL`
@@ -188,5 +198,6 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。
+- HTTP 和浏览器可使用管理员代理池，Profile 绑定稳定且结果不泄露代理配置。
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。

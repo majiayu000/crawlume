@@ -1,6 +1,8 @@
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
+import { parseProxyEndpoints, type ProxyEndpoint } from "./proxy.js";
+
 export type AppConfig = {
   dataDir: string;
   cachePath: string;
@@ -20,6 +22,7 @@ export type AppConfig = {
   browserExecutable: string | null;
   allowDnsFakeIp: boolean;
   localIndexEnabled: boolean;
+  proxyEndpoints: ProxyEndpoint[];
   searxngUrl: string | null;
 };
 
@@ -102,6 +105,7 @@ export function loadConfig(): AppConfig {
     browserExecutable: process.env.DIAOYAN_BROWSER_EXECUTABLE ?? null,
     allowDnsFakeIp: booleanFlag("DIAOYAN_ALLOW_DNS_FAKE_IP", false),
     localIndexEnabled: booleanFlag("DIAOYAN_LOCAL_INDEX_ENABLED", false),
+    proxyEndpoints: parseProxyEndpoints(process.env.DIAOYAN_PROXY_URLS),
     searxngUrl: process.env.DIAOYAN_SEARXNG_URL ?? null,
   };
 }

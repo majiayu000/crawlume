@@ -23,6 +23,7 @@ export function testConfig(): AppConfig {
     browserExecutable: null,
     allowDnsFakeIp: false,
     localIndexEnabled: false,
+    proxyEndpoints: [],
     searxngUrl: null,
   };
 }

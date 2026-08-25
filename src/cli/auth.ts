@@ -9,6 +9,7 @@ import { loadConfig } from "../config.js";
 import { browserLaunchOptions } from "../fetch/browser.js";
 import { HttpTransport } from "../fetch/http.js";
 import { ProfileManager } from "../profiles.js";
+import { ProxyPool } from "../proxy.js";
 import { RobotsPolicy } from "../security/robots.js";
 import { UrlPolicy } from "../security/url-policy.js";
 
@@ -26,8 +27,9 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   const profiles = new ProfileManager(config);
+  const proxyPool = new ProxyPool(config.proxyEndpoints);
   const urlPolicy = new UrlPolicy(undefined, config.allowDnsFakeIp);
-  const transport = new HttpTransport(config, urlPolicy);
+  const transport = new HttpTransport(config, urlPolicy, proxyPool);
   const robots = new RobotsPolicy(config, transport);
   const url = urlPolicy.parse(inputUrl);
 
@@ -36,7 +38,7 @@ async function main(): Promise<void> {
     await robots.assertAllowed(url);
     const profilePath = profiles.create(profileName);
     const context = await chromium.launchPersistentContext(profilePath, {
-      ...browserLaunchOptions(config, false),
+      ...browserLaunchOptions(config, false, proxyPool.acquire(profileName)),
       acceptDownloads: false,
     });
     try {
