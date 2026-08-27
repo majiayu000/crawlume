@@ -86,13 +86,57 @@
 - 访问与内容使用审计（已完成首版）。
 - 付费许可报价、禁用预算与不结算边界（已完成 fail-closed 首版；真实付款未启用）。
 
-## v0.11 服务化
+## v0.11 Reliability Truth
 
-- 多租户认证、项目和 API Key。
-- 配额、计量、账单和 Webhook。
-- 控制台、任务历史和质量监控。
-- 私有部署、安全基线和运维手册。
+- 实现 `docs/reliability-benchmark-spec.md` 的 Case Schema、Truth Evaluator 和 Controlled Site。
+- 区分 `valid`、`uncertain`、`invalid`、`failed`、`policy_stop` 和 `unsupported`。
+- 建立首个分层 Corpus 与可复现 baseline。
+- 记录 False Success、Cost per Valid Artifact、Browser Uplift、Retry Recovery/Waste。
+- Release 只允许在同 Case Set、配置和环境证据下比较，不宣称无证据的竞品领先。
+
+## v0.12 Access Planner 与 Attempt Ledger
+
+- `ReadIntent`、`ExecutionBudget`、`AccessPlan`、`StageResult` 和 `ValidationResult` 稳定合同。
+- Cache、HTTP、Browser 变成 Provider；现有 `mode` 参数映射为 Provider allowlist。
+- append-only Attempt Ledger 和可重放 projection。
+- Stage-level retry，避免重复已经成功的 HTTP、Browser 或 Extraction 阶段。
+- 429/`Retry-After` 进入按 origin 调度，不通过身份轮换规避。
+- `ReaderService.fetchWithMode` 和 `SiteService.shouldRender` 收敛到唯一 Planner。
+
+## v0.13 Browser Readiness 与内容质量
+
+- 用正文稳定、目标条件和硬预算替换固定浏览器等待。
+- Browser/Context 健康、自动回收、失败 Trace 抽样和敏感信息清理。
+- Extractor Registry 与 Validator Registry。
+- RSS、Sitemap、JSON-LD、PDF 等确定性能力。
+- 同一 raw response 可运行多个 Extractor，不因抽取失败重复下载。
+- LLM 仅作为显式、预算化的可选 uncertain 路径。
+
+## v0.14 Durable Concurrent Crawl Engine
+
+- 页级持久 Frontier、lease、checkpoint、去重和中断恢复。
+- HTTP、Browser、授权 Session 分池。
+- 全局资源预算和按 origin 自适应并发、backpressure、Circuit Breaker。
+- ETag/Last-Modified revalidation、singleflight、stale-while-revalidate 和 Cache 清理。
+- 流式页面结果和可解释部分失败。
+
+## v0.15 Optimization Loop 与首批 Adapter
+
+- HTTP/Browser Shadow、Readiness A/B、Retry Counterfactual、Extractor Tournament。
+- Planner 策略版本、Benchmark 对照、review 和回滚。
+- 只有通过使用量、失败成本和维护 ROI Gate 的站点才建立 Adapter。
+- 每个 Adapter 有版本化 Schema、Fixture、Live Canary、错误 Case 和退役条件。
+
+## 可选的托管服务外壳
+
+可靠性核心和单位成本被 Benchmark 证明后，再按真实交付需求增加：
+
+- 托管 API、最小 API Key、用量、客户数据隔离和 Webhook。
+- SLA、运维手册和私有部署。
+- 组织、SSO、RBAC、复杂控制台和账单不是当前核心，不能阻塞 v0.11-v0.14。
 
 ## 发布门槛
 
-每个阶段都必须具备：稳定输入契约、显式失败、SSRF 与凭证隔离、聚焦测试、真实公开站点冒烟，以及升级后不降低既有安全边界的证据。
+每个阶段都必须具备：稳定输入契约、显式失败、SSRF 与凭证隔离、聚焦测试、真实公开站点冒烟，
+以及升级后不降低既有安全边界的证据。v0.11 起还必须报告同一 Benchmark Case Set 下的有效成功率、
+错误成功率和单位有效结果成本；原始请求成功率不能单独作为发布证据。
