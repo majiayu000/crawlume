@@ -7,6 +7,10 @@ user-authorized browser profile.
 
 It does not impersonate AI crawlers, solve CAPTCHAs, or bypass login, payment, robots, or site access controls.
 
+Architecture, reliability, benchmark, product, and implementation documents are indexed in
+[`docs/README.md`](docs/README.md). Target architecture documents describe planned work; the current
+implemented contract remains [`docs/spec.md`](docs/spec.md).
+
 ## Requirements
 
 - Node.js 25.7 or newer
