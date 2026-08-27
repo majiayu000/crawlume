@@ -60,4 +60,5 @@
 ## 接管与讨论记录
 
 - [2026-08-28 Apple 接管说明](./handoffs/2026-08-28-apple-handoff.md)
+- [2026-08-28 Apple 迁移验证报告](./handoffs/2026-08-28-apple-transfer-report.md)
 - [2026-08-28 Reliability 产品讨论记录](./handoffs/2026-08-28-reliability-product-conversation.md)
