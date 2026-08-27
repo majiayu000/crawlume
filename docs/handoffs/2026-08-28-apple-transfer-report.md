@@ -32,6 +32,10 @@ ssh apple:/Users/apple/Desktop/code/AI/tool/sc
 | Google Chrome | 已安装 |
 | Git remote | `https://github.com/majiayu000/fetchtrail.git` |
 
+目标机器当前没有可用的 GitHub HTTPS 凭证，也没有可访问该仓库的 GitHub SSH Key。
+因此仓库内容和完整历史可以本地使用，但在 Apple 机器上执行 `git fetch` 或 `git push`
+之前，还需要配置该机器的 GitHub 身份。本次迁移没有从源机器复制凭证。
+
 远端非交互 Shell 默认不暴露 fnm 的 Node 路径。在完成 Shell 初始化前，可使用：
 
 ```bash
@@ -77,6 +81,7 @@ ssh apple:/Users/apple/Desktop/code/AI/tool/sc
 
 - 没有运行真实公网页面的 Chrome Browser Smoke。
 - 没有复制登录 Session，因此 X 等授权表面需要在目标机器上单独建立用户授权。
+- 目标机器尚未配置可用的 GitHub 身份；此前不能从 `origin` 拉取或推送。
 - 设计文档中的 Reliability Harness、Attempt Ledger、Access Planner 和 Durable Frontier 仍是待实现目标，不是已交付功能。
 - 尚未对公开竞品跑同 Corpus 的可重复对照，不应声称已在成功率或成本上领先。
 
