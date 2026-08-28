@@ -97,7 +97,12 @@ function assertNotGatePage(document: Document, page: RawPage): void {
     );
   }
 
-  if (/\b(log in|sign in)\b.*\b(sign up|join)\b/i.test(title) || /^(log in|sign in)$/i.test(title)) {
+  const passwordForm = document.querySelector("form input[type='password' i]");
+  if (
+    passwordForm !== null ||
+    /\b(log in|sign in)\b.*\b(sign up|join)\b/i.test(title) ||
+    /^(log in|sign in)$/i.test(title)
+  ) {
     throw new ReadError("LOGIN_WALL_DETECTED", "The site returned a login wall.", {
       details: errorDetails(page, title, bodyText.length),
     });

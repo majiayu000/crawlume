@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "quotes-login-gate",
+  "layer": "live",
+  "category": "gate",
+  "input": {
+    "url": "https://quotes.toscrape.com/login",
+    "intent": "read",
+    "mode": "auto",
+    "freshnessSeconds": 0
+  },
+  "policy": {
+    "browserAllowed": true,
+    "authProfile": null,
+    "maxAttempts": 1,
+    "maxDurationMs": 10000,
+    "maxBrowserMs": 5000
+  },
+  "truth": {
+    "required": [
+      { "type": "outcome_equals", "value": "policy_stop" }
+    ],
+    "forbidden": []
+  },
+  "reviewedAt": "2026-08-29T00:00:00.000Z",
+  "expiresAt": "2026-09-28T00:00:00.000Z"
+}

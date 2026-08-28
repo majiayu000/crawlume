@@ -106,8 +106,15 @@ P0/P1。交付外壳不能挤占爬虫能力建设。
 
 - 假设：H-002。
 - 变体：固定 750ms、正文稳定、目标 selector、Adapter policy。
-- Case：即时正文、延迟正文、持续网络、Skeleton、永不稳定页面。
+- Case：即时正文、900ms 延迟正文、Skeleton、持续变化正文、无限滚动。
 - 决策：按 Valid Latency 和 False Success 的 Pareto 前沿选择默认策略。
+- 2026-08-28 结果：5 类 × 3 策略 × 5 次重复，共 75 次独立 BrowserContext。fixed-750 的 Valid
+  Rate/False Success 为 40%/60%，adaptive 为 60%/20%，target 为 100%/0%；有效结果 median 分别为
+  765ms、1,244ms、624ms，p95 分别为 772ms、1,555ms、1,223ms。
+- 结论：H-002 的“条件式优于固定等待”部分成立，但全页正文稳定不是充分条件。它在持续变化正文上
+  超时，在无限滚动首批内容上假成功；显式目标/终态加预算化交互位于当前受控集 Pareto 前沿。
+- 限制：这是本机 Chrome 152、受控 DOM 的小样本，不外推公开网站总体比例；下一步用 public canary
+  和真实类别权重验证策略覆盖率及 Adapter 成本。
 
 ### E-003：Retry Counterfactual
 
@@ -160,7 +167,7 @@ P0/P1。交付外壳不能挤占爬虫能力建设。
 
 - `README.md`：当前产品表面和 fail-visible 合同。
 - `src/reader.ts`：HTTP→Browser 回退和缓存主链。
-- `src/fetch/browser.ts`：BrowserContext、固定等待和浏览器池接入。
+- `src/runtime/readiness.ts`、`src/fetch/browser.ts`：可组合 readiness、BrowserContext、provenance 和浏览器池接入。
 - `src/extract.ts`、`src/validation.ts`：抽取和现有低成本校验。
 - `src/crawl-policy.ts`：operation 粒度重试和 origin 间隔。
 - `src/site.ts`：串行内存 Frontier。

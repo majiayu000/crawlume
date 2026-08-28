@@ -1,3 +1,5 @@
+import type { ReadErrorCode } from "./errors.js";
+
 export const fetchModes = ["auto", "http", "browser"] as const;
 export type FetchMode = (typeof fetchModes)[number];
 
@@ -23,11 +25,140 @@ export type ContentValidation = {
   }>;
 };
 
+export type AccessProviderId = "cache" | "http" | "browser" | "feed" | "pdf" | "adapter";
+
+export type ExecutionBudget = {
+  deadlineMs: number;
+  maxAttempts: number;
+  maxNetworkBytes: number;
+  maxBrowserMs: number;
+  maxBrowserContexts: number;
+  maxOptionalModelTokens: number;
+};
+
+export type ReadIntent = {
+  url: string;
+  operation: "read" | "inspect" | "map" | "crawl" | "extract";
+  output: { format: "markdown" | "json"; schemaId?: string };
+  freshness: { maxAgeSeconds: number; allowStaleWhileRevalidate: boolean };
+  authorization: { profileId: string | null; allowedOrigins: string[] };
+  budget: ExecutionBudget;
+};
+
+export type StagePredicate =
+  | { type: "always" }
+  | { type: "after-invalid"; stageId: string }
+  | { type: "after-failure"; stageId: string; errorCodes: ReadErrorCode[] };
+
+export type StageRetryPolicy = {
+  maxAttempts: number;
+  retryableErrorCodes: ReadErrorCode[];
+};
+
+export type PlannedStage = {
+  id: string;
+  provider: AccessProviderId;
+  runWhen: StagePredicate;
+  retryPolicy: StageRetryPolicy;
+  budgetSlice: ExecutionBudget;
+};
+
+export type AccessPlan = {
+  id: string;
+  plannerVersion: string;
+  stages: PlannedStage[];
+  terminalConditions: Array<"valid-artifact" | "policy-stop" | "budget-exhausted">;
+};
+
+export type ResourceUsage = {
+  networkBytesIn: number;
+  networkBytesOut: number;
+  browserMilliseconds: number;
+  browserContextStarts: number;
+  retryDelayMilliseconds: number;
+  optionalModelTokens: number;
+};
+
+export type StageResult = {
+  stageId: string;
+  outcome: "succeeded" | "failed" | "stopped" | "cancelled";
+  rawRef: string | null;
+  candidateArtifactRef: string | null;
+  error: { code: ReadErrorCode; message: string; retryable: boolean } | null;
+  usage: ResourceUsage;
+  startedAt: string;
+  completedAt: string;
+};
+
+export type ValidationResult = {
+  outcome: "valid" | "uncertain" | "invalid";
+  validatorVersion: string;
+  checks: Array<{ code: string; passed: boolean | null; message: string }>;
+};
+
+export type AttemptInput = {
+  requestId: string;
+  planId: string;
+  stageId: string;
+  provider: AccessProviderId;
+  providerVersion: string;
+  outcome: StageResult["outcome"];
+  rawRef: string | null;
+  traceRef: string | null;
+  errorCode: ReadErrorCode | null;
+  usage: ResourceUsage;
+  startedAt: string;
+  completedAt: string;
+};
+
+export type AttemptRecord = AttemptInput & {
+  id: string;
+  sequence: number;
+  recordedAt: string;
+};
+
+export type AttemptProjection = {
+  requestId: string;
+  attempts: number;
+  lastSequence: number;
+  lastOutcome: AttemptRecord["outcome"];
+  lastStageId: string;
+  usage: ResourceUsage;
+};
+
 export type AgentIdentityEvidence = {
   userAgent: string;
   identityUrl: string | null;
   signed: boolean;
   profile: "cloudflare-legacy" | null;
+};
+
+export type BrowserReadinessTarget = {
+  selector: string;
+  state?: "attached" | "visible" | undefined;
+  minCount?: number | undefined;
+};
+
+export type BrowserScrollInteraction = {
+  type: "scroll-to-end";
+  maxSteps: number;
+  stepDelayMs?: number | undefined;
+};
+
+export type BrowserReadinessPolicy = {
+  target: BrowserReadinessTarget;
+  interaction?: BrowserScrollInteraction | undefined;
+  timeoutMs?: number | undefined;
+};
+
+export type BrowserReadinessEvidence = {
+  policy: "generic" | "target";
+  waitedMs: number;
+  reason: "meaningful-content-stable" | "short-page-grace-elapsed" | "target-condition-met";
+  textCharacters: number;
+  targetMatches?: number | undefined;
+  interaction?: BrowserScrollInteraction["type"] | undefined;
+  interactionSteps?: number | undefined;
 };
 
 export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline";
@@ -82,6 +213,7 @@ export type ReadPageOptions = {
   cacheMode?: CacheMode;
   maxAgeSeconds?: number;
   authProfile?: string;
+  browserReadiness?: BrowserReadinessPolicy;
 };
 
 export type FetchEvidence = {
@@ -89,6 +221,7 @@ export type FetchEvidence = {
   contentType: string;
   responseBytes: number;
   finalUrl: string;
+  browserReadiness?: BrowserReadinessEvidence;
   proxyUsed?: boolean;
   agentIdentity?: AgentIdentityEvidence;
   rsl?: RslEvidence;
@@ -134,6 +267,10 @@ export type ReadPageResult = {
     extractionMethod: ExtractionMethod;
     attempts?: number;
     totalRetryDelayMs?: number;
+    fetchAttempts?: Record<FetchMethod, number>;
+    responseBytesByMethod?: Record<FetchMethod, number>;
+    fetchDurationMsByMethod?: Record<FetchMethod, number>;
+    browserReadiness?: BrowserReadinessEvidence;
     proxyUsed?: boolean;
     agentIdentity?: AgentIdentityEvidence;
     rsl?: RslEvidence;
@@ -350,6 +487,12 @@ export type PageMonitor = {
   lastRun: PageMonitorRun | null;
 };
 
+export type PageFetchOptions = {
+  authProfile?: string;
+  signal?: AbortSignal;
+  browserReadiness?: BrowserReadinessPolicy;
+};
+
 export interface PageFetcher {
-  fetch(url: URL, authProfile?: string, signal?: AbortSignal): Promise<RawPage>;
+  fetch(url: URL, options?: PageFetchOptions): Promise<RawPage>;
 }

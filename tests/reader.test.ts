@@ -8,7 +8,7 @@ import { CrawlerMetrics } from "../src/metrics.js";
 import { ReaderService } from "../src/reader.js";
 import { RslAccessAudit } from "../src/rsl-audit.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
-import type { PageFetcher, RawPage } from "../src/types.js";
+import type { PageFetchOptions, PageFetcher, RawPage } from "../src/types.js";
 import { publicResolver, rawPage, StubFetcher, testConfig } from "./helpers.js";
 
 const readers: ReaderService[] = [];
@@ -51,9 +51,81 @@ afterEach(() => {
 });
 
 describe("ReaderService", () => {
+  it("routes an explicit readiness intent directly to the browser adapter", async () => {
+    let receivedOptions: PageFetchOptions | undefined;
+    const browser: PageFetcher = {
+      async fetch(_url, options) {
+        receivedOptions = options;
+        return rawPage({
+          method: "browser",
+          browserReadiness: {
+            policy: "target",
+            waitedMs: 900,
+            reason: "target-condition-met",
+            textCharacters: 800,
+            targetMatches: 1,
+            interaction: "scroll-to-end",
+            interactionSteps: 3,
+          },
+        });
+      },
+    };
+    const reader = new ReaderService(
+      testConfig(),
+      new UrlPolicy(async () => publicResolver()),
+      new PageCache(":memory:"),
+      new StubFetcher(new Error("HTTP must not run for an explicit DOM readiness intent")),
+      browser,
+    );
+    readers.push(reader);
+    const browserReadiness = {
+      target: { selector: "[data-terminal='true']" },
+      interaction: { type: "scroll-to-end" as const, maxSteps: 4, stepDelayMs: 50 },
+    };
+
+    const result = await reader.readPage({
+      url: "https://example.com/article",
+      mode: "auto",
+      cacheMode: "live",
+      browserReadiness,
+    });
+
+    expect(receivedOptions).toMatchObject({ browserReadiness });
+    expect(result.evidence.browserReadiness).toMatchObject({
+      policy: "target",
+      reason: "target-condition-met",
+      interactionSteps: 3,
+    });
+  });
+
+  it("rejects target readiness with explicit HTTP mode", async () => {
+    const reader = readerWith(
+      new StubFetcher(rawPage()),
+      new StubFetcher(rawPage({ method: "browser" })),
+    );
+
+    await expect(reader.readPage({
+      url: "https://example.com/article",
+      mode: "http",
+      browserReadiness: { target: { selector: "main" } },
+    })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
   it("uses browser only when HTTP content is incomplete", async () => {
-    const http = new StubFetcher(rawPage({ body: "<html><body>Loading...</body></html>" }));
-    const browser = new StubFetcher(rawPage({ method: "browser" }));
+    const shellBody = "<html><body>Loading...</body></html>";
+    const http = new StubFetcher(rawPage({
+      body: shellBody,
+      responseBytes: Buffer.byteLength(shellBody),
+    }));
+    const browser = new StubFetcher(rawPage({
+      method: "browser",
+      browserReadiness: {
+        policy: "generic",
+        waitedMs: 1_200,
+        reason: "meaningful-content-stable",
+        textCharacters: 800,
+      },
+    }));
     const result = await readerWith(http, browser).readPage({
       url: "https://example.com/article",
       mode: "auto",
@@ -61,6 +133,24 @@ describe("ReaderService", () => {
     });
     expect(result.fetchMethod).toBe("browser");
     expect(result.validation.status).toBe("usable");
+    expect(result.evidence).toMatchObject({
+      attempts: 1,
+      fetchAttempts: { http: 1, browser: 1 },
+      responseBytesByMethod: {
+        http: Buffer.byteLength(shellBody),
+        browser: rawPage({ method: "browser" }).responseBytes,
+      },
+      fetchDurationMsByMethod: {
+        http: expect.any(Number),
+        browser: expect.any(Number),
+      },
+      browserReadiness: {
+        policy: "generic",
+        waitedMs: 1_200,
+        reason: "meaningful-content-stable",
+        textCharacters: 800,
+      },
+    });
     expect(http.calls).toBe(1);
     expect(browser.calls).toBe(1);
   });
@@ -76,6 +166,29 @@ describe("ReaderService", () => {
       }),
     ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
     expect(browser.calls).toBe(0);
+  });
+
+  it("preserves fetch cost evidence when the read ends in failure", async () => {
+    const reader = readerWith(
+      new StubFetcher(new ReadError("ACCESS_DENIED", "denied")),
+      new StubFetcher(new Error("unused")),
+    );
+
+    await expect(reader.readPage({
+      url: "https://example.com/denied",
+      mode: "http",
+      cacheMode: "live",
+    })).rejects.toMatchObject({
+      code: "ACCESS_DENIED",
+      details: {
+        httpFetchAttempts: 1,
+        browserFetchAttempts: 0,
+        httpResponseBytes: 0,
+        browserResponseBytes: 0,
+        httpFetchDurationMs: expect.any(Number),
+        browserFetchDurationMs: 0,
+      },
+    });
   });
 
   it("returns a successful cached result without refetching", async () => {
@@ -224,7 +337,15 @@ describe("ReaderService", () => {
       cacheMode: "live",
     });
 
-    expect(page.evidence).toMatchObject({ attempts: 2, totalRetryDelayMs: 0 });
+    expect(page.evidence).toMatchObject({
+      attempts: 2,
+      totalRetryDelayMs: 0,
+      fetchAttempts: { http: 2, browser: 0 },
+      fetchDurationMsByMethod: {
+        http: expect.any(Number),
+        browser: 0,
+      },
+    });
     expect(responses).toEqual([]);
   });
 

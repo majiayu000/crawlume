@@ -216,6 +216,9 @@ export class SiteService {
             ? {}
             : { maxAgeSeconds: options.maxAgeSeconds }),
           ...(options.authProfile === undefined ? {} : { authProfile: options.authProfile }),
+          ...(options.browserReadiness === undefined
+            ? {}
+            : { browserReadiness: options.browserReadiness }),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
         throwIfCancelled(options.signal);
@@ -264,12 +267,15 @@ export class SiteService {
     authProfile: string | undefined,
   ): Promise<RawPage> {
     if (mode === "browser" || authProfile !== undefined) {
-      return this.browserFetcher.fetch(url, authProfile);
+      return this.browserFetcher.fetch(
+        url,
+        authProfile === undefined ? {} : { authProfile },
+      );
     }
     const page = await this.httpFetcher.fetch(url);
     const links = extractLinks(page.body, page.finalUrl);
     if (mode === "auto" && shouldRender(page, links)) {
-      return this.browserFetcher.fetch(url);
+      return this.browserFetcher.fetch(url, {});
     }
     return page;
   }

@@ -211,6 +211,27 @@ describe("MCP server", () => {
     expect(read.structuredContent).toMatchObject({ status: "ok", completeness: "complete" });
     expect(readPage).toHaveBeenCalledOnce();
 
+    const targetedRead = await client.callTool({
+      name: "read_page",
+      arguments: {
+        url: "https://example.com/feed",
+        mode: "auto",
+        browserReadiness: {
+          target: { selector: "[data-terminal='true']", state: "visible", minCount: 1 },
+          interaction: { type: "scroll-to-end", maxSteps: 8, stepDelayMs: 50 },
+          timeoutMs: 5_000,
+        },
+      },
+    });
+    expect(targetedRead.isError).not.toBe(true);
+    expect(readPage).toHaveBeenLastCalledWith(expect.objectContaining({
+      browserReadiness: {
+        target: { selector: "[data-terminal='true']", state: "visible", minCount: 1 },
+        interaction: { type: "scroll-to-end", maxSteps: 8, stepDelayMs: 50 },
+        timeoutMs: 5_000,
+      },
+    }));
+
     const profiles = await client.callTool({ name: "list_auth_profiles", arguments: {} });
     expect(profiles.structuredContent).toEqual({ profiles: ["work"] });
 

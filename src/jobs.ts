@@ -11,7 +11,201 @@ import type {
   CrawlJobStatus,
   CrawlSiteOptions,
   CrawlSiteResult,
+  AttemptInput,
+  AttemptProjection,
+  AttemptRecord,
+  ResourceUsage,
 } from "./types.js";
+
+type AttemptRow = {
+  id: string;
+  request_id: string;
+  sequence: number;
+  plan_id: string;
+  stage_id: string;
+  provider: AttemptRecord["provider"];
+  provider_version: string;
+  outcome: AttemptRecord["outcome"];
+  raw_ref: string | null;
+  trace_ref: string | null;
+  error_code: AttemptRecord["errorCode"];
+  usage_json: string;
+  started_at: string;
+  completed_at: string;
+  recorded_at: string;
+};
+
+const attemptUsageFields = [
+  "networkBytesIn",
+  "networkBytesOut",
+  "browserMilliseconds",
+  "browserContextStarts",
+  "retryDelayMilliseconds",
+  "optionalModelTokens",
+] as const satisfies ReadonlyArray<keyof ResourceUsage>;
+
+function requireNonempty(value: string, name: string): void {
+  if (value.trim().length === 0) throw new Error(`${name} must be a non-empty string`);
+}
+
+function validateAttempt(input: AttemptInput): void {
+  requireNonempty(input.requestId, "requestId");
+  requireNonempty(input.planId, "planId");
+  requireNonempty(input.stageId, "stageId");
+  requireNonempty(input.providerVersion, "providerVersion");
+  for (const field of attemptUsageFields) {
+    if (!Number.isFinite(input.usage[field]) || input.usage[field] < 0) {
+      throw new Error(`usage.${field} must be a finite non-negative number`);
+    }
+  }
+  for (const field of [
+    "networkBytesIn", "networkBytesOut", "browserContextStarts", "optionalModelTokens",
+  ] as const) {
+    if (!Number.isSafeInteger(input.usage[field])) {
+      throw new Error(`usage.${field} must be an integer`);
+    }
+  }
+  const started = Date.parse(input.startedAt);
+  const completed = Date.parse(input.completedAt);
+  if (!Number.isFinite(started)) throw new Error("startedAt must be an ISO timestamp");
+  if (!Number.isFinite(completed) || completed < started) {
+    throw new Error("completedAt must be an ISO timestamp at or after startedAt");
+  }
+  if (input.outcome === "succeeded" && input.errorCode !== null) {
+    throw new Error("successful attempts cannot have errorCode");
+  }
+  if (input.outcome === "failed" && input.errorCode === null) {
+    throw new Error("failed attempts require errorCode");
+  }
+}
+
+function attemptFromRow(row: AttemptRow): AttemptRecord {
+  return {
+    id: row.id,
+    requestId: row.request_id,
+    sequence: row.sequence,
+    planId: row.plan_id,
+    stageId: row.stage_id,
+    provider: row.provider,
+    providerVersion: row.provider_version,
+    outcome: row.outcome,
+    rawRef: row.raw_ref,
+    traceRef: row.trace_ref,
+    errorCode: row.error_code,
+    usage: JSON.parse(row.usage_json) as ResourceUsage,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    recordedAt: row.recorded_at,
+  };
+}
+
+function emptyAttemptUsage(): ResourceUsage {
+  return {
+    networkBytesIn: 0,
+    networkBytesOut: 0,
+    browserMilliseconds: 0,
+    browserContextStarts: 0,
+    retryDelayMilliseconds: 0,
+    optionalModelTokens: 0,
+  };
+}
+
+export class AttemptLedger {
+  private readonly database: DatabaseSync;
+
+  constructor(path: string, private readonly now: () => number = () => Date.now()) {
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.database = new DatabaseSync(path, { timeout: 5_000 });
+    this.database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      CREATE TABLE IF NOT EXISTS execution_attempts (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL CHECK(sequence > 0),
+        plan_id TEXT NOT NULL,
+        stage_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_version TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK(outcome IN ('succeeded', 'failed', 'stopped', 'cancelled')),
+        raw_ref TEXT,
+        trace_ref TEXT,
+        error_code TEXT,
+        usage_json TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        UNIQUE(request_id, sequence)
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS execution_attempts_request
+      ON execution_attempts(request_id, sequence);
+    `);
+    if (path !== ":memory:") chmodSync(path, 0o600);
+  }
+
+  append(input: AttemptInput): AttemptRecord {
+    validateAttempt(input);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const previous = this.database
+        .prepare("SELECT MAX(sequence) AS sequence FROM execution_attempts WHERE request_id = ?")
+        .get(input.requestId) as { sequence: number | null };
+      const record: AttemptRecord = {
+        ...input,
+        id: randomUUID(),
+        sequence: (previous.sequence ?? 0) + 1,
+        recordedAt: new Date(this.now()).toISOString(),
+      };
+      this.database.prepare(`
+        INSERT INTO execution_attempts(
+          id, request_id, sequence, plan_id, stage_id, provider, provider_version,
+          outcome, raw_ref, trace_ref, error_code, usage_json, started_at,
+          completed_at, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.id, record.requestId, record.sequence, record.planId, record.stageId,
+        record.provider, record.providerVersion, record.outcome, record.rawRef,
+        record.traceRef, record.errorCode, JSON.stringify(record.usage), record.startedAt,
+        record.completedAt, record.recordedAt,
+      );
+      this.database.exec("COMMIT");
+      return record;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  list(requestId: string): AttemptRecord[] {
+    requireNonempty(requestId, "requestId");
+    const rows = this.database.prepare(
+      "SELECT * FROM execution_attempts WHERE request_id = ? ORDER BY sequence",
+    ).all(requestId) as unknown as AttemptRow[];
+    return rows.map(attemptFromRow);
+  }
+
+  project(requestId: string): AttemptProjection | null {
+    const attempts = this.list(requestId);
+    const last = attempts.at(-1);
+    if (last === undefined) return null;
+    const usage = emptyAttemptUsage();
+    for (const attempt of attempts) {
+      for (const field of attemptUsageFields) usage[field] += attempt.usage[field];
+    }
+    return {
+      requestId,
+      attempts: attempts.length,
+      lastSequence: last.sequence,
+      lastOutcome: last.outcome,
+      lastStageId: last.stageId,
+      usage,
+    };
+  }
+
+  close(): void {
+    this.database.close();
+  }
+}
 
 type JobRow = {
   id: string;
