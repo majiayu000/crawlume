@@ -5,16 +5,18 @@ import { ReadError } from "../src/errors.js";
 import { ReaderService } from "../src/reader.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
 import { SiteService } from "../src/site.js";
-import type { PageFetcher, RawPage } from "../src/types.js";
+import type { PageFetchOptions, PageFetcher, RawPage } from "../src/types.js";
 import { publicResolver, rawPage, testConfig } from "./helpers.js";
 
 class RoutingFetcher implements PageFetcher {
   readonly calls: string[] = [];
+  readonly options: PageFetchOptions[] = [];
 
   constructor(private readonly routes: Map<string, RawPage | Error>) {}
 
-  async fetch(url: URL): Promise<RawPage> {
+  async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     this.calls.push(url.toString());
+    this.options.push(options);
     const route = this.routes.get(url.toString());
     if (route === undefined) {
       throw new ReadError("ACCESS_DENIED", "Missing test route.", {
@@ -30,10 +32,13 @@ class RoutingFetcher implements PageFetcher {
 
 const readers: ReaderService[] = [];
 
-function serviceWith(routes: Map<string, RawPage | Error>) {
+function serviceWith(
+  routes: Map<string, RawPage | Error>,
+  browserRoutes: Map<string, RawPage | Error> = new Map(),
+) {
   const urlPolicy = new UrlPolicy(async () => publicResolver());
   const http = new RoutingFetcher(routes);
-  const browser = new RoutingFetcher(new Map());
+  const browser = new RoutingFetcher(browserRoutes);
   const reader = new ReaderService(
     testConfig(),
     urlPolicy,
@@ -62,6 +67,31 @@ afterEach(() => {
 });
 
 describe("SiteService", () => {
+  it("preserves explicit browser readiness intent for every crawled page", async () => {
+    const root = "https://example.com/";
+    const readiness = { target: { selector: "[data-terminal='true']" } };
+    const browserPage = page(root, [], true);
+    const { service, http, browser } = serviceWith(
+      new Map(),
+      new Map([[root, { ...browserPage, method: "browser" }]]),
+    );
+
+    await service.crawlSite({
+      url: root,
+      mode: "auto",
+      cacheMode: "live",
+      maxPages: 1,
+      browserReadiness: readiness,
+    });
+
+    expect(http.calls).toEqual([]);
+    expect(browser.options).toEqual([expect.objectContaining({
+      browserReadiness: expect.objectContaining({
+        target: expect.objectContaining({ selector: readiness.target.selector }),
+      }),
+    })]);
+  });
+
   it("maps same-host links and deduplicates fragments and query parameters", async () => {
     const root = "https://example.com/";
     const routes = new Map<string, RawPage | Error>([

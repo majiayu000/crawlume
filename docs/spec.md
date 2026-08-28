@@ -36,6 +36,9 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 - `cacheMode`: `prefer-cache`、`live` 或 `cache-only`，默认 `prefer-cache`。
 - `maxAgeSeconds`: 可接受的缓存年龄，默认 900 秒。
 - `authProfile`: 可选的专用浏览器 Profile 名称。
+- `browserReadiness`: 可选的显式浏览器终态策略。必须包含 1–512 字符的 CSS `target.selector`；
+  可指定 `attached|visible`、最小匹配数、100–120000ms 超时，以及最多 100 步的有界
+  `scroll-to-end` 交互。显式 HTTP 模式不接受该参数。
 
 成功返回：
 
@@ -45,6 +48,8 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 - 提取方法和缓存命中状态。
 - `validation.status`：`usable` 或 `uncertain`。
 - `validation.warnings`：稳定 warning code 与可读说明。
+- Browser 结果包含 `browserReadiness.policy/reason/waitedMs`；目标策略额外返回匹配数、交互类型和
+  已执行步数。
 
 失败返回 MCP `isError: true`，正文为结构化错误 JSON。
 
@@ -106,8 +111,14 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 2. HTTP 200 但检测为 JavaScript 壳或正文不完整时，允许切换到真实浏览器渲染。
 3. 浏览器渲染后仍不完整时返回明确错误。
 4. 指定 `authProfile` 时直接使用浏览器路径。
+5. 指定 `browserReadiness` 时，`auto` 直接使用浏览器并等待明确终态；不得先返回绕过 DOM 条件的
+   HTTP 正文。
 
 `http` 和 `browser` 只使用指定路径，不自动切换。
+
+Browser 默认使用正文指纹稳定窗口作为通用兜底。显式目标策略以 CSS selector 的 attached/visible
+状态和最小匹配数作为成功条件；`scroll-to-end` 只能在声明最大步数和单步等待后执行。目标在总超时
+或交互步数耗尽前未满足时返回 retryable 的 `FETCH_TIMEOUT`，不得把首屏或部分列表包装成成功。
 
 ## 域名限速与重试
 
@@ -116,8 +127,9 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 禁止和内容错误只尝试一次。退避默认从 500ms 指数增长，单次不超过 30000ms。
 
 429 的合法 `Retry-After` 必须被遵守；如果它超过管理员允许的最大等待，则保留失败而不是提前
-重试。异步 Crawl Job 取消可以打断退避等待。新鲜成功结果的 evidence 返回 `attempts` 和
-`totalRetryDelayMs`；最终失败在 details 返回同样证据。
+重试。异步 Crawl Job 取消可以打断退避等待。新鲜成功结果的 evidence 返回 `attempts`、
+`totalRetryDelayMs`、按 HTTP/Browser 拆分的 fetch 次数、响应字节和耗时；最终失败在 details
+返回同样的扁平成本证据，供 Benchmark 和后续 Attempt Ledger 归因。
 
 ## 管理员代理池
 

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "quotes-static-http",
+  "layer": "live",
+  "category": "static-list",
+  "input": {
+    "url": "https://quotes.toscrape.com/",
+    "intent": "read",
+    "mode": "http",
+    "freshnessSeconds": 0
+  },
+  "policy": {
+    "browserAllowed": false,
+    "authProfile": null,
+    "maxAttempts": 2,
+    "maxDurationMs": 10000,
+    "maxBrowserMs": 0
+  },
+  "truth": {
+    "required": [
+      { "type": "title_equals", "value": "Quotes to Scrape" },
+      {
+        "type": "contains_text",
+        "value": "The world as we have created it is a process of our thinking"
+      },
+      { "type": "contains_text", "value": "Albert Einstein" },
+      { "type": "min_content_characters", "value": 900 },
+      { "type": "http_status_equals", "value": 200 },
+      { "type": "fetch_method_equals", "value": "http" }
+    ],
+    "forbidden": [
+      { "type": "contains_text", "value": "Sign in to continue" }
+    ]
+  },
+  "reviewedAt": "2026-08-29T00:00:00.000Z",
+  "expiresAt": "2026-09-28T00:00:00.000Z"
+}

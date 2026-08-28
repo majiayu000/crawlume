@@ -19,6 +19,10 @@
     "test:watch": "vitest",
     "start": "node dist/server.js",
     "auth": "tsx src/cli/auth.ts",
+    "bench:case": "tsx benchmarks/controlled-site/server.ts --runner reader-case",
+    "bench:corpus": "tsx benchmarks/controlled-site/server.ts --runner reader-corpus",
+    "bench:http": "tsx benchmarks/harness/summary.ts",
+    "bench:readiness": "tsx benchmarks/controlled-site/server.ts --runner readiness-tournament",
     "cli": "tsx src/cli/main.ts",
     "smoke": "tsx src/cli/smoke.ts"
   },
@@ -35,6 +39,8 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@crawlee/cheerio": "3.16.0",
+    "@crawlee/core": "3.16.0",
     "@modelcontextprotocol/client": "2.0.0",
     "@types/jsdom": "28.0.1",
     "@types/node": "25.5.0",

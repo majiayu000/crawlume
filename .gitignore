@@ -1,6 +1,9 @@
 node_modules/
 dist/
 coverage/
+benchmarks/reports/
+benchmarks/runners/**/bin/
+benchmarks/runners/**/.venv/
 .env
 .env.*
 !.env.example

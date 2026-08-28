@@ -14,6 +14,21 @@ import {
   type SearchWebOptions,
 } from "./types.js";
 
+const browserReadinessInput = z.object({
+  target: z.object({
+    selector: z.string().trim().min(1).max(512)
+      .describe("CSS selector that proves the requested browser content reached its terminal state."),
+    state: z.enum(["attached", "visible"]).default("attached"),
+    minCount: z.int().min(1).max(10_000).default(1),
+  }).strict(),
+  interaction: z.object({
+    type: z.literal("scroll-to-end"),
+    maxSteps: z.int().min(1).max(100),
+    stepDelayMs: z.int().min(0).max(5_000).default(100),
+  }).strict().optional(),
+  timeoutMs: z.int().min(100).max(120_000).optional(),
+}).strict();
+
 const readPageInput = z.object({
   url: z.url().describe("Public http or https URL to read."),
   mode: z.enum(fetchModes).default("auto"),
@@ -24,6 +39,9 @@ const readPageInput = z.object({
     .regex(/^[A-Za-z0-9._-]{1,64}$/)
     .optional()
     .describe("Dedicated browser profile created with diaoyan-auth."),
+  browserReadiness: browserReadinessInput.optional().describe(
+    "Explicit browser terminal condition and optional bounded scrolling. Auto mode routes directly to browser when set.",
+  ),
 });
 
 const siteScopeInput = {
@@ -105,7 +123,13 @@ function toReadOptions(args: z.infer<typeof readPageInput>): ReadPageOptions {
     cacheMode: args.cacheMode,
     maxAgeSeconds: args.maxAgeSeconds,
   };
-  return args.authProfile === undefined ? common : { ...common, authProfile: args.authProfile };
+  return {
+    ...common,
+    ...(args.authProfile === undefined ? {} : { authProfile: args.authProfile }),
+    ...(args.browserReadiness === undefined
+      ? {}
+      : { browserReadiness: args.browserReadiness }),
+  };
 }
 
 function toMapOptions(args: z.infer<typeof mapSiteInput>): MapSiteOptions {

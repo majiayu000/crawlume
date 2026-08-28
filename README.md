@@ -79,6 +79,24 @@ Anonymous JavaScript pages reuse a bounded pool of Chrome instances while receiv
 BrowserContext per page. Authorization Profiles remain outside the pool and retain exclusive
 persistent contexts.
 
+Browser reads use conservative body stability by default. A caller that knows a page's terminal DOM
+condition can provide `browserReadiness` to `read_page`, `inspect_page`, `crawl_site`, or
+`start_crawl`. The policy requires a CSS target and may declare bounded `scroll-to-end` interaction;
+setting it in `auto` mode routes directly to the browser so an HTTP result cannot bypass the stated
+DOM condition. Exhausted time or interaction budgets fail with `FETCH_TIMEOUT`.
+
+```json
+{
+  "url": "https://example.com/infinite-feed",
+  "mode": "auto",
+  "browserReadiness": {
+    "target": { "selector": "[data-terminal='true']", "state": "visible" },
+    "interaction": { "type": "scroll-to-end", "maxSteps": 20, "stepDelayMs": 100 },
+    "timeoutMs": 10000
+  }
+}
+```
+
 Successful reads include a zero-external-call validation result:
 
 - `usable`: no low-cost warning signal was found.

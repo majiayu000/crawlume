@@ -1,8 +1,12 @@
 # Diaoyan 可靠性与成本优化架构
 
-状态：Architecture Foundation，尚未实现
-最后更新：2026-08-28
+状态：Architecture Foundation，Benchmark/Readiness 首版与 Contracts/Attempt Ledger 基础切片已实现
+最后更新：2026-08-29
 配套真值规范：[reliability-benchmark-spec.md](./reliability-benchmark-spec.md)
+
+选型说明：本文描述的是较早形成的候选组件设计。跨项目架构调研和四方案决策见
+[technology-selection-rfc.md](./technology-selection-rfc.md)；RFC 仍为 Proposed，批准后应以其决策为准
+统一本文，不能把两份目标文档同时当作已实现事实。
 
 ## Objective
 
@@ -25,14 +29,14 @@ subject to policy, authorization, freshness and resource budgets
 | Entrypoints | `src/mcp.ts`、`src/cli/main.ts`、`src/server.ts` | CLI/MCP 已共享应用核心，继续保持公共合同薄层 |
 | Composition | `src/app.ts` 构造 HTTP、Browser、Cache、Job、Monitor、Metrics | 当前依赖组装清晰，适合渐进加入 Planner/Runtime，不需要先拆包 |
 | Access decision | `src/reader.ts` 仅支持 `auto/http/browser`，`auto` 只在 `SHELL_ONLY`/`INCOMPLETE_CONTENT` 时回退 | Access Planner 是边界补全，不应在 Reader 中继续堆条件分支 |
-| Browser runtime | `src/fetch/browser.ts` 使用 `domcontentloaded` 后固定等待 750ms | 缺少 readiness contract、阶段时间和失败 Trace |
+| Browser runtime | `src/runtime/readiness.ts` 与 `src/fetch/browser.ts` 已支持正文稳定兜底、目标 selector、attached/visible、预算化滚动、总预算硬超时和 readiness 证据 | 更多交互类型、站点 Adapter 策略和完整阶段 Trace 仍待实现 |
 | Extraction | `src/extract.ts` 使用 JSON/plain、Readability、Document fallback | 缺少 content-type/站点 Extractor Registry |
 | Validation | `src/validation.ts` 只检查字数和 fallback 方法 | 当前 `ok` 不能等同语义有效，需要独立 Validator Contract |
 | Crawl state | `src/site.ts` 内存 BFS、串行执行；`src/jobs.ts` 持久化整项 Job | Job 可恢复但页级 Frontier 不耐久，无法安全提高并发 |
 | Retry | `src/crawl-policy.ts` 对整个 operation 重试 | 需要 Stage-level Attempt Ledger，避免重复已成功阶段 |
 | Cache | `src/cache.ts` TTL SQLite cache | 缺少 revalidation、singleflight、版本化 Artifact key 和清理 |
 | Metrics | `src/metrics.ts` 记录请求、错误码、bytes、attempt、duration | 是良好起点，但缺少有效真值、阶段耗时、浏览器成本和 Planner 路径 |
-| Tests | `tests/` 有 22 个测试文件，覆盖现有模块 | 新边界必须保持 headless/fake adapter 测试能力 |
+| Tests | `tests/` 有 26 个测试文件、246 条测试，含独立 Browser readiness runtime、Intent/Adapter 传递与 Tournament truth 测试 | 新边界必须保持 headless/fake adapter 测试能力 |
 | Repo state | 2026-08-28 `main` at `074ac92`，无仓库级 AGENTS/CLAUDE 指令 | 本 Spec 以当前主线为证据，不声称远端或未来实现状态 |
 
 ## Reference Models Considered
@@ -278,8 +282,13 @@ Attempt Ledger 必须记录每次尝试的 provider、stage、错误、等待、
 - 已知关键请求完成，或达到允许的 network quiet 条件。
 - Deadline/Browser budget 到期时明确返回 `READINESS_TIMEOUT`。
 
-Generic Policy 只用保守 DOM/正文稳定条件；站点特殊条件必须来自 versioned Adapter。图片、字体、
-媒体等资源过滤也只能由明确 Capability 声明，避免为了省成本破坏内容。
+Generic Policy 只用保守 DOM/正文稳定条件；目标 selector/字段断言来自 Intent 或 versioned Adapter。
+scroll/click 等 InteractionPolicy 必须显式声明 scope、终态和预算，Generic Policy 不主动交互。图片、
+字体、媒体等资源过滤也只能由明确 Capability 声明，避免为了省成本破坏内容。
+
+首轮 5×5 受控 Tournament 中，fixed/adaptive/target 的 Valid Rate 分别为 40%/60%/100%，False Success
+分别为 60%/20%/0%。全页正文稳定解决了延迟正文与 Skeleton，但持续变化页面会超时、无限滚动会在
+首批内容稳定后假成功；因此它是 fallback，不是最终完成语义。
 
 失败 Trace 默认抽样或只在失败时生成，包含有界 DOM snapshot、网络摘要、Console 摘要和 timing；
 不得记录 Cookie、Authorization、个人消息或完整敏感页面。
@@ -428,10 +437,10 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 | Priority | Work | Files/modules | Done when | Verification |
 | --- | --- | --- | --- | --- |
 | P0 | Benchmark Schema、Truth Evaluator、Controlled Site | `benchmarks/` | 产生首个可复现 baseline | `pnpm bench --mode pr` |
-| P0 | Reliability contracts 与 Attempt Ledger | `src/reliability/contracts.ts`、`src/runtime/attempt-ledger.ts` | 事件重放得到同一 projection | `pnpm test -- tests/attempt-ledger.test.ts` |
+| P0 | Reliability contracts 与 Attempt Ledger（基础切片已完成） | 当前位于 `src/types.ts`、`src/jobs.ts`；待保护阈值解除后机械拆分 | 事件重放得到同一 projection；接入 Reader 前保持独立 | `pnpm test -- tests/attempt-ledger.test.ts` |
 | P0 | Deterministic Access Planner | `src/reliability/planner.ts` | 现有 auto 行为可表达，Plan 可解释 | `pnpm test -- tests/reliability-planner.test.ts` |
 | P1 | Stage Executor 与细粒度重试 | `src/runtime/executor.ts` | 不重复成功 Stage，429 按 origin 调度 | `pnpm test -- tests/reliability-runtime.test.ts` |
-| P1 | Adaptive Browser Readiness | `src/runtime/readiness.ts`、Browser Provider | 快页提前结束，慢页等待条件，预算可终止 | `pnpm test -- tests/browser-readiness.test.ts` |
+| P1 | Composable Browser Readiness（首版已完成） | `src/runtime/readiness.ts`、Browser Provider、公开 Read Intent | Intent/Adapter 目标条件优先，Generic 稳定兜底，滚动有预算 | `pnpm test -- tests/browser-readiness.test.ts tests/readiness-tournament.test.ts && pnpm bench:readiness` |
 | P1 | Extractor/Validator Registry | `src/reliability/validation.ts`、`src/adapters/` | JSON/Feed/Article 等合同独立可测 | registry contract tests + Benchmark |
 | P1 | Artifact Store revalidation/singleflight | Cache/Store adapters | 相同请求合并，304 正确复用，版本升级可重抽取 | cache/revalidation tests |
 | P2 | Durable Frontier 与 ResourceGovernor | `src/runtime/frontier.ts`、`resource-governor.ts` | 页级恢复、按 origin 调节、HTTP/Browser 分池 | frontier/recovery/load tests |

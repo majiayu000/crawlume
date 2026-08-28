@@ -88,24 +88,25 @@
 
 ## v0.11 Reliability Truth
 
-- 实现 `docs/reliability-benchmark-spec.md` 的 Case Schema、Truth Evaluator 和 Controlled Site。
-- 区分 `valid`、`uncertain`、`invalid`、`failed`、`policy_stop` 和 `unsupported`。
-- 建立首个分层 Corpus 与可复现 baseline。
-- 记录 False Success、Cost per Valid Artifact、Browser Uplift、Retry Recovery/Waste。
+- 实现 `docs/reliability-benchmark-spec.md` 的 Case Schema、独立 Truth Evaluator 和 Controlled Site（首版已完成）。
+- 区分 `valid`、`uncertain`、`invalid`、`failed`、`policy_stop`、`unsupported` 和 `harness_error`（聚合首版已完成）。
+- 建立首个分层 Corpus 与可复现 baseline（受控 HTTP、Readiness Tournament 和 6-Case Public URL v1 已完成；正式 Layer A/Release 配额未完成）。
+- 记录 False Success、Cost per Valid Artifact、Browser Uplift、Retry Recovery/Waste（分段 fetch trace、资源向量聚合与首个 retry-waste 实跑已完成）。
 - Release 只允许在同 Case Set、配置和环境证据下比较，不宣称无证据的竞品领先。
 
 ## v0.12 Access Planner 与 Attempt Ledger
 
-- `ReadIntent`、`ExecutionBudget`、`AccessPlan`、`StageResult` 和 `ValidationResult` 稳定合同。
+- `ReadIntent`、`ExecutionBudget`、`AccessPlan`、`StageResult` 和 `ValidationResult` 稳定合同（首版已完成）。
 - Cache、HTTP、Browser 变成 Provider；现有 `mode` 参数映射为 Provider allowlist。
-- append-only Attempt Ledger 和可重放 projection。
+- append-only Attempt Ledger 和可重放 projection（独立 SQLite store 首版已完成；尚未接入 Reader 主链）。
 - Stage-level retry，避免重复已经成功的 HTTP、Browser 或 Extraction 阶段。
 - 429/`Retry-After` 进入按 origin 调度，不通过身份轮换规避。
 - `ReaderService.fetchWithMode` 和 `SiteService.shouldRender` 收敛到唯一 Planner。
 
 ## v0.13 Browser Readiness 与内容质量
 
-- 用正文稳定、目标条件和硬预算替换固定浏览器等待。
+- 用正文稳定、目标条件和硬预算替换固定浏览器等待（正文稳定、三策略 Tournament、生产
+  Intent/Adapter selector 与预算化滚动首版已完成）。
 - Browser/Context 健康、自动回收、失败 Trace 抽样和敏感信息清理。
 - Extractor Registry 与 Validator Registry。
 - RSS、Sitemap、JSON-LD、PDF 等确定性能力。

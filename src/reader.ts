@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
@@ -8,12 +9,17 @@ import { normalizeError, ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
 import { CrawlerMetrics } from "./metrics.js";
 import type {
+  BrowserReadinessPolicy,
   InspectPageResult,
   PageReadArtifact,
   PageFetcher,
   ReadPageOptions,
   ReadPageResult,
 } from "./types.js";
+import {
+  normalizeBrowserReadinessPolicy,
+  type NormalizedBrowserReadinessPolicy,
+} from "./runtime/readiness.js";
 import { UrlPolicy } from "./security/url-policy.js";
 import { validateContent } from "./validation.js";
 import type { RslAccessAudit } from "./rsl-audit.js";
@@ -22,15 +28,17 @@ function cacheKey(
   url: string,
   mode: string,
   authProfile: string | null,
+  browserReadiness: NormalizedBrowserReadinessPolicy | undefined,
   config: AppConfig,
 ): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        schema: 4,
+        schema: 5,
         url,
         mode,
         authProfile,
+        browserReadiness: browserReadiness ?? null,
         userAgent: config.userAgent,
         rslUsage: config.rslUsage,
         rslUserClass: config.rslUserClass,
@@ -51,6 +59,36 @@ function withoutLinks(result: PageReadArtifact): ReadPageResult {
 }
 
 type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
+type FetchTrace = {
+  fetchAttempts: Record<"http" | "browser", number>;
+  responseBytesByMethod: Record<"http" | "browser", number>;
+  fetchDurationMsByMethod: Record<"http" | "browser", number>;
+};
+
+function emptyFetchTrace(): FetchTrace {
+  return {
+    fetchAttempts: { http: 0, browser: 0 },
+    responseBytesByMethod: { http: 0, browser: 0 },
+    fetchDurationMsByMethod: { http: 0, browser: 0 },
+  };
+}
+
+function errorWithFetchTrace(error: unknown, trace: FetchTrace): ReadError {
+  const normalized = normalizeError(error);
+  return new ReadError(normalized.code, normalized.message, {
+    retryable: normalized.retryable,
+    details: {
+      ...normalized.details,
+      httpFetchAttempts: trace.fetchAttempts.http,
+      browserFetchAttempts: trace.fetchAttempts.browser,
+      httpResponseBytes: trace.responseBytesByMethod.http,
+      browserResponseBytes: trace.responseBytesByMethod.browser,
+      httpFetchDurationMs: trace.fetchDurationMsByMethod.http,
+      browserFetchDurationMs: trace.fetchDurationMsByMethod.browser,
+    },
+    cause: normalized,
+  });
+}
 
 export class ReaderService {
   constructor(
@@ -98,12 +136,20 @@ export class ReaderService {
         details: { mode },
       });
     }
+    if (options.browserReadiness !== undefined && mode === "http") {
+      throw new ReadError("INVALID_ARGUMENT", "browserReadiness requires auto or browser mode.", {
+        details: { mode },
+      });
+    }
+    const browserReadiness = options.browserReadiness === undefined
+      ? undefined
+      : normalizeBrowserReadinessPolicy(options.browserReadiness);
 
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
     const authProfile = options.authProfile ?? null;
     const key = createHash("sha256")
-      .update(cacheKey(url.toString(), mode, authProfile, this.config))
+      .update(cacheKey(url.toString(), mode, authProfile, browserReadiness, this.config))
       .update(this.rslApprovalContextHash())
       .digest("hex");
 
@@ -120,17 +166,30 @@ export class ReaderService {
       }
     }
 
+    const trace = emptyFetchTrace();
     const operation = async (): Promise<PageReadArtifact> =>
-      this.fetchWithMode(url, mode, authProfile, options.signal);
-    const attempt = this.crawlPolicy === null
-      ? { value: await operation(), attempts: 1, totalRetryDelayMs: 0 }
-      : await this.crawlPolicy.execute(url, operation, options.signal);
+      this.fetchWithMode(url, mode, authProfile, browserReadiness, trace, options.signal);
+    let attempt: {
+      value: PageReadArtifact;
+      attempts: number;
+      totalRetryDelayMs: number;
+    };
+    try {
+      attempt = this.crawlPolicy === null
+        ? { value: await operation(), attempts: 1, totalRetryDelayMs: 0 }
+        : await this.crawlPolicy.execute(url, operation, options.signal);
+    } catch (error) {
+      throw errorWithFetchTrace(error, trace);
+    }
     const result: PageReadArtifact = {
       ...attempt.value,
       evidence: {
         ...attempt.value.evidence,
         attempts: attempt.attempts,
         totalRetryDelayMs: attempt.totalRetryDelayMs,
+        fetchAttempts: trace.fetchAttempts,
+        responseBytesByMethod: trace.responseBytesByMethod,
+        fetchDurationMsByMethod: trace.fetchDurationMsByMethod,
       },
     };
 
@@ -152,10 +211,25 @@ export class ReaderService {
   private async fetchAndExtract(
     sourceUrl: URL,
     fetcher: PageFetcher,
+    method: "http" | "browser",
+    trace: FetchTrace,
     authProfile: string | null,
+    browserReadiness: BrowserReadinessPolicy | undefined,
     signal?: AbortSignal,
   ): Promise<PageReadArtifact> {
-    const page = await fetcher.fetch(sourceUrl, authProfile ?? undefined, signal);
+    trace.fetchAttempts[method] += 1;
+    const startedAt = performance.now();
+    let page: Awaited<ReturnType<PageFetcher["fetch"]>>;
+    try {
+      page = await fetcher.fetch(sourceUrl, {
+        ...(authProfile === null ? {} : { authProfile }),
+        ...(signal === undefined ? {} : { signal }),
+        ...(browserReadiness === undefined ? {} : { browserReadiness }),
+      });
+    } finally {
+      trace.fetchDurationMsByMethod[method] += Math.max(0, performance.now() - startedAt);
+    }
+    trace.responseBytesByMethod[method] += page.responseBytes;
     const extracted = extractPage(page);
     return {
       status: "ok",
@@ -179,6 +253,9 @@ export class ReaderService {
         responseBytes: page.responseBytes,
         contentCharacters: extracted.contentCharacters,
         extractionMethod: extracted.extractionMethod,
+        ...(page.browserReadiness === undefined
+          ? {}
+          : { browserReadiness: page.browserReadiness }),
         proxyUsed: page.proxyUsed ?? false,
         ...(page.agentIdentity === undefined ? {} : { agentIdentity: page.agentIdentity }),
         ...(page.rsl === undefined ? {} : { rsl: page.rsl }),
@@ -190,16 +267,28 @@ export class ReaderService {
     url: URL,
     mode: "auto" | "http" | "browser",
     authProfile: string | null,
+    browserReadiness: BrowserReadinessPolicy | undefined,
+    trace: FetchTrace,
     signal: AbortSignal | undefined,
   ): Promise<PageReadArtifact> {
     if (mode === "http") {
-      return this.fetchAndExtract(url, this.httpFetcher, null, signal);
+      return this.fetchAndExtract(url, this.httpFetcher, "http", trace, null, undefined, signal);
     }
-    if (mode === "browser" || authProfile !== null) {
-      return this.fetchAndExtract(url, this.browserFetcher, authProfile, signal);
+    if (mode === "browser" || authProfile !== null || browserReadiness !== undefined) {
+      return this.fetchAndExtract(
+        url,
+        this.browserFetcher,
+        "browser",
+        trace,
+        authProfile,
+        browserReadiness,
+        signal,
+      );
     }
     try {
-      return await this.fetchAndExtract(url, this.httpFetcher, null, signal);
+      return await this.fetchAndExtract(
+        url, this.httpFetcher, "http", trace, null, undefined, signal,
+      );
     } catch (error) {
       if (
         !(error instanceof ReadError) ||
@@ -208,7 +297,9 @@ export class ReaderService {
         throw error;
       }
       try {
-        return await this.fetchAndExtract(url, this.browserFetcher, null, signal);
+        return await this.fetchAndExtract(
+          url, this.browserFetcher, "browser", trace, null, undefined, signal,
+        );
       } catch (browserFailure) {
         if (browserFailure instanceof ReadError && browserFailure.code === "BROWSER_UNAVAILABLE") {
           throw new ReadError(

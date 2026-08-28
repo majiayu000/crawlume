@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "rfc-robots-http",
+  "layer": "live",
+  "category": "long-document",
+  "input": {
+    "url": "https://www.rfc-editor.org/rfc/rfc9309.html",
+    "intent": "read",
+    "mode": "http",
+    "freshnessSeconds": 0
+  },
+  "policy": {
+    "browserAllowed": false,
+    "authProfile": null,
+    "maxAttempts": 2,
+    "maxDurationMs": 15000,
+    "maxBrowserMs": 0
+  },
+  "truth": {
+    "required": [
+      { "type": "contains_text", "value": "Robots Exclusion Protocol" },
+      { "type": "contains_text", "value": "The \"Allow\" and \"Disallow\" Lines" },
+      { "type": "min_content_characters", "value": 10000 },
+      { "type": "http_status_equals", "value": 200 },
+      { "type": "fetch_method_equals", "value": "http" }
+    ],
+    "forbidden": [
+      { "type": "contains_text", "value": "Checking your browser" }
+    ]
+  },
+  "reviewedAt": "2026-08-29T00:00:00.000Z",
+  "expiresAt": "2026-09-28T00:00:00.000Z"
+}

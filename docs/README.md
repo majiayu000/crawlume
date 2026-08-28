@@ -7,6 +7,21 @@
 - [product-strategy.md](./product-strategy.md)：产品价值、付费理由和交付边界。
 - [competitive-landscape.md](./competitive-landscape.md)：竞品桌面调研及尚未完成的真实对照。
 
+## 技术选型与目标架构
+
+以下两份文档是进入下一轮实现前的决策入口：
+
+1. [crawler-architecture-landscape.md](./crawler-architecture-landscape.md)
+   基于官方文档、源码、标准和论文，对开源框架、分布式爬虫、归档系统、浏览器基础设施和闭源
+   抓取/检索 API 做架构节点对比，并明确证据等级与尚不可知的内部实现。
+2. [technology-selection-rfc.md](./technology-selection-rfc.md)
+   比较四套候选架构，给出语言、Frontier、存储、队列、Browser、提取和验证的推荐选型、架构图、
+   量化门槛、风险及实施顺序。
+
+在 RFC 获得产品事实和 Phase 0 Benchmark 校准前，它是 Proposed 决策，不是已实现状态。若目标选型与
+较早的可靠性文档出现冲突，以 RFC 作为待批准的决策建议；只有代码与测试落地后才能更新
+`spec.md` 的实现合同。
+
 ## Reliability 核心计划
 
 以下文档共同回答“如何让用户用更少成本获得更多可信结果”：

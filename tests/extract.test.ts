@@ -22,6 +22,7 @@ describe("extractPage", () => {
   it.each([
     ["<html><title>Checking your browser</title><body>Verify you are human. CAPTCHA required.</body></html>", "HUMAN_VERIFICATION_REQUIRED"],
     ["<html><title>Log in</title><body>Log in or sign up to continue reading.</body></html>", "LOGIN_WALL_DETECTED"],
+    ["<html><title>Quotes to Scrape</title><body><form action='/login'><label>Username<input name='username'></label><label>Password<input type='password' name='password'></label><input type='submit' value='Login'></form></body></html>", "LOGIN_WALL_DETECTED"],
     ["<html><title>App</title><body><div id='root'>Loading...</div><script></script><script></script><script></script><script></script></body></html>", "SHELL_ONLY"],
   ])("fails visibly on gate or shell pages", (body, code) => {
     expect(() => extractPage(rawPage({ body, responseBytes: Buffer.byteLength(body) }))).toThrowError(

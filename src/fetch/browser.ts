@@ -1,15 +1,87 @@
-import { chromium, type BrowserContext, type LaunchOptions } from "playwright-core";
+import { chromium, type BrowserContext, type LaunchOptions, type Page } from "playwright-core";
 
 import type { AppConfig } from "../config.js";
 import { agentIdentityEvidence } from "../identity.js";
-import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
-import type { PageFetcher, RawPage } from "../types.js";
+import {
+  crawlCancelledError,
+  errorForHttpStatus,
+  parseRetryAfterMs,
+  ReadError,
+} from "../errors.js";
+import type { PageFetchOptions, PageFetcher, RawPage } from "../types.js";
 import { ProfileManager } from "../profiles.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
 import { BrowserPool, type BrowserLease } from "../browser-pool.js";
 import type { RslPolicy } from "../rsl.js";
+import {
+  normalizeBrowserReadinessPolicy,
+  waitForBrowserReadiness,
+  waitForTargetReadiness,
+  type BrowserTargetReadinessRuntime,
+  type NormalizedBrowserReadinessTarget,
+  type NormalizedBrowserScrollInteraction,
+} from "../runtime/readiness.js";
+
+export function pageReadinessRuntime(page: Page): BrowserTargetReadinessRuntime {
+  return {
+    now: Date.now,
+    sample: async () => page.evaluate(() => {
+      const text = document.body?.innerText.trim() ?? "";
+      let fingerprint = 2_166_136_261;
+      for (let index = 0; index < text.length; index += 1) {
+        fingerprint ^= text.charCodeAt(index);
+        fingerprint = Math.imul(fingerprint, 16_777_619);
+      }
+      return {
+        readyState: document.readyState,
+        textCharacters: text.length,
+        htmlCharacters: document.body?.innerHTML.length ?? 0,
+        contentFingerprint: fingerprint >>> 0,
+      };
+    }),
+    wait: async (milliseconds, signal) => new Promise<void>((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(crawlCancelledError());
+        return;
+      }
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        reject(crawlCancelledError());
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, milliseconds);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }),
+    countTarget: async (target: NormalizedBrowserReadinessTarget) => {
+      try {
+        return await page.evaluate(({ selector, state }) => {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          if (state === "attached") return nodes.length;
+          return nodes.filter((node) => {
+            const element = node as HTMLElement;
+            const style = window.getComputedStyle(element);
+            const rectangle = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" &&
+              rectangle.width > 0 && rectangle.height > 0;
+          }).length;
+        }, target);
+      } catch (error) {
+        throw new ReadError(
+          "INVALID_ARGUMENT",
+          "browserReadiness.target.selector must be a valid CSS selector.",
+          { details: { name: "browserReadiness.target.selector" }, cause: error },
+        );
+      }
+    },
+    performInteraction: async (_interaction: NormalizedBrowserScrollInteraction) => {
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    },
+  };
+}
 
 function requestKey(url: URL): string {
   const normalized = new URL(url);
@@ -74,7 +146,11 @@ export class BrowserPageFetcher implements PageFetcher {
     ),
   ) {}
 
-  async fetch(url: URL, authProfile?: string, signal?: AbortSignal): Promise<RawPage> {
+  async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
+    const { authProfile, signal, browserReadiness } = options;
+    const readinessPolicy = browserReadiness === undefined
+      ? undefined
+      : normalizeBrowserReadinessPolicy(browserReadiness);
     let context: BrowserContext | null = null;
     let lease: BrowserLease | null = null;
     let profilePath: string | null = null;
@@ -158,6 +234,7 @@ export class BrowserPageFetcher implements PageFetcher {
         }
       });
 
+      const navigationStartedAt = Date.now();
       let response;
       try {
         response = await page.goto(url.toString(), {
@@ -175,7 +252,28 @@ export class BrowserPageFetcher implements PageFetcher {
           details: { url: url.toString() },
         });
       }
-      await page.waitForTimeout(750);
+      const readinessBudgetMs = this.config.browserTimeoutMs - (Date.now() - navigationStartedAt);
+      if (readinessBudgetMs <= 0) {
+        throw new ReadError(
+          "FETCH_TIMEOUT",
+          "The browser exhausted its time budget before readiness could be checked.",
+          { retryable: true, details: { timeoutMs: this.config.browserTimeoutMs } },
+        );
+      }
+      const readinessTimeoutMs = Math.min(
+        readinessBudgetMs,
+        readinessPolicy?.timeoutMs ?? readinessBudgetMs,
+      );
+      const runtime = pageReadinessRuntime(page);
+      const readiness = readinessPolicy === undefined
+        ? await waitForBrowserReadiness(runtime, {
+            timeoutMs: readinessTimeoutMs,
+            ...(signal === undefined ? {} : { signal }),
+          })
+        : await waitForTargetReadiness(runtime, readinessPolicy, {
+            timeoutMs: readinessTimeoutMs,
+            ...(signal === undefined ? {} : { signal }),
+          });
 
       const finalUrl = page.url();
       const finalParsed = this.urlPolicy.parse(finalUrl);
@@ -255,6 +353,21 @@ export class BrowserPageFetcher implements PageFetcher {
         contentType: response.headers()["content-type"] ?? "text/html",
         responseBytes,
         finalUrl,
+        browserReadiness: {
+          policy: readinessPolicy === undefined ? "generic" : "target",
+          waitedMs: readiness.waitedMs,
+          reason: readiness.reason,
+          textCharacters: readiness.textCharacters,
+          ...("targetMatches" in readiness
+            ? { targetMatches: readiness.targetMatches }
+            : {}),
+          ...(readinessPolicy?.interaction === undefined
+            ? {}
+            : { interaction: readinessPolicy.interaction.type }),
+          ...("interactionSteps" in readiness
+            ? { interactionSteps: readiness.interactionSteps }
+            : {}),
+        },
         proxyUsed: proxy !== null,
         agentIdentity: agentIdentityEvidence(this.config, false),
         rsl,

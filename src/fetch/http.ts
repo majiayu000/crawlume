@@ -5,7 +5,7 @@ import { Agent, fetch, ProxyAgent, type Dispatcher } from "undici";
 import type { AppConfig } from "../config.js";
 import { AgentIdentity } from "../identity.js";
 import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
-import type { PageFetcher, RawPage } from "../types.js";
+import type { PageFetchOptions, PageFetcher, RawPage } from "../types.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool } from "../proxy.js";
@@ -298,7 +298,7 @@ export class HttpPageFetcher implements PageFetcher {
     private readonly rsl: RslPolicy,
   ) {}
 
-  async fetch(url: URL): Promise<RawPage> {
+  async fetch(url: URL, _options: PageFetchOptions = {}): Promise<RawPage> {
     let robotsRsl = this.rsl.emptyEvidence();
     let challenge: {
       url: string;
