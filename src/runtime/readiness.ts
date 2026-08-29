@@ -163,8 +163,15 @@ export async function waitForBrowserReadiness(
 
   while (true) {
     throwIfAborted(options.signal);
-    const now = runtime.now();
     const snapshot = await runtime.sample();
+    const now = runtime.now();
+    if (now > deadline) {
+      throw new ReadError(
+        "FETCH_TIMEOUT",
+        "The browser page did not become stable before the readiness deadline.",
+        { retryable: true, details: { timeoutMs: options.timeoutMs } },
+      );
+    }
     const signature = [
       snapshot.readyState,
       snapshot.textCharacters,
@@ -205,28 +212,37 @@ export async function waitForTargetReadiness(
   const startedAt = runtime.now();
   const deadline = startedAt + options.timeoutMs;
   let interactionSteps = 0;
+  const deadlineError = (): ReadError => new ReadError(
+    "FETCH_TIMEOUT",
+    "The browser readiness target was not met before the readiness deadline.",
+    {
+      retryable: true,
+      details: {
+        timeoutMs: options.timeoutMs,
+        interactionSteps,
+      },
+    },
+  );
 
   while (true) {
     throwIfAborted(options.signal);
     if (runtime.now() > deadline) {
-      throw new ReadError(
-        "FETCH_TIMEOUT",
-        "The browser readiness target was not met before the readiness deadline.",
-        {
-          retryable: true,
-          details: {
-            timeoutMs: options.timeoutMs,
-            interactionSteps,
-          },
-        },
-      );
+      throw deadlineError();
     }
     const targetMatches = await runtime.countTarget(policy.target);
+    if (runtime.now() > deadline) {
+      throw deadlineError();
+    }
     if (targetMatches >= policy.target.minCount) {
+      const snapshot = await runtime.sample();
+      const sampledAt = runtime.now();
+      if (sampledAt > deadline) {
+        throw deadlineError();
+      }
       return {
-        ...(await runtime.sample()),
+        ...snapshot,
         reason: "target-condition-met",
-        waitedMs: runtime.now() - startedAt,
+        waitedMs: sampledAt - startedAt,
         targetMatches,
         interactionSteps,
       };
@@ -260,11 +276,7 @@ export async function waitForTargetReadiness(
 
     const remainingMs = deadline - runtime.now();
     if (remainingMs <= 0) {
-      throw new ReadError(
-        "FETCH_TIMEOUT",
-        "The browser readiness target was not met before the readiness deadline.",
-        { retryable: true, details: { timeoutMs: options.timeoutMs } },
-      );
+      throw deadlineError();
     }
     await runtime.wait(Math.min(pollIntervalMs, remainingMs), options.signal);
   }
