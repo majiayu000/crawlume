@@ -97,6 +97,32 @@ describe("waitForBrowserReadiness", () => {
       }),
     ).rejects.toMatchObject({ code: "CRAWL_CANCELLED" });
   });
+
+  it("does not accept generic readiness when sampling itself crosses the deadline", async () => {
+    let nowMs = 0;
+    const runtime: BrowserReadinessRuntime = {
+      now: () => nowMs,
+      sample: async () => {
+        nowMs = 150;
+        return {
+          readyState: "complete",
+          textCharacters: 800,
+          htmlCharacters: 1_500,
+        };
+      },
+      wait: async (milliseconds) => {
+        nowMs += milliseconds;
+      },
+    };
+
+    await expect(waitForBrowserReadiness(runtime, {
+      timeoutMs: 100,
+      stableWindowMs: 0,
+    })).rejects.toMatchObject({
+      code: "FETCH_TIMEOUT",
+      details: { timeoutMs: 100 },
+    });
+  });
 });
 
 describe("waitForTargetReadiness", () => {
@@ -187,6 +213,57 @@ describe("waitForTargetReadiness", () => {
     await expect(waitForTargetReadiness(runtime, {
       target: { selector: "[data-terminal='true']" },
       interaction: { type: "scroll-to-end", maxSteps: 1, stepDelayMs: 0 },
+    }, { timeoutMs: 100 })).rejects.toMatchObject({
+      code: "FETCH_TIMEOUT",
+      details: { timeoutMs: 100 },
+    });
+  });
+
+  it("does not accept a target when the target probe itself crosses the deadline", async () => {
+    const base = runtimeFor(() => ({
+      readyState: "complete",
+      textCharacters: 800,
+      htmlCharacters: 1_500,
+    }));
+    const runtime: BrowserTargetReadinessRuntime = {
+      ...base,
+      countTarget: async () => {
+        await base.wait(150);
+        return 1;
+      },
+      performInteraction: async () => undefined,
+    };
+
+    await expect(waitForTargetReadiness(runtime, {
+      target: { selector: "[data-terminal='true']" },
+    }, { timeoutMs: 100 })).rejects.toMatchObject({
+      code: "FETCH_TIMEOUT",
+      details: { timeoutMs: 100 },
+    });
+  });
+
+  it("does not accept a target when evidence sampling crosses the deadline", async () => {
+    const base = runtimeFor(() => ({
+      readyState: "complete",
+      textCharacters: 800,
+      htmlCharacters: 1_500,
+    }));
+    const runtime: BrowserTargetReadinessRuntime = {
+      ...base,
+      countTarget: async () => 1,
+      sample: async () => {
+        await base.wait(150);
+        return {
+          readyState: "complete",
+          textCharacters: 800,
+          htmlCharacters: 1_500,
+        };
+      },
+      performInteraction: async () => undefined,
+    };
+
+    await expect(waitForTargetReadiness(runtime, {
+      target: { selector: "[data-terminal='true']" },
     }, { timeoutMs: 100 })).rejects.toMatchObject({
       code: "FETCH_TIMEOUT",
       details: { timeoutMs: 100 },
