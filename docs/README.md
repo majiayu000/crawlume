@@ -3,24 +3,29 @@
 ## 当前实现合同
 
 - [spec.md](./spec.md)：已经实现并应保持兼容的完整产品合同。
-- [roadmap.md](./roadmap.md)：按依赖排序的后续实现路线。
+- [roadmap.md](./roadmap.md)：已完成阶段、条件式能力与后续决策门。
+- [architecture-completion-ledger.md](./architecture-completion-ledger.md)：本地模块化 Retrieval Runtime
+  的逐目标实现和验证记录。
 - [product-strategy.md](./product-strategy.md)：产品价值、付费理由和交付边界。
 - [competitive-landscape.md](./competitive-landscape.md)：竞品桌面调研及尚未完成的真实对照。
 
-## 技术选型与目标架构
+## 技术选型与架构边界
 
-以下两份文档是进入下一轮实现前的决策入口：
+以下三份文档分别覆盖独立目标，不能互相冒充实现状态：
 
-1. [crawler-architecture-landscape.md](./crawler-architecture-landscape.md)
+1. [search-engine-architecture-landscape.md](./search-engine-architecture-landscape.md)
+   对比 Brave Search、Firecrawl、Exa 与 Firefox 的真实系统边界、数据来源、索引与排序架构，说明
+   Diaoyan/FetchTrail 从网页获取层走向自主搜索引擎目标 C 所缺少的数据面和分阶段建设路径；该目标
+   不属于当前已完成的本地 Retrieval Runtime。
+2. [crawler-architecture-landscape.md](./crawler-architecture-landscape.md)
    基于官方文档、源码、标准和论文，对开源框架、分布式爬虫、归档系统、浏览器基础设施和闭源
    抓取/检索 API 做架构节点对比，并明确证据等级与尚不可知的内部实现。
-2. [technology-selection-rfc.md](./technology-selection-rfc.md)
+3. [technology-selection-rfc.md](./technology-selection-rfc.md)
    比较四套候选架构，给出语言、Frontier、存储、队列、Browser、提取和验证的推荐选型、架构图、
-   量化门槛、风险及实施顺序。
+   量化门槛、风险及实施顺序；其中本地单机 Profile 已批准并实现，集群/托管扩展仍由门槛触发。
 
-在 RFC 获得产品事实和 Phase 0 Benchmark 校准前，它是 Proposed 决策，不是已实现状态。若目标选型与
-较早的可靠性文档出现冲突，以 RFC 作为待批准的决策建议；只有代码与测试落地后才能更新
-`spec.md` 的实现合同。
+实现事实以 `spec.md`、代码、测试和完成账本为准。RFC 中未触发的 PostgreSQL、多主机 Worker、远程
+Browser、托管 Provider 和新语言执行器仍只是条件式扩展；目标 C 搜索引擎也需要独立批准。
 
 ## Reliability 核心计划
 
@@ -38,14 +43,13 @@
 
 ```text
 已实现行为          docs/spec.md + code/tests
-目标可靠性架构      docs/reliability-architecture.md
+本地可靠性架构      docs/reliability-architecture.md
 真值与评测合同      docs/reliability-benchmark-spec.md
 研究过程与假设      docs/reliability-exploration-log.md
 实施顺序            docs/roadmap.md
 ```
 
-目标架构文档不能被当作“已经实现”的证据。每个阶段完成后，应先更新代码和测试，再同步
-`spec.md` 与 Roadmap 的完成状态。
+架构文档不能单独充当实现证据；每个阶段都必须由代码、测试和账本验证后再同步 `spec.md` 与 Roadmap。
 
 ## 已实现的专项规范
 
