@@ -27,6 +27,12 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 `SEARCH_PROVIDER_NOT_CONFIGURED`。实例禁用 JSON、返回错误状态或响应结构异常时必须返回
 `SEARCH_PROVIDER_ERROR`，不得伪造空成功结果。
 
+本地 FTS 当前投影最多 300,000 个 final URL；满容量拒绝新 URL，但允许已有 URL 更新。公开内容的
+不同 content hash 记录首次抓取时间和 extractor/validator 版本。启用本地索引时，
+`DiaoyanApp.verticalSearch` 提供 AI 工具与开发者文档的一期控制面：官方 domain、人工 URL、
+SearXNG candidate、显式准入、每日 durable crawl run 和固定 query judgment。每日计划最多
+60,000 次 Provider 尝试、官方 domain 最多 600 个；质量评测只查询自有 FTS5。
+
 ### `read_page`
 
 输入：

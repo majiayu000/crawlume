@@ -13,6 +13,15 @@
 3. 同一最终 URL 再次读取时更新正文、哈希和抓取时间，不产生重复文档。
 4. `search_web` 根据 `source` 选择本地索引、SearXNG 或两者组合。
 
+当前投影最多保存 300,000 个不同 final URL；达到容量后新 URL 以 `BUDGET_EXHAUSTED` 失败，已有
+URL 仍可更新。`indexed_page_versions` 按 final URL + content hash 记录首次抓取时间和
+extractor/validator 版本；同一 hash 的重抓不新增版本。原始正文仍由 Raw CAS/Artifact 表拥有。
+
+AI 工具与开发者文档一期通过 `DiaoyanApp.verticalSearch` 管理官方 domain、人工 URL、SearXNG
+候选、每日 durable crawl run 和固定 query judgment。其分层准入、600/300,000/60,000 容量及
+评测合同见 [一期 ADR](./vertical-search-phase1-adr.md)。该管理入口仅在本地索引启用时存在；
+SearXNG 只用于候选发现，自主质量评测强制 `source=local`。
+
 缓存命中也会补写索引，以便现有缓存数据在再次读取后自然迁移。本地索引与页面缓存共享同一
 SQLite 文件，但使用独立表。
 
@@ -66,6 +75,7 @@ SQLite 文件，但使用独立表。
 
 - 读取公开页面后可在无 SearXNG 环境下用 `source=local` 找到。
 - 重读同一最终 URL 后只保留最新版本。
+- 当前投影满 300,000 页时拒绝新 URL，但允许已有 URL 更新；内容版本审计按 hash 去重。
 - 授权 Profile 页面不会出现在本地搜索。
 - 混合搜索本地优先、URL 去重并补足结果。
 - 外部 Provider 补足失败时返回 `partial`，无本地结果时仍失败。

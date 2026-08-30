@@ -14,7 +14,7 @@ import { ReaderService } from "./reader.js";
 import { RobotsPolicy } from "./security/robots.js";
 import { UrlPolicy } from "./security/url-policy.js";
 import { SiteService } from "./site.js";
-import { SearchService, SearxngProvider } from "./search.js";
+import { SearchService, SearxngProvider, VerticalSearchService } from "./search.js";
 import { RslPolicy } from "./rsl.js";
 import { RslAccessAudit } from "./rsl-audit.js";
 import { DurableCrawlService } from "./runtime/frontier.js";
@@ -25,6 +25,7 @@ export type DiaoyanApp = {
   site: SiteService;
   jobs: DurableCrawlService;
   search: SearchService;
+  verticalSearch: VerticalSearchService | null;
   metrics: CrawlerMetrics;
   monitors: PageMonitorService;
   rslAudit: RslAccessAudit;
@@ -90,6 +91,13 @@ export function createApp(
     config,
     options.runCrawlWorker ?? true,
   );
+  const verticalSearch = localIndex === null ? null : new VerticalSearchService({
+    path: config.cachePath,
+    urlPolicy,
+    jobs,
+    search,
+    index: localIndex,
+  });
   const monitors = new PageMonitorService(
     new PageMonitorStore(config.cachePath),
     reader,
@@ -103,6 +111,7 @@ export function createApp(
     site,
     jobs,
     search,
+    verticalSearch,
     metrics,
     monitors,
     rslAudit,
@@ -117,6 +126,7 @@ export function createApp(
       }
       await captureClose(async () => browserFetcher.close(), failures);
       await captureClose(() => reader.close(), failures);
+      await captureClose(() => verticalSearch?.close(), failures);
       await captureClose(() => localIndex?.close(), failures);
       await captureClose(() => metrics.close(), failures);
       await captureClose(() => rslAudit.close(), failures);

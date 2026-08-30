@@ -144,6 +144,14 @@ The crawler does not build a memory index by default. Set `DIAOYAN_LOCAL_INDEX_E
 you explicitly want successful public `read` and `crawl` results added to SQLite FTS5. With that
 optional feature enabled, `--source auto` returns local matches first and asks SearXNG to fill the
 remaining slots; `--source local` stays offline. Pages read with `--auth-profile` are never indexed.
+The local projection has a 300,000-page hard limit and records distinct content-hash versions.
+
+With the same flag enabled, `createApp(...).verticalSearch` exposes the local Phase 1 corpus control
+surface: add official domains or exact manual URLs, discover SearXNG candidates, decide candidates,
+start/refresh the bounded daily durable run, store query judgments, and evaluate Hit@10, Recall@10,
+and MRR@10 against local-only results. The approved source policy, initial gold set, and
+600-domain/60,000-attempt daily limits are documented in
+[`docs/vertical-search-phase1-adr.md`](docs/vertical-search-phase1-adr.md).
 
 Synchronous `map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
 for deduplication unless `--keep-query` is supplied. Child-page failures are returned in a

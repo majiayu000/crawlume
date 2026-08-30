@@ -1,9 +1,21 @@
+import { randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
 import { JSDOM } from "jsdom";
 import { fetch } from "undici";
 import { z } from "zod";
 
 import { ReadError } from "./errors.js";
-import { LocalPageIndex } from "./index.js";
+import {
+  LocalPageIndex,
+  VerticalSearchRuntime,
+  type VerticalQueryEvaluationReport,
+  type VerticalRun,
+} from "./index.js";
+import type { DurableCrawlService } from "./runtime/frontier.js";
+import type { UrlPolicy } from "./security/url-policy.js";
 import {
   searchSources,
   searchTimeRanges,
@@ -435,4 +447,326 @@ function mergeResults(local: SearchResult[], web: SearchResult[], limit: number)
     }
   }
   return merged;
+}
+
+export const verticalSearchCapacity = {
+  officialDomains: 600,
+  indexedPages: 300_000,
+  dailyProviderAttempts: 60_000,
+} as const;
+
+export type VerticalSeedScope = "domain" | "url";
+export type VerticalSeedProvenance = "official" | "manual" | "searxng";
+export type VerticalSeedStatus = "pending" | "admitted" | "rejected";
+
+export type VerticalSeed = {
+  id: string;
+  url: string;
+  origin: string;
+  scope: VerticalSeedScope;
+  provenance: VerticalSeedProvenance;
+  status: VerticalSeedStatus;
+  discoveryQuery: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+  lastScheduledAt: string | null;
+};
+
+export type VerticalDiscoveryResult = {
+  query: string;
+  discovered: number;
+  admitted: number;
+  pending: number;
+  seeds: VerticalSeed[];
+};
+
+type SeedRow = {
+  id: string;
+  url: string;
+  origin: string;
+  scope: VerticalSeedScope;
+  provenance: VerticalSeedProvenance;
+  status: VerticalSeedStatus;
+  discovery_query: string | null;
+  created_at_ms: number;
+  decided_at_ms: number | null;
+  last_scheduled_at_ms: number | null;
+};
+
+export type VerticalSearchDependencies = {
+  path: string;
+  urlPolicy: UrlPolicy;
+  jobs: Pick<DurableCrawlService, "start" | "get">;
+  search: Pick<SearchService, "searchWeb">;
+  index: Pick<LocalPageIndex, "count">;
+  now?: () => number;
+};
+
+function timestamp(value: number | null): string | null {
+  return value === null ? null : new Date(value).toISOString();
+}
+
+function fromSeedRow(row: SeedRow): VerticalSeed {
+  return {
+    id: row.id,
+    url: row.url,
+    origin: row.origin,
+    scope: row.scope,
+    provenance: row.provenance,
+    status: row.status,
+    discoveryQuery: row.discovery_query,
+    createdAt: new Date(row.created_at_ms).toISOString(),
+    decidedAt: timestamp(row.decided_at_ms),
+    lastScheduledAt: timestamp(row.last_scheduled_at_ms),
+  };
+}
+
+export class VerticalSearchService {
+  private readonly database: DatabaseSync;
+  private readonly now: () => number;
+  private readonly runtime: VerticalSearchRuntime;
+
+  constructor(private readonly dependencies: VerticalSearchDependencies) {
+    const { path } = dependencies;
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.database = new DatabaseSync(path, { timeout: 5_000 });
+    this.database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      CREATE TABLE IF NOT EXISTS vertical_search_seeds (
+        id TEXT PRIMARY KEY,
+        url TEXT NOT NULL UNIQUE,
+        origin TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK(scope IN ('domain','url')),
+        provenance TEXT NOT NULL CHECK(provenance IN ('official','manual','searxng')),
+        status TEXT NOT NULL CHECK(status IN ('pending','admitted','rejected')),
+        discovery_query TEXT,
+        created_at_ms INTEGER NOT NULL,
+        decided_at_ms INTEGER,
+        last_scheduled_at_ms INTEGER
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS vertical_search_seeds_schedule
+        ON vertical_search_seeds(status, last_scheduled_at_ms, created_at_ms);
+    `);
+    if (path !== ":memory:") chmodSync(path, 0o600);
+    this.now = dependencies.now ?? Date.now;
+    this.runtime = new VerticalSearchRuntime({
+      path,
+      jobs: dependencies.jobs,
+      search: dependencies.search,
+      index: dependencies.index,
+      now: this.now,
+      listAdmittedSeeds: () => this.listSeeds("admitted"),
+      markScheduled: (seedIds, scheduledAtMs) => this.markScheduled(seedIds, scheduledAtMs),
+      maximumIndexedPages: verticalSearchCapacity.indexedPages,
+      maximumDailyProviderAttempts: verticalSearchCapacity.dailyProviderAttempts,
+    });
+  }
+
+  addOfficialDomain(input: string): VerticalSeed {
+    const parsed = this.dependencies.urlPolicy.parse(input);
+    parsed.pathname = "/";
+    parsed.search = "";
+    parsed.hash = "";
+    const url = parsed.toString();
+    const existing = this.getSeedByUrl(url);
+    const now = this.now();
+    if (existing !== null) {
+      this.database.prepare(`
+        UPDATE vertical_search_seeds
+        SET scope = 'domain', provenance = 'official', status = 'admitted',
+            discovery_query = NULL, decided_at_ms = ?
+        WHERE id = ?
+      `).run(now, existing.id);
+      return this.requireSeed(existing.id);
+    }
+    const count = this.database.prepare(
+      "SELECT count(*) AS count FROM vertical_search_seeds WHERE scope = 'domain'",
+    ).get() as { count: number };
+    if (count.count >= verticalSearchCapacity.officialDomains) {
+      throw new ReadError("BUDGET_EXHAUSTED", "The official-domain capacity is exhausted.", {
+        details: { maximumOfficialDomains: verticalSearchCapacity.officialDomains },
+      });
+    }
+    return this.insertSeed({
+      url,
+      origin: parsed.origin,
+      scope: "domain",
+      provenance: "official",
+      status: "admitted",
+      discoveryQuery: null,
+      decidedAtMs: now,
+    });
+  }
+
+  addManualUrl(input: string): VerticalSeed {
+    const parsed = this.dependencies.urlPolicy.parse(input);
+    parsed.hash = "";
+    const url = parsed.toString();
+    const existing = this.getSeedByUrl(url);
+    if (existing !== null) return existing;
+    const now = this.now();
+    return this.insertSeed({
+      url,
+      origin: parsed.origin,
+      scope: "url",
+      provenance: "manual",
+      status: "admitted",
+      discoveryQuery: null,
+      decidedAtMs: now,
+    });
+  }
+
+  async discover(query: string, limit = maximumResults): Promise<VerticalDiscoveryResult> {
+    const normalizedQuery = query.replace(/\s+/g, " ").trim();
+    if (normalizedQuery.length === 0) {
+      throw new ReadError("INVALID_ARGUMENT", "A discovery query is required.");
+    }
+    const result = await this.dependencies.search.searchWeb({
+      query: normalizedQuery,
+      limit,
+      page: 1,
+      source: "web",
+    });
+    const officialOrigins = new Set(
+      this.listSeeds("admitted")
+        .filter((seed) => seed.scope === "domain" && seed.provenance === "official")
+        .map((seed) => seed.origin),
+    );
+    const seeds: VerticalSeed[] = [];
+    for (const searchResult of result.results) {
+      const parsed = this.dependencies.urlPolicy.parse(searchResult.url);
+      parsed.hash = "";
+      const url = parsed.toString();
+      const existing = this.getSeedByUrl(url);
+      if (existing !== null) {
+        seeds.push(existing);
+        continue;
+      }
+      const admitted = officialOrigins.has(parsed.origin);
+      seeds.push(this.insertSeed({
+        url,
+        origin: parsed.origin,
+        scope: "url",
+        provenance: "searxng",
+        status: admitted ? "admitted" : "pending",
+        discoveryQuery: normalizedQuery,
+        decidedAtMs: admitted ? this.now() : null,
+      }));
+    }
+    return {
+      query: normalizedQuery,
+      discovered: seeds.length,
+      admitted: seeds.filter((seed) => seed.status === "admitted").length,
+      pending: seeds.filter((seed) => seed.status === "pending").length,
+      seeds,
+    };
+  }
+
+  decideCandidate(id: string, decision: "admitted" | "rejected"): VerticalSeed {
+    const seed = this.requireSeed(id);
+    if (seed.provenance !== "searxng") {
+      throw new ReadError("INVALID_ARGUMENT", "Only SearXNG candidates require a decision.", {
+        details: { seedId: id },
+      });
+    }
+    this.database.prepare(`
+      UPDATE vertical_search_seeds SET status = ?, decided_at_ms = ? WHERE id = ?
+    `).run(decision, this.now(), id);
+    return this.requireSeed(id);
+  }
+
+  listSeeds(status?: VerticalSeedStatus): VerticalSeed[] {
+    const rows = status === undefined
+      ? this.database.prepare("SELECT * FROM vertical_search_seeds ORDER BY created_at_ms, id").all()
+      : this.database.prepare(
+          "SELECT * FROM vertical_search_seeds WHERE status = ? ORDER BY created_at_ms, id",
+        ).all(status);
+    return (rows as unknown as SeedRow[]).map(fromSeedRow);
+  }
+
+  startDailyRun(): VerticalRun {
+    return this.runtime.startDailyRun();
+  }
+
+  refreshRun(id: string): VerticalRun {
+    return this.runtime.refreshRun(id);
+  }
+
+  setQueryJudgment(query: string, expectedUrls: string[]): void {
+    const normalizedQuery = query.replace(/\s+/g, " ").trim();
+    if (normalizedQuery.length === 0 || expectedUrls.length === 0) {
+      throw new ReadError(
+        "INVALID_ARGUMENT",
+        "A query judgment requires a query and at least one expected URL.",
+      );
+    }
+    const normalizedUrls = [...new Set(expectedUrls.map((input) => {
+      const parsed = this.dependencies.urlPolicy.parse(input);
+      parsed.hash = "";
+      return parsed.toString();
+    }))];
+    this.runtime.setQueryJudgment(normalizedQuery, normalizedUrls);
+  }
+
+  async evaluateQuerySet(): Promise<VerticalQueryEvaluationReport> {
+    return this.runtime.evaluateQuerySet();
+  }
+
+  close(): void {
+    this.runtime.close();
+    this.database.close();
+  }
+
+  private markScheduled(seedIds: string[], scheduledAtMs: number): void {
+    const statement = this.database.prepare(
+      "UPDATE vertical_search_seeds SET last_scheduled_at_ms = ? WHERE id = ?",
+    );
+    for (const id of seedIds) statement.run(scheduledAtMs, id);
+  }
+
+  private insertSeed(input: {
+    url: string;
+    origin: string;
+    scope: VerticalSeedScope;
+    provenance: VerticalSeedProvenance;
+    status: VerticalSeedStatus;
+    discoveryQuery: string | null;
+    decidedAtMs: number | null;
+  }): VerticalSeed {
+    const id = randomUUID();
+    this.database.prepare(`
+      INSERT INTO vertical_search_seeds(
+        id, url, origin, scope, provenance, status, discovery_query, created_at_ms, decided_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.url,
+      input.origin,
+      input.scope,
+      input.provenance,
+      input.status,
+      input.discoveryQuery,
+      this.now(),
+      input.decidedAtMs,
+    );
+    return this.requireSeed(id);
+  }
+
+  private getSeedByUrl(url: string): VerticalSeed | null {
+    const row = this.database.prepare("SELECT * FROM vertical_search_seeds WHERE url = ?")
+      .get(url) as SeedRow | undefined;
+    return row === undefined ? null : fromSeedRow(row);
+  }
+
+  private requireSeed(id: string): VerticalSeed {
+    const row = this.database.prepare("SELECT * FROM vertical_search_seeds WHERE id = ?")
+      .get(id) as SeedRow | undefined;
+    if (row === undefined) {
+      throw new ReadError("INVALID_ARGUMENT", "The vertical-search seed does not exist.", {
+        details: { seedId: id },
+      });
+    }
+    return fromSeedRow(row);
+  }
 }

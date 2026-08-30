@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { LocalPageIndex } from "../src/index.js";
+import { ReadError } from "../src/errors.js";
 import type { PageReadArtifact } from "../src/types.js";
 
 const indexes: LocalPageIndex[] = [];
@@ -61,7 +62,7 @@ afterEach(() => {
 describe("LocalPageIndex", () => {
   it("indexes public pages and returns normalized local results", () => {
     const index = createIndex();
-    index.put(artifact());
+    index.put(artifact({ fetchedAt: "2026-08-01T00:00:00.000Z" }));
 
     expect(index.count()).toBe(1);
     expect(index.search("MiniMax H3", 10, 1)).toEqual([
@@ -96,5 +97,54 @@ describe("LocalPageIndex", () => {
 
     expect(index.count()).toBe(0);
     expect(index.search("MiniMax", 10, 1)).toEqual([]);
+  });
+
+  it("records distinct content versions without duplicating unchanged refreshes", () => {
+    const index = createIndex();
+    index.put(artifact({ fetchedAt: "2026-08-01T00:00:00.000Z" }));
+    index.put(artifact({ fetchedAt: "2026-08-02T00:00:00.000Z" }));
+    index.put(artifact({
+      contentHash: "hash-two",
+      fetchedAt: "2026-08-03T00:00:00.000Z",
+      evidence: {
+        ...artifact().evidence,
+        extractorVersion: "readability-v2",
+        validatorVersion: "generic-content-v2",
+      },
+      validation: {
+        outcome: "valid",
+        validatorVersion: "generic-content-v2",
+        checks: [],
+        terminalError: null,
+      },
+    }));
+
+    expect(index.versions("https://example.com/article")).toEqual([
+      expect.objectContaining({
+        contentHash: "hash-one",
+        extractorVersion: "readability-v1",
+        validatorVersion: "generic-content-v1",
+      }),
+      expect.objectContaining({
+        contentHash: "hash-two",
+        extractorVersion: "readability-v2",
+        validatorVersion: "generic-content-v2",
+      }),
+    ]);
+  });
+
+  it("rejects a new page at capacity while allowing an existing page to update", () => {
+    const index = new LocalPageIndex(":memory:", 1);
+    indexes.push(index);
+    index.put(artifact());
+
+    expect(() => index.put(artifact({
+      sourceUrl: "https://example.com/second",
+      finalUrl: "https://example.com/second",
+    }))).toThrowError(expect.objectContaining<Partial<ReadError>>({ code: "BUDGET_EXHAUSTED" }));
+
+    index.put(artifact({ contentHash: "hash-updated", title: "Updated in place" }));
+    expect(index.count()).toBe(1);
+    expect(index.versions("https://example.com/article")).toHaveLength(2);
   });
 });
