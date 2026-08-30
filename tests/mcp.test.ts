@@ -36,6 +36,17 @@ function result(): ReadPageResult {
       responseBytes: 123,
       contentCharacters: 400,
       extractionMethod: "readability",
+      requestId: "request-test",
+      accessPlan: {
+        planId: `plan_${"a".repeat(64)}`,
+        plannerVersion: "access-planner-v1",
+        plannedStages: [{
+          stageId: "http-read",
+          provider: "http",
+          reasonCode: "HTTP_PRIMARY",
+        }],
+        executedStages: ["http-read"],
+      },
     },
   };
 }
@@ -52,7 +63,9 @@ function siteResult() {
   };
 }
 
-function jobResult(status: "queued" | "running" | "completed" | "cancelled" = "queued") {
+function jobResult(
+  status: "queued" | "running" | "paused" | "completed" | "cancelled" = "queued",
+) {
   return {
     id: "00000000-0000-4000-8000-000000000001",
     status,
@@ -69,7 +82,7 @@ function monitorResult(status: "scheduled" | "running" | "cancelled" = "schedule
   return {
     id: "00000000-0000-4000-8000-000000000002",
     status,
-    input: { url: "https://example.com/article", mode: "auto" as const },
+    input: { url: "https://example.com/article", browserAllowed: true },
     intervalSeconds: 300,
     createdAt: "2026-08-25T00:00:00.000Z",
     startedAt: null,
@@ -138,7 +151,15 @@ describe("MCP server", () => {
       jobs: {
         start: vi.fn(() => jobResult()),
         get: vi.fn(() => jobResult("running")),
+        pause: vi.fn(() => jobResult("paused")),
+        resume: vi.fn(() => jobResult("running")),
         cancel: vi.fn(() => jobResult("cancelled")),
+        pages: vi.fn(() => ({
+          jobId: "00000000-0000-4000-8000-000000000001",
+          pages: [],
+          nextSequence: 0,
+          done: false,
+        })),
       },
       profiles: { list: () => ["work"] },
       metrics: {
@@ -199,13 +220,16 @@ describe("MCP server", () => {
       "list_monitors",
       "cancel_monitor",
       "cancel_crawl",
+      "pause_crawl",
+      "resume_crawl",
+      "get_crawl_pages",
       "read_page",
       "search_web",
     ].sort());
 
     const read = await client.callTool({
       name: "read_page",
-      arguments: { url: "https://example.com/article", mode: "http" },
+      arguments: { url: "https://example.com/article", browserAllowed: false },
     });
     expect(read.isError).not.toBe(true);
     expect(read.structuredContent).toMatchObject({ status: "ok", completeness: "complete" });
@@ -215,7 +239,7 @@ describe("MCP server", () => {
       name: "read_page",
       arguments: {
         url: "https://example.com/feed",
-        mode: "auto",
+        browserAllowed: true,
         browserReadiness: {
           target: { selector: "[data-terminal='true']", state: "visible", minCount: 1 },
           interaction: { type: "scroll-to-end", maxSteps: 8, stepDelayMs: 50 },
@@ -268,6 +292,24 @@ describe("MCP server", () => {
       arguments: { jobId: "00000000-0000-4000-8000-000000000001" },
     });
     expect(job.structuredContent).toMatchObject({ status: "running" });
+
+    const paused = await client.callTool({
+      name: "pause_crawl",
+      arguments: { jobId: "00000000-0000-4000-8000-000000000001" },
+    });
+    expect(paused.structuredContent).toMatchObject({ status: "paused" });
+
+    const resumed = await client.callTool({
+      name: "resume_crawl",
+      arguments: { jobId: "00000000-0000-4000-8000-000000000001" },
+    });
+    expect(resumed.structuredContent).toMatchObject({ status: "running" });
+
+    const pages = await client.callTool({
+      name: "get_crawl_pages",
+      arguments: { jobId: "00000000-0000-4000-8000-000000000001", limit: 10 },
+    });
+    expect(pages.structuredContent).toMatchObject({ nextSequence: 0, done: false });
 
     const cancelled = await client.callTool({
       name: "cancel_crawl",

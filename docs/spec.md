@@ -71,13 +71,16 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 
 ### 异步 Crawl Job
 
-- `start_crawl`：持久化与 `crawl_site` 相同的输入并立即返回 UUID 和 `queued` 状态。
-- `get_crawl`：返回 `queued`、`running`、`completed`、`failed` 或 `cancelled`，以及结果或错误。
-- `cancel_crawl`：立即取消排队任务，或协作式取消运行任务。
+- `start_crawl`：立即返回 UUID；支持 1–32 并发、最高 10,000 页和 Crawl 累计硬预算。
+- `get_crawl`：返回 `queued`、`running`、`paused`、`completed`、`failed` 或 `cancelled`，以及页级 progress、累计 usage、预算和错误。
+- `get_crawl_pages`：按不可变 publication sequence 分页读取页面终态，cursor 可安全重放。
+- `pause_crawl` / `resume_crawl`：暂停领取新页面或从 SQLite Frontier 继续。
+- `cancel_crawl`：中断活动请求，并把未领取页面发布为明确的 `stopped` 终态。
 
-任务保存在 `cache.sqlite`。长期 MCP 服务启动时恢复被中断的运行任务；普通 CLI 进程不得恢复或
-执行后台队列。每个数据目录只允许一个主动 Worker 服务进程。页面级 `partial` 结果属于任务
-`completed`，不得混淆任务执行与页面抓取质量。
+任务、页面 Frontier、origin 调度槽、资源 reservation 和 publication 保存在 `cache.sqlite`。
+Worker 使用 lease heartbeat 与 owner/generation fencing；进程中断后只回收过期 lease，已提交页面
+不重抓。累计预算耗尽使 Job `failed/BUDGET_EXHAUSTED`，未领取页面变为 `stopped`，不得伪装为成功。
+普通 CLI 进程不得恢复或执行后台队列；每个数据目录只允许一个主动 Worker 服务进程。
 
 ### `get_crawler_stats`
 

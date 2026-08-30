@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type {
   BenchmarkCase,
   BenchmarkCandidate,
+  BenchmarkExecutionProvenance,
   BenchmarkEvaluation,
 } from "../benchmarks/harness/contract.js";
 import {
@@ -18,14 +19,13 @@ function benchmarkCase(
   expectedOutcome?: "policy_stop" | "unsupported",
 ): BenchmarkCase {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     layer: "fixture",
     category,
     input: {
       url: `https://example.com/${id}`,
       intent: "read",
-      mode: "auto",
       freshnessSeconds: 0,
     },
     policy: {
@@ -48,8 +48,8 @@ function benchmarkCase(
 
 function cost(overrides: Partial<BenchmarkExecutionCost> = {}): BenchmarkExecutionCost {
   return {
-    httpRequests: 1,
-    networkBytesIn: 1_000,
+    httpProviderAttempts: 1,
+    documentBytesIn: 1_000,
     browserMilliseconds: 0,
     browserContextStarts: 0,
     retryAttempts: 0,
@@ -59,12 +59,76 @@ function cost(overrides: Partial<BenchmarkExecutionCost> = {}): BenchmarkExecuti
   };
 }
 
+function provenance(
+  fetchAttempts: { http: number; browser: number } = { http: 1, browser: 0 },
+  overrides: Partial<BenchmarkExecutionProvenance["projection"]["usage"]> = {},
+): BenchmarkExecutionProvenance {
+  const usage = {
+    documentBytesIn: fetchAttempts.browser > 0 ? 3_000 : 1_000,
+    networkBytesOut: 0,
+    browserMilliseconds: fetchAttempts.browser > 0 ? 600 : 0,
+    browserContextStarts: fetchAttempts.browser,
+    retryDelayMilliseconds: 0,
+    optionalModelTokens: 0,
+    ...overrides,
+  };
+  const attempts: BenchmarkExecutionProvenance["attempts"] = [];
+  let sequence = 0;
+  for (let index = 0; index < fetchAttempts.http; index += 1) {
+    sequence += 1;
+    attempts.push({
+      sequence, stageId: "http-read", provider: "http", providerVersion: "reader-http-v1",
+      outcome: index === fetchAttempts.http - 1 && fetchAttempts.browser === 0 ? "succeeded" : "failed",
+      errorCode: index === fetchAttempts.http - 1 && fetchAttempts.browser === 0 ? null : "UPSTREAM_ERROR",
+      usage: { ...usage, documentBytesIn: sequence === 1 ? usage.documentBytesIn : 0,
+        browserMilliseconds: 0, browserContextStarts: 0,
+        retryDelayMilliseconds: sequence === fetchAttempts.http ? usage.retryDelayMilliseconds : 0 },
+      startedAt: "2026-08-28T00:00:00.000Z", completedAt: "2026-08-28T00:00:00.100Z",
+    });
+  }
+  for (let index = 0; index < fetchAttempts.browser; index += 1) {
+    sequence += 1;
+    attempts.push({
+      sequence, stageId: "browser-read", provider: "browser", providerVersion: "reader-browser-v1",
+      outcome: "succeeded", errorCode: null,
+      usage: { ...usage, documentBytesIn: fetchAttempts.http > 0 ? 0 : usage.documentBytesIn,
+        browserMilliseconds: usage.browserMilliseconds,
+        browserContextStarts: 1, retryDelayMilliseconds: 0 },
+      startedAt: "2026-08-28T00:00:00.100Z", completedAt: "2026-08-28T00:00:00.700Z",
+    });
+  }
+  const plannedStages = [
+    ...(fetchAttempts.http > 0
+      ? [{ stageId: "http-read", provider: "http" as const, reasonCode: "HTTP_PRIMARY" as const }]
+      : []),
+    ...(fetchAttempts.browser > 0
+      ? [{ stageId: "browser-read", provider: "browser" as const,
+          reasonCode: "BROWSER_AFTER_INCOMPLETE_HTTP" as const }]
+      : []),
+  ];
+  return {
+    schemaVersion: 1,
+    requestId: "request-test",
+    plan: { planId: `plan_${"a".repeat(64)}`, plannerVersion: "access-planner-v1", plannedStages },
+    executedStages: plannedStages.map(({ stageId }) => stageId),
+    attempts,
+    projection: {
+      attempts: attempts.length,
+      lastSequence: attempts.length,
+      lastOutcome: attempts.at(-1)!.outcome,
+      lastStageId: attempts.at(-1)!.stageId,
+      usage,
+    },
+  };
+}
+
 function candidate(
   fetchMethod: "http" | "browser" = "http",
   fetchAttempts: { http: number; browser: number } = { http: 1, browser: 0 },
 ): BenchmarkCandidate {
   return {
     outcome: "ok",
+    provenance: provenance(fetchAttempts),
     artifact: {
       sourceUrl: "https://example.com/article",
       finalUrl: "https://example.com/article",
@@ -80,6 +144,7 @@ function candidate(
         contentType: "text/html",
         responseBytes: 1_000,
         attempts: 1,
+        retryAttempts: 0,
         totalRetryDelayMs: 0,
         fetchAttempts,
         responseBytesByMethod: { http: 1_000, browser: fetchMethod === "browser" ? 2_000 : 0 },
@@ -137,8 +202,8 @@ describe("benchmark truth and cost aggregation", () => {
   it("derives resource cost from successful and failed public run evidence", () => {
     expect(executionCostForBenchmarkRun(candidate("browser", { http: 1, browser: 1 }), 900))
       .toEqual({
-        httpRequests: 1,
-        networkBytesIn: 3_000,
+        httpProviderAttempts: 1,
+        documentBytesIn: 3_000,
         browserMilliseconds: 600,
         browserContextStarts: 1,
         retryAttempts: 0,
@@ -147,21 +212,14 @@ describe("benchmark truth and cost aggregation", () => {
       });
 
     expect(executionCostForBenchmarkRun(
-      { outcome: "failed", errorCode: "FETCH_TIMEOUT" },
+      { outcome: "failed", errorCode: "FETCH_TIMEOUT", provenance: provenance(
+        { http: 3, browser: 0 },
+        { documentBytesIn: 2_000, retryDelayMilliseconds: 75 },
+      ) },
       1_200,
-      {
-        attempts: 3,
-        totalRetryDelayMs: 75,
-        httpFetchAttempts: 3,
-        browserFetchAttempts: 0,
-        httpResponseBytes: 2_000,
-        browserResponseBytes: 0,
-        httpFetchDurationMs: 1_000,
-        browserFetchDurationMs: 0,
-      },
     )).toEqual({
-      httpRequests: 3,
-      networkBytesIn: 2_000,
+      httpProviderAttempts: 3,
+      documentBytesIn: 2_000,
       browserMilliseconds: 0,
       browserContextStarts: 0,
       retryAttempts: 2,
@@ -181,8 +239,8 @@ describe("benchmark truth and cost aggregation", () => {
         benchmarkCase: benchmarkCase("article-browser-recovery"),
         candidate: candidate("browser", { http: 1, browser: 1 }),
         cost: cost({
-          httpRequests: 1,
-          networkBytesIn: 3_000,
+          httpProviderAttempts: 1,
+          documentBytesIn: 3_000,
           browserMilliseconds: 600,
           browserContextStarts: 1,
           totalDurationMilliseconds: 800,
@@ -190,17 +248,17 @@ describe("benchmark truth and cost aggregation", () => {
       }),
       record({
         benchmarkCase: benchmarkCase("article-retry-recovery"),
-        cost: cost({ httpRequests: 2, retryAttempts: 1, retryDelayMilliseconds: 50 }),
+        cost: cost({ httpProviderAttempts: 2, retryAttempts: 1, retryDelayMilliseconds: 50 }),
       }),
       record({
         benchmarkCase: benchmarkCase("article-retry-waste"),
-        candidate: { outcome: "failed", errorCode: "FETCH_TIMEOUT" },
+        candidate: { outcome: "failed", errorCode: "FETCH_TIMEOUT", provenance: provenance() },
         evaluation: evaluation("invalid", false),
-        cost: cost({ httpRequests: 3, retryAttempts: 2, retryDelayMilliseconds: 100 }),
+        cost: cost({ httpProviderAttempts: 3, retryAttempts: 2, retryDelayMilliseconds: 100 }),
       }),
       record({
         benchmarkCase: benchmarkCase("login-gate", "gate", "policy_stop"),
-        candidate: { outcome: "policy_stop", errorCode: "LOGIN_WALL_DETECTED" },
+        candidate: { outcome: "policy_stop", errorCode: "LOGIN_WALL_DETECTED", provenance: provenance() },
         evaluation: evaluation("valid", true),
         cost: cost(),
       }),
@@ -249,8 +307,8 @@ describe("benchmark truth and cost aggregation", () => {
         wasteRate: 1 / 2,
       },
       totalCost: {
-        httpRequests: 9,
-        networkBytesIn: 8_000,
+        httpProviderAttempts: 9,
+        documentBytesIn: 8_000,
         browserMilliseconds: 600,
         browserContextStarts: 1,
         retryAttempts: 3,
@@ -258,8 +316,8 @@ describe("benchmark truth and cost aggregation", () => {
         totalDurationMilliseconds: 1_300,
       },
       costPerValidArtifact: {
-        httpRequests: 3,
-        networkBytesIn: 8_000 / 3,
+        httpProviderAttempts: 3,
+        documentBytesIn: 8_000 / 3,
         browserMilliseconds: 200,
         browserContextStarts: 1 / 3,
         retryAttempts: 1,
@@ -279,7 +337,7 @@ describe("benchmark truth and cost aggregation", () => {
     const summary = aggregateBenchmarkRuns([
       record({
         benchmarkCase: benchmarkCase("unsupported-format", "format", "unsupported"),
-        candidate: { outcome: "unsupported", errorCode: "UNSUPPORTED_CONTENT_TYPE" },
+        candidate: { outcome: "unsupported", errorCode: "UNSUPPORTED_CONTENT_TYPE", provenance: provenance() },
         evaluation: evaluation("valid", true),
       }),
     ]);

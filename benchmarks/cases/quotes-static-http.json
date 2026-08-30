@@ -1,12 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "quotes-static-http",
   "layer": "live",
   "category": "static-list",
   "input": {
     "url": "https://quotes.toscrape.com/",
     "intent": "read",
-    "mode": "http",
     "freshnessSeconds": 0
   },
   "policy": {

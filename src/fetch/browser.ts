@@ -148,6 +148,11 @@ export class BrowserPageFetcher implements PageFetcher {
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     const { authProfile, signal, browserReadiness } = options;
+    const maxResponseBytes = Math.min(
+      options.maxResponseBytes ?? this.config.maxResponseBytes,
+      this.config.maxResponseBytes,
+    );
+    const timeoutMs = Math.min(options.timeoutMs ?? this.config.browserTimeoutMs, this.config.browserTimeoutMs);
     const readinessPolicy = browserReadiness === undefined
       ? undefined
       : normalizeBrowserReadinessPolicy(browserReadiness);
@@ -155,6 +160,7 @@ export class BrowserPageFetcher implements PageFetcher {
     let lease: BrowserLease | null = null;
     let profilePath: string | null = null;
     let capAuthorizationUsed = false;
+    let onAbort: (() => void) | null = null;
     const proxy = this.proxyPool.acquire(authProfile);
     let robotsRsl = this.rsl.emptyEvidence();
 
@@ -190,6 +196,14 @@ export class BrowserPageFetcher implements PageFetcher {
           userAgent: this.config.userAgent,
         });
       }
+
+      if (signal?.aborted === true) {
+        throw new ReadError("CRAWL_CANCELLED", "The crawl job was cancelled.");
+      }
+      onAbort = () => {
+        void context?.close();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       const page = context.pages()[0] ?? (await context.newPage());
       let blockedNavigation: ReadError | null = null;
@@ -239,7 +253,7 @@ export class BrowserPageFetcher implements PageFetcher {
       try {
         response = await page.goto(url.toString(), {
           waitUntil: "domcontentloaded",
-          timeout: this.config.browserTimeoutMs,
+          timeout: timeoutMs,
         });
       } catch (error) {
         if (blockedNavigation !== null) {
@@ -252,12 +266,12 @@ export class BrowserPageFetcher implements PageFetcher {
           details: { url: url.toString() },
         });
       }
-      const readinessBudgetMs = this.config.browserTimeoutMs - (Date.now() - navigationStartedAt);
+      const readinessBudgetMs = timeoutMs - (Date.now() - navigationStartedAt);
       if (readinessBudgetMs <= 0) {
         throw new ReadError(
           "FETCH_TIMEOUT",
           "The browser exhausted its time budget before readiness could be checked.",
-          { retryable: true, details: { timeoutMs: this.config.browserTimeoutMs } },
+          { retryable: true, details: { timeoutMs } },
         );
       }
       const readinessTimeoutMs = Math.min(
@@ -280,10 +294,10 @@ export class BrowserPageFetcher implements PageFetcher {
       await this.urlPolicy.assertPublic(finalParsed);
       const body = await page.content();
       const responseBytes = Buffer.byteLength(body);
-      if (responseBytes > this.config.maxResponseBytes) {
+      if (responseBytes > maxResponseBytes) {
         throw new ReadError("RESPONSE_TOO_LARGE", "The rendered page exceeded the size limit.", {
           details: {
-            maxResponseBytes: this.config.maxResponseBytes,
+            maxResponseBytes,
             responseBytes,
             url: finalUrl,
           },
@@ -298,10 +312,10 @@ export class BrowserPageFetcher implements PageFetcher {
       let policyBody = body;
       if (responseMediaType === "application/rsl+xml") {
         const originalBody = await response.body();
-        if (originalBody.byteLength > this.config.maxResponseBytes) {
+        if (originalBody.byteLength > maxResponseBytes) {
           throw new ReadError("RESPONSE_TOO_LARGE", "The RSL response exceeded the size limit.", {
             details: {
-              maxResponseBytes: this.config.maxResponseBytes,
+              maxResponseBytes,
               responseBytes: originalBody.byteLength,
               url: finalUrl,
             },
@@ -375,6 +389,7 @@ export class BrowserPageFetcher implements PageFetcher {
     } catch (error) {
       throw browserError(error, capAuthorizationUsed);
     } finally {
+      if (onAbort !== null) signal?.removeEventListener("abort", onAbort);
       await context?.close().catch(() => undefined);
       await lease?.release();
       if (authProfile !== undefined) {

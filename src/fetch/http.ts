@@ -114,6 +114,21 @@ async function readLimitedBody(
   }
 }
 
+function transportFetchError(error: unknown, url: URL, includeCause: boolean): ReadError {
+  if (error instanceof ReadError) return error;
+  const isTimeout = error instanceof Error &&
+    (error.name === "TimeoutError" || error.name === "AbortError");
+  return new ReadError(
+    isTimeout ? "FETCH_TIMEOUT" : "UPSTREAM_ERROR",
+    isTimeout ? "The page request timed out." : "The page request failed.",
+    {
+      retryable: true,
+      details: { url: url.toString() },
+      ...(includeCause ? { cause: error } : {}),
+    },
+  );
+}
+
 export class HttpTransport {
   private readonly directDispatcher: Agent;
   private readonly proxyDispatchers = new Map<string, ProxyAgent>();
@@ -134,10 +149,10 @@ export class HttpTransport {
 
   async fetch(
     initialUrl: URL,
-    options: { maxBytes?: number; beforeRequest?: BeforeRequest } = {},
+    options: { maxBytes?: number; signal?: AbortSignal; beforeRequest?: BeforeRequest } = {},
   ): Promise<TransportResponse> {
     let current = initialUrl;
-    const maxBytes = options.maxBytes ?? this.config.maxResponseBytes;
+    const maxBytes = Math.min(options.maxBytes ?? this.config.maxResponseBytes, this.config.maxResponseBytes);
     const proxy = this.proxyPool.acquire();
     const dispatcher = this.dispatcherFor(proxy?.uri ?? null);
 
@@ -153,28 +168,17 @@ export class HttpTransport {
           ...(access === undefined ? {} : { "authorization": access.authorization }),
           "user-agent": this.config.userAgent,
         });
+        const timeoutSignal = AbortSignal.timeout(this.config.requestTimeoutMs);
         response = await fetch(current, {
           dispatcher,
           redirect: "manual",
           headers,
-          signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+          signal: options.signal === undefined
+            ? timeoutSignal
+            : AbortSignal.any([options.signal, timeoutSignal]),
         });
       } catch (error) {
-        if (error instanceof ReadError) {
-          throw error;
-        }
-        const isTimeout =
-          error instanceof Error &&
-          (error.name === "TimeoutError" || error.name === "AbortError");
-        throw new ReadError(
-          isTimeout ? "FETCH_TIMEOUT" : "UPSTREAM_ERROR",
-          isTimeout ? "The page request timed out." : "The page request failed.",
-          {
-            retryable: true,
-            details: { url: current.toString() },
-            ...(access === undefined ? { cause: error } : {}),
-          },
-        );
+        throw transportFetchError(error, current, access === undefined);
       }
 
       if (response.status >= 300 && response.status < 400) {
@@ -201,7 +205,12 @@ export class HttpTransport {
           details: { contentLength, maxResponseBytes: maxBytes },
         });
       }
-      const body = await readLimitedBody(response.body, maxBytes);
+      let body;
+      try {
+        body = await readLimitedBody(response.body, maxBytes);
+      } catch (error) {
+        throw transportFetchError(error, current, access === undefined);
+      }
       return {
         url: current,
         status: response.status,
@@ -298,7 +307,7 @@ export class HttpPageFetcher implements PageFetcher {
     private readonly rsl: RslPolicy,
   ) {}
 
-  async fetch(url: URL, _options: PageFetchOptions = {}): Promise<RawPage> {
+  async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     let robotsRsl = this.rsl.emptyEvidence();
     let challenge: {
       url: string;
@@ -309,6 +318,10 @@ export class HttpPageFetcher implements PageFetcher {
     for (let capAttempt = 0; capAttempt < 2; capAttempt += 1) {
       const presented = new Map<string, string>();
       const response = await this.transport.fetch(url, {
+        ...(options.maxResponseBytes === undefined
+          ? {}
+          : { maxBytes: options.maxResponseBytes }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         beforeRequest: async (nextUrl) => {
           await this.robots.assertAllowed(nextUrl);
           const decision = await this.rsl.authorizeRobots(

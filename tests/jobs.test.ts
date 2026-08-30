@@ -13,7 +13,7 @@ const stores: CrawlJobStore[] = [];
 const temporaryDirectories: string[] = [];
 
 function input(url = "https://example.com/"): CrawlSiteOptions {
-  return { url, mode: "http", maxPages: 5, maxDepth: 1 };
+  return { url, browserAllowed: false, maxPages: 5, maxDepth: 1 };
 }
 
 function result(url = "https://example.com/"): CrawlSiteResult {

@@ -27,6 +27,8 @@ export type AppConfig = {
   crawlRetryBaseMs: number;
   crawlMaxRetryDelayMs: number;
   crawlMinHostIntervalMs: number;
+  crawlWorkerConcurrency: number;
+  crawlLeaseMs: number;
   browserPoolSize: number;
   browserContextsPerInstance: number;
   browserPoolWaitMs: number;
@@ -223,6 +225,13 @@ export function loadConfig(): AppConfig {
       0,
       60_000,
     ),
+    crawlWorkerConcurrency: integerInRange(
+      "DIAOYAN_CRAWL_WORKER_CONCURRENCY",
+      8,
+      1,
+      32,
+    ),
+    crawlLeaseMs: integerInRange("DIAOYAN_CRAWL_LEASE_MS", 5_000, 500, 300_000),
     browserPoolSize: integerInRange("DIAOYAN_BROWSER_POOL_SIZE", 2, 1, 16),
     browserContextsPerInstance: integerInRange(
       "DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE",

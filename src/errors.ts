@@ -25,6 +25,7 @@ export const errorCodes = [
   "BROWSER_POOL_EXHAUSTED",
   "PROFILE_NOT_FOUND",
   "CACHE_MISS",
+  "BUDGET_EXHAUSTED",
   "SEARCH_PROVIDER_NOT_CONFIGURED",
   "SEARCH_PROVIDER_ERROR",
   "JOB_NOT_FOUND",
@@ -41,6 +42,7 @@ export class ReadError extends Error {
   readonly code: ReadErrorCode;
   readonly retryable: boolean;
   readonly details: ReadErrorDetails;
+  readonly execution: (AccessPlanEvidence & { requestId: string }) | null;
 
   constructor(
     code: ReadErrorCode,
@@ -48,6 +50,7 @@ export class ReadError extends Error {
     options: {
       retryable?: boolean;
       details?: ReadErrorDetails;
+      execution?: AccessPlanEvidence & { requestId: string };
       cause?: unknown;
     } = {},
   ) {
@@ -56,6 +59,7 @@ export class ReadError extends Error {
     this.code = code;
     this.retryable = options.retryable ?? false;
     this.details = options.details ?? {};
+    this.execution = options.execution ?? null;
   }
 
   toJSON(): {
@@ -64,6 +68,7 @@ export class ReadError extends Error {
     message: string;
     retryable: boolean;
     details: ReadErrorDetails;
+    execution: (AccessPlanEvidence & { requestId: string }) | null;
   } {
     return {
       status: "error",
@@ -71,6 +76,7 @@ export class ReadError extends Error {
       message: this.message,
       retryable: this.retryable,
       details: this.details,
+      execution: this.execution,
     };
   }
 }
@@ -138,3 +144,4 @@ export function errorForHttpStatus(
   }
   return null;
 }
+import type { AccessPlanEvidence } from "./types.js";

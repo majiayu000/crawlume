@@ -1,8 +1,5 @@
 import type { ReadErrorCode } from "./errors.js";
 
-export const fetchModes = ["auto", "http", "browser"] as const;
-export type FetchMode = (typeof fetchModes)[number];
-
 export const cacheModes = ["prefer-cache", "live", "cache-only"] as const;
 export type CacheMode = (typeof cacheModes)[number];
 
@@ -30,10 +27,24 @@ export type AccessProviderId = "cache" | "http" | "browser" | "feed" | "pdf" | "
 export type ExecutionBudget = {
   deadlineMs: number;
   maxAttempts: number;
-  maxNetworkBytes: number;
+  maxDocumentBytes: number;
   maxBrowserMs: number;
   maxBrowserContexts: number;
   maxOptionalModelTokens: number;
+};
+
+export type ReadCompletion =
+  | { type: "content" }
+  | { type: "discovery" }
+  | { type: "dom"; readiness: BrowserReadinessPolicy };
+
+export type PlanningFacts = {
+  cachePolicy: CacheMode;
+  providers: {
+    cache: boolean;
+    http: boolean;
+    browser: boolean;
+  };
 };
 
 export type ReadIntent = {
@@ -42,6 +53,7 @@ export type ReadIntent = {
   output: { format: "markdown" | "json"; schemaId?: string };
   freshness: { maxAgeSeconds: number; allowStaleWhileRevalidate: boolean };
   authorization: { profileId: string | null; allowedOrigins: string[] };
+  completion: ReadCompletion;
   budget: ExecutionBudget;
 };
 
@@ -55,9 +67,27 @@ export type StageRetryPolicy = {
   retryableErrorCodes: ReadErrorCode[];
 };
 
+export type PlannedStageReasonCode =
+  | "CACHE_ONLY"
+  | "CACHE_PREFERRED"
+  | "HTTP_PRIMARY"
+  | "BROWSER_PRIMARY_HTTP_UNAVAILABLE"
+  | "BROWSER_REQUIRED_BY_AUTHORIZATION"
+  | "BROWSER_REQUIRED_BY_COMPLETION"
+  | "BROWSER_AFTER_INCOMPLETE_HTTP";
+
+export type PlannedStageInput = {
+  url: string;
+  operation: ReadIntent["operation"];
+  authorizationProfileId: string | null;
+  completion: ReadCompletion;
+};
+
 export type PlannedStage = {
   id: string;
   provider: AccessProviderId;
+  reasonCode: PlannedStageReasonCode;
+  input: PlannedStageInput;
   runWhen: StagePredicate;
   retryPolicy: StageRetryPolicy;
   budgetSlice: ExecutionBudget;
@@ -70,8 +100,19 @@ export type AccessPlan = {
   terminalConditions: Array<"valid-artifact" | "policy-stop" | "budget-exhausted">;
 };
 
+export type AccessPlanEvidence = {
+  planId: string;
+  plannerVersion: string;
+  plannedStages: Array<{
+    stageId: string;
+    provider: AccessProviderId;
+    reasonCode: PlannedStageReasonCode;
+  }>;
+  executedStages: string[];
+};
+
 export type ResourceUsage = {
-  networkBytesIn: number;
+  documentBytesIn: number;
   networkBytesOut: number;
   browserMilliseconds: number;
   browserContextStarts: number;
@@ -209,11 +250,13 @@ export type RslAccessAuditResult = {
 
 export type ReadPageOptions = {
   url: string;
-  mode?: FetchMode;
+  requestId?: string;
   cacheMode?: CacheMode;
   maxAgeSeconds?: number;
+  browserAllowed?: boolean;
   authProfile?: string;
   browserReadiness?: BrowserReadinessPolicy;
+  budget?: ExecutionBudget;
 };
 
 export type FetchEvidence = {
@@ -266,10 +309,13 @@ export type ReadPageResult = {
     contentCharacters: number;
     extractionMethod: ExtractionMethod;
     attempts?: number;
+    retryAttempts?: number;
     totalRetryDelayMs?: number;
     fetchAttempts?: Record<FetchMethod, number>;
     responseBytesByMethod?: Record<FetchMethod, number>;
     fetchDurationMsByMethod?: Record<FetchMethod, number>;
+    requestId: string;
+    accessPlan: AccessPlanEvidence;
     browserReadiness?: BrowserReadinessEvidence;
     proxyUsed?: boolean;
     agentIdentity?: AgentIdentityEvidence;
@@ -292,11 +338,25 @@ export type SiteScopeOptions = {
 };
 
 export type MapSiteOptions = SiteScopeOptions & {
-  mode?: FetchMode;
+  browserAllowed?: boolean;
   authProfile?: string;
+  budget?: ExecutionBudget;
 };
 
-export type CrawlSiteOptions = SiteScopeOptions & Omit<ReadPageOptions, "url">;
+export type CrawlSiteOptions = SiteScopeOptions & Omit<ReadPageOptions, "url" | "requestId">;
+
+export type CrawlBudget = {
+  maxDurationMs: number;
+  maxProviderAttempts: number;
+  maxDocumentBytes: number;
+  maxBrowserMs: number;
+  maxBrowserContexts: number;
+};
+
+export type DurableCrawlOptions = CrawlSiteOptions & {
+  concurrency?: number;
+  crawlBudget?: CrawlBudget;
+};
 
 export type DiscoveredUrl = {
   url: string;
@@ -340,6 +400,7 @@ export type CrawlSiteResult = {
 export const crawlJobStatuses = [
   "queued",
   "running",
+  "paused",
   "completed",
   "failed",
   "cancelled",
@@ -353,15 +414,53 @@ export type CrawlJobError = {
   details: Record<string, boolean | number | string | null>;
 };
 
+export type CrawlProgress = {
+  discoveredCount: number;
+  queuedCount: number;
+  leasedCount: number;
+  succeededCount: number;
+  failedCount: number;
+  stoppedCount: number;
+  publishedCount: number;
+};
+
+export type CrawlResourceUsage = ResourceUsage & {
+  providerAttempts: number;
+};
+
+export type CrawlTermination = {
+  code: string;
+  message: string;
+  details: Record<string, boolean | number | string | null>;
+};
+
 export type CrawlJob = {
   id: string;
   status: CrawlJobStatus;
-  input: CrawlSiteOptions;
+  input: DurableCrawlOptions;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
   result: CrawlSiteResult | null;
   error: CrawlJobError | null;
+  progress?: CrawlProgress;
+  usage?: CrawlResourceUsage;
+  budget?: CrawlBudget;
+  termination?: CrawlTermination | null;
+};
+
+export type CrawlPagePublication = DiscoveredUrl & {
+  publicationSequence: number;
+  status: "succeeded" | "failed" | "stopped";
+  result: ReadPageResult | null;
+  error: CrawlJobError | null;
+};
+
+export type CrawlPageBatch = {
+  jobId: string;
+  pages: CrawlPagePublication[];
+  nextSequence: number;
+  done: boolean;
 };
 
 export type SearchWebOptions = {
@@ -448,7 +547,7 @@ export type PageMonitorStatus = (typeof pageMonitorStatuses)[number];
 
 export type PageMonitorInput = {
   url: string;
-  mode?: FetchMode;
+  browserAllowed?: boolean;
   authProfile?: string;
 };
 
@@ -491,6 +590,8 @@ export type PageFetchOptions = {
   authProfile?: string;
   signal?: AbortSignal;
   browserReadiness?: BrowserReadinessPolicy;
+  maxResponseBytes?: number;
+  timeoutMs?: number;
 };
 
 export interface PageFetcher {

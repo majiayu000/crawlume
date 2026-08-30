@@ -1,23 +1,34 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PageCache } from "../src/cache.js";
+import { CrawlRequestPolicy } from "../src/crawl-policy.js";
 import { ReadError } from "../src/errors.js";
+import { AttemptLedger } from "../src/jobs.js";
 import { ReaderService } from "../src/reader.js";
 import { UrlPolicy } from "../src/security/url-policy.js";
 import { SiteService } from "../src/site.js";
-import type { PageFetchOptions, PageFetcher, RawPage } from "../src/types.js";
+import type {
+  AttemptInput,
+  AttemptRecord,
+  PageFetchOptions,
+  PageFetcher,
+  RawPage,
+} from "../src/types.js";
 import { publicResolver, rawPage, testConfig } from "./helpers.js";
+
+type Route = RawPage | Error | Array<RawPage | Error>;
 
 class RoutingFetcher implements PageFetcher {
   readonly calls: string[] = [];
   readonly options: PageFetchOptions[] = [];
 
-  constructor(private readonly routes: Map<string, RawPage | Error>) {}
+  constructor(private readonly routes: Map<string, Route>) {}
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     this.calls.push(url.toString());
     this.options.push(options);
-    const route = this.routes.get(url.toString());
+    const configured = this.routes.get(url.toString());
+    const route = Array.isArray(configured) ? configured.shift() : configured;
     if (route === undefined) {
       throw new ReadError("ACCESS_DENIED", "Missing test route.", {
         details: { url: url.toString() },
@@ -30,24 +41,51 @@ class RoutingFetcher implements PageFetcher {
   }
 }
 
+class RecordingAttemptLedger extends AttemptLedger {
+  readonly requestIds: string[] = [];
+
+  override append(input: AttemptInput): AttemptRecord {
+    if (!this.requestIds.includes(input.requestId)) this.requestIds.push(input.requestId);
+    return super.append(input);
+  }
+}
+
+function ledgerRequestId(ledger: RecordingAttemptLedger, provider: "http" | "browser"): string {
+  const requestId = ledger.requestIds.find((value) =>
+    ledger.list(value).some((attempt) => attempt.provider === provider)
+  );
+  if (requestId === undefined) throw new Error(`no ${provider} attempt was recorded`);
+  return requestId;
+}
+
 const readers: ReaderService[] = [];
+const ledgers: AttemptLedger[] = [];
 
 function serviceWith(
-  routes: Map<string, RawPage | Error>,
-  browserRoutes: Map<string, RawPage | Error> = new Map(),
+  routes: Map<string, Route>,
+  browserRoutes: Map<string, Route> = new Map(),
+  options: { retries?: boolean } = {},
 ) {
   const urlPolicy = new UrlPolicy(async () => publicResolver());
   const http = new RoutingFetcher(routes);
   const browser = new RoutingFetcher(browserRoutes);
+  const ledger = new RecordingAttemptLedger(":memory:");
   const reader = new ReaderService(
     testConfig(),
     urlPolicy,
     new PageCache(":memory:"),
     http,
     browser,
+    null,
+    options.retries === true ? new CrawlRequestPolicy(testConfig()) : null,
+    null,
+    null,
+    () => "",
+    ledger,
   );
   readers.push(reader);
-  return { service: new SiteService(urlPolicy, reader, http, browser), http, browser };
+  ledgers.push(ledger);
+  return { service: new SiteService(urlPolicy, reader), reader, http, browser, ledger };
 }
 
 function page(url: string, links: string[], complete = false): RawPage {
@@ -64,6 +102,9 @@ afterEach(() => {
   while (readers.length > 0) {
     readers.pop()?.close();
   }
+  while (ledgers.length > 0) {
+    ledgers.pop()?.close();
+  }
 });
 
 describe("SiteService", () => {
@@ -78,7 +119,6 @@ describe("SiteService", () => {
 
     await service.crawlSite({
       url: root,
-      mode: "auto",
       cacheMode: "live",
       maxPages: 1,
       browserReadiness: readiness,
@@ -108,7 +148,7 @@ describe("SiteService", () => {
       ["https://example.com/a", page("https://example.com/a", [])],
       ["https://example.com/leaf", page("https://example.com/leaf", [])],
     ]);
-    const { service, http, browser } = serviceWith(routes);
+    const { service, http, browser, ledger } = serviceWith(routes);
 
     const result = await service.mapSite({ url: `${root}?campaign=x`, maxPages: 10 });
 
@@ -121,6 +161,80 @@ describe("SiteService", () => {
     expect(result.scannedPages).toBe(3);
     expect(http.calls).toHaveLength(3);
     expect(browser.calls).toHaveLength(0);
+    expect(ledger.list(ledgerRequestId(ledger, "http")).map(({ provider, outcome }) => ({
+      provider, outcome,
+    }))).toEqual([{ provider: "http", outcome: "succeeded" }]);
+  });
+
+  it("maps a JavaScript shell through the same planned HTTP-to-browser execution chain", async () => {
+    const root = "https://example.com/";
+    const child = "https://example.com/child";
+    const shellBody = "<html><body>Loading...</body></html>";
+    const browserRoot = page(root, ["/child"], true);
+    const { service, ledger } = serviceWith(
+      new Map([
+        [root, rawPage({ body: shellBody, responseBytes: Buffer.byteLength(shellBody) })],
+        [child, page(child, [], true)],
+      ]),
+      new Map([[root, { ...browserRoot, method: "browser" }]]),
+    );
+
+    const result = await service.mapSite({ url: root, maxPages: 2, maxDepth: 1 });
+    const rootRequestId = ledgerRequestId(ledger, "browser");
+
+    expect(result.urls.map(({ url }) => url)).toEqual([root, child]);
+    expect(ledger.list(rootRequestId).map(({ provider, outcome, errorCode }) => ({
+      provider, outcome, errorCode,
+    }))).toEqual([
+      { provider: "http", outcome: "failed", errorCode: "SHELL_ONLY" },
+      { provider: "browser", outcome: "succeeded", errorCode: null },
+    ]);
+  });
+
+  it("retries only the failed browser stage after HTTP identifies a JavaScript shell", async () => {
+    const root = "https://example.com/";
+    const shellBody = "<html><body>Loading...</body></html>";
+    const { service, http, browser } = serviceWith(
+      new Map([[root, rawPage({ body: shellBody, responseBytes: Buffer.byteLength(shellBody) })]]),
+      new Map([[root, [
+        new ReadError("UPSTREAM_ERROR", "temporary browser failure", { retryable: true }),
+        { ...page(root, [], true), method: "browser" },
+      ]]]),
+      { retries: true },
+    );
+
+    const result = await service.mapSite({
+      url: root,
+      maxPages: 1,
+      budget: {
+        deadlineMs: 1_000,
+        maxAttempts: 3,
+        maxDocumentBytes: 100_000,
+        maxBrowserMs: 1_000,
+        maxBrowserContexts: 2,
+        maxOptionalModelTokens: 0,
+      },
+    });
+
+    expect(result.status).toBe("ok");
+    expect(http.calls).toEqual([root]);
+    expect(browser.calls).toEqual([root, root]);
+  });
+
+  it("fails explicitly on a JavaScript shell when browser access is disabled", async () => {
+    const root = "https://example.com/";
+    const shellBody = "<html><body>Loading...</body></html>";
+    const { service, browser } = serviceWith(new Map([[root, rawPage({
+      body: shellBody,
+      responseBytes: Buffer.byteLength(shellBody),
+    })]]));
+
+    await expect(service.mapSite({
+      url: root,
+      maxPages: 1,
+      browserAllowed: false,
+    })).rejects.toMatchObject({ code: "SHELL_ONLY" });
+    expect(browser.calls).toEqual([]);
   });
 
   it("reports child failures instead of silently dropping pages", async () => {
@@ -152,7 +266,7 @@ describe("SiteService", () => {
 
     const result = await service.crawlSite({
       url: root,
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
       maxPages: 5,
       maxDepth: 1,
@@ -169,6 +283,88 @@ describe("SiteService", () => {
     expect(http.calls).toEqual([root, child]);
   });
 
+  it("applies the caller budget independently to every crawled page", async () => {
+    const root = "https://example.com/";
+    const child = "https://example.com/oversized";
+    const rootPage = page(root, [child], true);
+    const childPage = page(child, [], true);
+    const { service, ledger } = serviceWith(new Map([
+      [root, { ...rootPage, responseBytes: 900 }],
+      [child, { ...childPage, responseBytes: 2_000 }],
+    ]));
+
+    const result = await service.crawlSite({
+      url: root,
+      browserAllowed: false,
+      cacheMode: "live",
+      maxPages: 2,
+      maxDepth: 1,
+      budget: {
+        deadlineMs: 1_000,
+        maxAttempts: 1,
+        maxDocumentBytes: 1_000,
+        maxBrowserMs: 0,
+        maxBrowserContexts: 0,
+        maxOptionalModelTokens: 0,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial",
+      pages: [expect.objectContaining({ url: root })],
+      failures: [expect.objectContaining({
+        url: child,
+        code: "BUDGET_EXHAUSTED",
+        details: expect.objectContaining({ budgetDimension: "maxDocumentBytes" }),
+      })],
+    });
+    expect(ledger.requestIds).toHaveLength(2);
+    expect(new Set(ledger.requestIds).size).toBe(2);
+  });
+
+  it("applies the caller budget to each mapped page", async () => {
+    const root = "https://example.com/";
+    const oversized = page(root, [], true);
+    const { service } = serviceWith(new Map([[root, { ...oversized, responseBytes: 2_000 }]]));
+
+    await expect(service.mapSite({
+      url: root,
+      browserAllowed: false,
+      maxPages: 1,
+      budget: {
+        deadlineMs: 1_000,
+        maxAttempts: 1,
+        maxDocumentBytes: 1_000,
+        maxBrowserMs: 0,
+        maxBrowserContexts: 0,
+        maxOptionalModelTokens: 0,
+      },
+    })).rejects.toMatchObject({
+      code: "BUDGET_EXHAUSTED",
+      details: { budgetDimension: "maxDocumentBytes" },
+    });
+  });
+
+  it("shares cached content between single-page reads and crawls", async () => {
+    const root = "https://example.com/";
+    const rootPage = {
+      ...page(root, ["/guide"], true),
+      fetchedAt: new Date().toISOString(),
+    };
+    const { service, reader, http } = serviceWith(new Map([[root, rootPage]]));
+
+    await reader.readPage({ url: root, browserAllowed: false, cacheMode: "live" });
+    const result = await service.crawlSite({
+      url: root,
+      browserAllowed: false,
+      cacheMode: "prefer-cache",
+      maxPages: 1,
+    });
+
+    expect(result.pages).toHaveLength(1);
+    expect(http.calls).toEqual([root]);
+  });
+
   it("enforces crawl limits and reports truncation", async () => {
     const root = "https://example.com/";
     const routes = new Map<string, RawPage | Error>([
@@ -178,7 +374,7 @@ describe("SiteService", () => {
     ]);
     const { service } = serviceWith(routes);
 
-    const result = await service.crawlSite({ url: root, mode: "http", maxPages: 2 });
+    const result = await service.crawlSite({ url: root, browserAllowed: false, maxPages: 2 });
 
     expect(result.scannedPages).toBe(2);
     expect(result.pages).toHaveLength(2);
@@ -192,7 +388,7 @@ describe("SiteService", () => {
     controller.abort();
 
     await expect(
-      service.crawlSite({ url: root, mode: "http", signal: controller.signal }),
+      service.crawlSite({ url: root, browserAllowed: false, signal: controller.signal }),
     ).rejects.toMatchObject({ code: "CRAWL_CANCELLED" });
     expect(http.calls).toEqual([]);
   });

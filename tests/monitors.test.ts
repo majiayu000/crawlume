@@ -38,6 +38,17 @@ function artifact(contentHash: string): PageReadArtifact {
       responseBytes: 123,
       contentCharacters: 400,
       extractionMethod: "readability",
+      requestId: "request-test",
+      accessPlan: {
+        planId: `plan_${"a".repeat(64)}`,
+        plannerVersion: "access-planner-v1",
+        plannedStages: [{
+          stageId: "http-read",
+          provider: "http",
+          reasonCode: "HTTP_PRIMARY",
+        }],
+        executedStages: ["http-read"],
+      },
       attempts: 1,
       totalRetryDelayMs: 0,
     },
@@ -305,7 +316,7 @@ describe("PageMonitorService", () => {
     });
     await expect(service.start({
       url: "https://example.com",
-      mode: "http",
+      browserAllowed: false,
       authProfile: "work",
     }, 60)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(() => service.list(101)).toThrow("between 1 and 100");
@@ -346,7 +357,7 @@ describe("PageMonitorStore recovery", () => {
     const path = join(directory, "crawler.sqlite");
     const now = Date.parse("2026-08-25T00:00:00.000Z");
     const first = new PageMonitorStore(path, () => now);
-    const created = first.create({ url: "https://example.com/", mode: "auto" }, 60);
+    const created = first.create({ url: "https://example.com/", browserAllowed: true }, 60);
     expect(first.claimDue()?.status).toBe("running");
     first.close();
 

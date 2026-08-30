@@ -191,7 +191,10 @@ function extractPlain(page: RawPage): ExtractedPage {
   };
 }
 
-export function extractPage(page: RawPage): ExtractedPage {
+export function extractPage(
+  page: RawPage,
+  options: { allowIncompleteDocument?: boolean } = {},
+): ExtractedPage {
   const contentType = page.contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   if (
     contentType === "text/plain" ||
@@ -247,6 +250,18 @@ export function extractPage(page: RawPage): ExtractedPage {
     throw new ReadError("SHELL_ONLY", "The page returned an application shell without complete data.", {
       details: errorDetails(page, title, markdown.length),
     });
+  }
+  if (options.allowIncompleteDocument === true) {
+    return {
+      title: normalizedText(article?.title ?? "") || title,
+      byline: normalizedText(article?.byline ?? "") || null,
+      publishedTime: normalizedText(article?.publishedTime ?? "") || null,
+      markdown,
+      contentCharacters: markdown.length,
+      contentHash: contentHash(markdown),
+      extractionMethod,
+      links,
+    };
   }
   if (markdown.length < minimumContentCharacters) {
     throw new ReadError("INCOMPLETE_CONTENT", "The page did not contain enough readable content.", {

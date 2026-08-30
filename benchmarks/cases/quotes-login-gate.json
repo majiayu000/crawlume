@@ -1,12 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "quotes-login-gate",
   "layer": "live",
   "category": "gate",
   "input": {
     "url": "https://quotes.toscrape.com/login",
     "intent": "read",
-    "mode": "auto",
     "freshnessSeconds": 0
   },
   "policy": {
@@ -18,7 +17,8 @@
   },
   "truth": {
     "required": [
-      { "type": "outcome_equals", "value": "policy_stop" }
+      { "type": "outcome_equals", "value": "policy_stop" },
+      { "type": "error_code_equals", "value": "LOGIN_WALL_DETECTED" }
     ],
     "forbidden": []
   },

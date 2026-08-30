@@ -1,5 +1,6 @@
 import type { AppConfig } from "./config.js";
 import { crawlCancelledError, ReadError } from "./errors.js";
+import type { StageRetryPolicy } from "./types.js";
 
 export type CrawlAttemptResult<T> = {
   value: T;
@@ -10,6 +11,11 @@ export type CrawlAttemptResult<T> = {
 export type CrawlPolicyRuntime = {
   now(): number;
   sleep(milliseconds: number, signal?: AbortSignal): Promise<void>;
+};
+
+export type CrawlExecutionHooks = {
+  beforeRetryDelay?(milliseconds: number): void;
+  onRetryDelay?(milliseconds: number): void;
 };
 
 type CrawlPolicyConfig = Pick<
@@ -70,10 +76,13 @@ export class CrawlRequestPolicy {
     url: URL,
     operation: () => Promise<T>,
     signal?: AbortSignal,
+    retryPolicy?: StageRetryPolicy,
+    hooks?: CrawlExecutionHooks,
   ): Promise<CrawlAttemptResult<T>> {
     let attempts = 0;
     let totalRetryDelayMs = 0;
-    while (attempts < this.config.crawlMaxAttempts) {
+    const maxAttempts = retryPolicy?.maxAttempts ?? this.config.crawlMaxAttempts;
+    while (attempts < maxAttempts) {
       await this.reserveHost(url.hostname, signal);
       attempts += 1;
       try {
@@ -89,7 +98,9 @@ export class CrawlRequestPolicy {
         if (signal?.aborted === true) {
           throw crawlCancelledError();
         }
-        if (!error.retryable || attempts >= this.config.crawlMaxAttempts) {
+        const retryAllowed = error.retryable &&
+          (retryPolicy === undefined || retryPolicy.retryableErrorCodes.includes(error.code));
+        if (!retryAllowed || attempts >= maxAttempts) {
           throw withAttemptEvidence(error, attempts, totalRetryDelayMs);
         }
 
@@ -107,7 +118,9 @@ export class CrawlRequestPolicy {
           this.config.crawlMaxRetryDelayMs,
         );
         const retryDelay = Math.max(exponentialDelay, retryAfterMs);
+        hooks?.beforeRetryDelay?.(retryDelay);
         totalRetryDelayMs += retryDelay;
+        hooks?.onRetryDelay?.(retryDelay);
         await this.runtime.sleep(retryDelay, signal);
       }
     }

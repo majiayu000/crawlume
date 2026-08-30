@@ -22,7 +22,7 @@ function attempt(overrides: Partial<AttemptInput> = {}): AttemptInput {
     traceRef: null,
     errorCode: null,
     usage: {
-      networkBytesIn: 1_000,
+      documentBytesIn: 1_000,
       networkBytesOut: 200,
       browserMilliseconds: 0,
       browserContextStarts: 0,
@@ -57,7 +57,7 @@ describe("AttemptLedger", () => {
       providerVersion: "playwright-1.62.1",
       usage: {
         ...attempt().usage,
-        networkBytesIn: 2_000,
+        documentBytesIn: 2_000,
         browserMilliseconds: 700,
         browserContextStarts: 1,
       },
@@ -78,7 +78,7 @@ describe("AttemptLedger", () => {
       providerVersion: "playwright-1.62.1",
       outcome: "succeeded",
       usage: {
-        networkBytesIn: 2_000,
+        documentBytesIn: 2_000,
         networkBytesOut: 100,
         browserMilliseconds: 600,
         browserContextStarts: 1,
@@ -94,7 +94,7 @@ describe("AttemptLedger", () => {
       lastOutcome: "succeeded",
       lastStageId: "browser-1",
       usage: {
-        networkBytesIn: 3_000,
+        documentBytesIn: 3_000,
         networkBytesOut: 300,
         browserMilliseconds: 600,
         browserContextStarts: 1,
@@ -127,8 +127,8 @@ describe("AttemptLedger", () => {
       completedAt: "2026-08-29T00:59:59.000Z",
     }))).toThrow("completedAt");
     expect(() => ledger.append(attempt({
-      usage: { ...attempt().usage, networkBytesIn: -1 },
-    }))).toThrow("networkBytesIn");
+      usage: { ...attempt().usage, documentBytesIn: -1 },
+    }))).toThrow("documentBytesIn");
     expect(() => ledger.append(attempt({
       outcome: "succeeded",
       errorCode: "UPSTREAM_ERROR",

@@ -79,8 +79,8 @@ P0 不估算虚构货币成本，先采集可观测资源代理：
 
 ```text
 ExecutionCost {
-  httpRequests
-  networkBytesIn
+  httpProviderAttempts
+  documentBytesIn
   networkBytesOut
   browserMilliseconds
   browserContextStarts
@@ -309,6 +309,7 @@ scraping sandbox 才允许分页/发现测试。Live truth 30 天复核，sandbo
 
 ```json
 {
+  "schemaVersion": 2,
   "id": "article-static-001",
   "layer": "fixture",
   "category": "article",
@@ -341,6 +342,9 @@ scraping sandbox 才允许分页/发现测试。Live truth 30 天复核，sandbo
 
 Manifest 只描述输入、预算和真值，不指定必须使用 HTTP 或 Browser。否则 Benchmark 会测实现细节，
 无法评估 Access Planner。
+
+失败语义 Case 必须同时断言 `outcome_equals` 和 `error_code_equals`。只断言“失败”会把 SSRF、DNS、
+Harness 配置错误等错误原因误判为正确行为。
 
 ## Harness 边界
 
@@ -478,23 +482,40 @@ Scrapy、Colly 四个 HTTP runner。相关 29 个 focused tests 已覆盖 HTTP h
 受控 Readiness Tournament 使用即时正文、900ms 延迟正文、Skeleton、持续变化正文、无限滚动五类
 真实 DOM 页面，对 fixed-750、adaptive、target 三策略各重复 5 次。75 次运行中：fixed-750 有效率
 40%、假成功率 60%；adaptive 有效率 60%、假成功率 20%；target 有效率 100%、假成功率 0%。对应
-valid latency median/p95 的实现验收复跑为 765/769ms、1,251/1,556ms、553/1,248ms。结果保存在 gitignored 的
+valid latency median/p95 的 2026-08-30 实现验收复跑为 769/837ms、1,244/1,610ms、553/1,305ms。结果保存在 gitignored 的
 `benchmarks/reports/readiness-latest.json`，复现命令为 `pnpm bench:readiness -- --repeats 5`。
 
 该结果只决定 ReadinessPolicy 的受控架构优先级：目标/终态条件优先，正文稳定作为 Generic fallback，
 scroll/click 必须显式预算化；它不代表真实互联网类别分布，也不构成竞品排名。
 
 生产首版现已把 CSS 目标条件和有界 `scroll-to-end` 接入 `ReadPageOptions`、MCP 输入、Reader 与
-`PageFetcher` adapter 合同；显式目标在 `auto` 模式直接选择 Browser，策略进入 Cache key，结果返回
+`PageFetcher` adapter 合同；显式 DOM completion 直接选择 Browser，策略进入 Cache key，结果返回
 policy、reason、匹配数和交互步数。Tournament 的 target 策略复用同一生产 readiness runtime。
 
 2026-08-29 的 Public URL v1 小型基线包含 6 个 Case：动态 Browser、静态列表、登录 gate、RFC 长文档、
 404 失败语义和 500 retry-waste。6/6 真值通过，5 个 eligible Case 中产出 3 个有效 Artifact，假成功为
 0；唯一 Browser 启动由 HTTP shell 升级后恢复，首个重试 Case 产生 1 次无效重试和 500ms 等待。单位
-有效 Artifact 的最终验收资源向量为 2.33 个 HTTP 请求、36,701 bytes、1,875 Browser ms、0.33 个
-Browser Context、0.33 次 retry、167ms retry delay 和 6,509ms 端到端时间。该样本含两个故意失败 Case，60%
+有效 Artifact 的 2026-08-30 验收资源向量为 2.33 个 HTTP Provider attempt、36,701 主文档 bytes、1,445 Browser ms、0.33 个
+Browser Context、0.33 次 retry、167ms retry delay 和 5,840ms 端到端时间。该样本含两个故意失败 Case，60%
 Valid Result Rate 不能外推为产品 SLO；它只证明聚合和证据链可复现。
 
-Layer A gold truth、完整故障注入、公开站点 selector/无限滚动 canary、Release 趋势、环境/配置指纹和
+Layer A gold truth、40-Case 完整故障配额、公开站点 selector/无限滚动 canary、Release 趋势、环境/配置指纹和
 闭源 Provider 对照仍未完成，因此不能声称完整 Benchmark 已完成，也不能声称 Diaoyan 已达到生产级
 可靠性或优于任何竞品。
+
+2026-08-30 的执行证据升级要求每个 Benchmark 候选携带 strict plan + ledger provenance。成功、普通
+失败、策略停止和重试失败均包含 requestId、内容寻址 Plan、planned/executed stages、逐次 Attempt 与
+可复算 projection；序列、Provider、Stage 或 usage 任一不一致都转为 `harness_error`，成本字段不再从
+缺失的错误 details 静默补 0。成本名同步收敛为 `httpProviderAttempts` 和 `documentBytesIn`，明确它们
+不是实际 HTTP 请求总数或包含子资源的网络总流量。最新 6-Case 公网复跑 6/6 truth passed、0 false
+success、0 harness error，provenance completeness 为 100%。
+
+同日加入 7 类走真实 `Reader -> HttpTransport -> 受控代理站` 的故障 Case：慢响应头、响应头后慢响应体、
+无 `Content-Length` 的分块超限、三跳重定向、预算内 `Retry-After`、超出 deadline 的 `Retry-After`
+和持续 500。矩阵验证显式错误码、请求次数、重试等待、最终 URL、False Success=0，以及 Plan/Ledger
+projection 可复算；复现命令为 `npm run bench:faults`。这 7 类尚未与 5 类 Readiness 场景注册为一个
+满足 Gate 配额的版本化 Controlled Corpus，距离 40 个故障 Case 和重复次数要求仍有明确缺口。
+
+把已注册证据保守计为 controlled 7×1、live 6×1、private 0，机器 Gate 返回 `experimental` 且
+`hardFailed=false`。升级 canary 至少还缺 33 个 controlled Case、每类 4 次重复、4 个 live Case 和
+每类 4 次重复；该缺口必须通过新增证据解决，不能降低阈值。

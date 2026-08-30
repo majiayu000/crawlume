@@ -75,17 +75,15 @@ export class PageMonitorService {
         { details: { intervalSeconds } },
       );
     }
-    const mode = input.mode ?? "auto";
-    if (input.authProfile !== undefined && mode === "http") {
-      throw new ReadError("INVALID_ARGUMENT", "authProfile requires auto or browser mode.", {
-        details: { mode },
-      });
+    const browserAllowed = input.browserAllowed ?? true;
+    if (input.authProfile !== undefined && !browserAllowed) {
+      throw new ReadError("INVALID_ARGUMENT", "authProfile requires browser access.");
     }
     const url = this.validator.parse(input.url);
     await this.validator.assertPublic(url);
     const normalizedInput: PageMonitorInput = {
       url: url.toString(),
-      mode,
+      browserAllowed,
       ...(input.authProfile === undefined ? {} : { authProfile: input.authProfile }),
     };
     const monitor = this.store.create(normalizedInput, intervalSeconds);

@@ -36,7 +36,7 @@ type AttemptRow = {
 };
 
 const attemptUsageFields = [
-  "networkBytesIn",
+  "documentBytesIn",
   "networkBytesOut",
   "browserMilliseconds",
   "browserContextStarts",
@@ -59,7 +59,7 @@ function validateAttempt(input: AttemptInput): void {
     }
   }
   for (const field of [
-    "networkBytesIn", "networkBytesOut", "browserContextStarts", "optionalModelTokens",
+    "documentBytesIn", "networkBytesOut", "browserContextStarts", "optionalModelTokens",
   ] as const) {
     if (!Number.isSafeInteger(input.usage[field])) {
       throw new Error(`usage.${field} must be an integer`);
@@ -101,7 +101,7 @@ function attemptFromRow(row: AttemptRow): AttemptRecord {
 
 function emptyAttemptUsage(): ResourceUsage {
   return {
-    networkBytesIn: 0,
+    documentBytesIn: 0,
     networkBytesOut: 0,
     browserMilliseconds: 0,
     browserContextStarts: 0,
@@ -496,27 +496,18 @@ export class CrawlJobService {
   private async drain(): Promise<void> {
     while (!this.closing) {
       const job = this.store.claimNext();
-      if (job === null) {
-        return;
-      }
+      if (job === null) return;
       const controller = new AbortController();
       this.current = { id: job.id, controller };
       try {
-        const result = await this.executor.crawlSite({
-          ...job.input,
-          signal: controller.signal,
-        });
-        if (this.closing) {
-          this.store.requeue(job.id);
-        } else if (controller.signal.aborted || this.store.isCancelRequested(job.id)) {
+        const result = await this.executor.crawlSite({ ...job.input, signal: controller.signal });
+        if (this.closing) this.store.requeue(job.id);
+        else if (controller.signal.aborted || this.store.isCancelRequested(job.id)) {
           this.store.markCancelled(job.id);
-        } else {
-          this.store.complete(job.id, result);
-        }
+        } else this.store.complete(job.id, result);
       } catch (error) {
-        if (this.closing) {
-          this.store.requeue(job.id);
-        } else if (controller.signal.aborted || this.store.isCancelRequested(job.id)) {
+        if (this.closing) this.store.requeue(job.id);
+        else if (controller.signal.aborted || this.store.isCancelRequested(job.id)) {
           this.store.markCancelled(job.id);
         } else {
           const normalized = normalizeError(error);
@@ -534,8 +525,6 @@ export class CrawlJobService {
   }
 
   private throwIfWorkerFailed(): void {
-    if (this.workerFailure !== null) {
-      throw this.workerFailure;
-    }
+    if (this.workerFailure !== null) throw this.workerFailure;
   }
 }

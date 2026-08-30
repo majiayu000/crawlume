@@ -4,7 +4,8 @@ import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
 import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { LocalPageIndex } from "./index.js";
-import { CrawlJobService, CrawlJobStore } from "./jobs.js";
+import { FrontierStore } from "./frontier-store.js";
+import { AttemptLedger } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
 import { PageMonitorService, PageMonitorStore } from "./monitors.js";
 import { ProxyPool } from "./proxy.js";
@@ -16,16 +17,18 @@ import { SiteService } from "./site.js";
 import { SearchService, SearxngProvider } from "./search.js";
 import { RslPolicy } from "./rsl.js";
 import { RslAccessAudit } from "./rsl-audit.js";
+import { DurableCrawlService } from "./runtime/frontier.js";
 
 export type DiaoyanApp = {
   reader: ReaderService;
   profiles: ProfileManager;
   site: SiteService;
-  jobs: CrawlJobService;
+  jobs: DurableCrawlService;
   search: SearchService;
   metrics: CrawlerMetrics;
   monitors: PageMonitorService;
   rslAudit: RslAccessAudit;
+  attemptLedger: AttemptLedger;
   close(): Promise<void>;
 };
 
@@ -53,6 +56,7 @@ export function createApp(
   const cache = new PageCache(config.cachePath);
   const metrics = new CrawlerMetrics(config.cachePath);
   const rslAudit = new RslAccessAudit(config.cachePath, config.rslUsage);
+  const attemptLedger = new AttemptLedger(config.cachePath);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
   const crawlPolicy = new CrawlRequestPolicy(config);
   const httpFetcher = new HttpPageFetcher(transport, robots, rsl);
@@ -68,8 +72,9 @@ export function createApp(
     metrics,
     rslAudit,
     () => rsl.approvalContextHash,
+    attemptLedger,
   );
-  const site = new SiteService(urlPolicy, reader, httpFetcher, browserFetcher, crawlPolicy);
+  const site = new SiteService(urlPolicy, reader);
   const searchProvider = config.searxngUrl === null
     ? null
     : new SearxngProvider(
@@ -78,9 +83,11 @@ export function createApp(
         config.requestTimeoutMs,
       );
   const search = new SearchService(searchProvider, localIndex);
-  const jobs = new CrawlJobService(
-    new CrawlJobStore(config.cachePath),
-    site,
+  const jobs = new DurableCrawlService(
+    new FrontierStore(config.cachePath),
+    reader,
+    urlPolicy,
+    config,
     options.runCrawlWorker ?? true,
   );
   const monitors = new PageMonitorService(
@@ -99,6 +106,7 @@ export function createApp(
     metrics,
     monitors,
     rslAudit,
+    attemptLedger,
     async close(): Promise<void> {
       const failures: unknown[] = [];
       const workerResults = await Promise.allSettled([jobs.close(), monitors.close()]);
@@ -112,6 +120,7 @@ export function createApp(
       await captureClose(() => localIndex?.close(), failures);
       await captureClose(() => metrics.close(), failures);
       await captureClose(() => rslAudit.close(), failures);
+      await captureClose(() => attemptLedger.close(), failures);
       await captureClose(async () => transport.close(), failures);
       if (failures.length === 1) {
         throw failures[0];

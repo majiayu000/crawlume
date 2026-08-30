@@ -19,14 +19,13 @@ const temporaryDirectories: string[] = [];
 
 function benchmarkCase(id: string): BenchmarkCase {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id,
     layer: "fixture",
     category: "article",
     input: {
       url: `https://example.com/${id}`,
       intent: "read",
-      mode: "http",
       freshnessSeconds: 0,
     },
     policy: {
@@ -43,8 +42,44 @@ function benchmarkCase(id: string): BenchmarkCase {
 }
 
 function candidate(value: BenchmarkCase): BenchmarkCandidate {
+  const usage = {
+    documentBytesIn: 100,
+    networkBytesOut: 0,
+    browserMilliseconds: 0,
+    browserContextStarts: 0,
+    retryDelayMilliseconds: 0,
+    optionalModelTokens: 0,
+  };
   return {
     outcome: "ok",
+    provenance: {
+      schemaVersion: 1,
+      requestId: `request-${value.id}`,
+      plan: {
+        planId: `plan_${"a".repeat(64)}`,
+        plannerVersion: "access-planner-v1",
+        plannedStages: [{ stageId: "http-read", provider: "http", reasonCode: "HTTP_PRIMARY" }],
+      },
+      executedStages: ["http-read"],
+      attempts: [{
+        sequence: 1,
+        stageId: "http-read",
+        provider: "http",
+        providerVersion: "reader-http-v1",
+        outcome: "succeeded",
+        errorCode: null,
+        usage,
+        startedAt: "2026-08-29T00:00:00.000Z",
+        completedAt: "2026-08-29T00:00:00.020Z",
+      }],
+      projection: {
+        attempts: 1,
+        lastSequence: 1,
+        lastOutcome: "succeeded",
+        lastStageId: "http-read",
+        usage,
+      },
+    },
     artifact: {
       sourceUrl: value.input.url,
       finalUrl: value.input.url,
@@ -60,6 +95,7 @@ function candidate(value: BenchmarkCase): BenchmarkCandidate {
         contentType: "text/html",
         responseBytes: 100,
         attempts: 1,
+        retryAttempts: 0,
         totalRetryDelayMs: 0,
         fetchAttempts: { http: 1, browser: 0 },
         responseBytesByMethod: { http: 100, browser: 0 },
@@ -139,7 +175,7 @@ describe("benchmark corpus coordinator", () => {
         totalRuns: 2,
         eligibleRuns: 2,
         quality: { validArtifacts: 2, validResultRate: 1 },
-        totalCost: { httpRequests: 2, networkBytesIn: 200 },
+        totalCost: { httpProviderAttempts: 2, documentBytesIn: 200 },
       },
     });
   });

@@ -28,6 +28,8 @@ export function testConfig(): AppConfig {
     crawlRetryBaseMs: 0,
     crawlMaxRetryDelayMs: 1_000,
     crawlMinHostIntervalMs: 0,
+    crawlWorkerConcurrency: 8,
+    crawlLeaseMs: 5_000,
     browserPoolSize: 2,
     browserContextsPerInstance: 4,
     browserPoolWaitMs: 1_000,

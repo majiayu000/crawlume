@@ -33,6 +33,17 @@ function result(overrides: Partial<ReadPageResult> = {}): ReadPageResult {
       responseBytes: 1_000,
       contentCharacters: 800,
       extractionMethod: "readability",
+      requestId: "request-test",
+      accessPlan: {
+        planId: `plan_${"a".repeat(64)}`,
+        plannerVersion: "access-planner-v1",
+        plannedStages: [{
+          stageId: "http-read",
+          provider: "http",
+          reasonCode: "HTTP_PRIMARY",
+        }],
+        executedStages: ["http-read"],
+      },
       attempts: 2,
       totalRetryDelayMs: 40,
     },

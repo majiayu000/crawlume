@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -10,6 +10,7 @@ import { normalizeError, type ReadErrorCode } from "../../src/errors.js";
 import {
   parseBenchmarkCase,
   candidateFromPageArtifact,
+  executionProvenanceFromLedger,
   evaluateBenchmarkCase,
   type BenchmarkCandidate,
   type BenchmarkCase,
@@ -134,7 +135,6 @@ export async function runBenchmarkCorpus(
       cost: executionCostForBenchmarkRun(
         execution.candidate,
         execution.durationMs,
-        execution.failureDetails,
       ),
     });
   }
@@ -161,6 +161,7 @@ export async function executeReaderBenchmarkCase(
   };
   const app = createApp(config, { runCrawlWorker: false, runMonitorWorker: false });
   const controller = new AbortController();
+  const requestId = randomUUID();
   const timeout = setTimeout(() => controller.abort(), benchmarkCase.policy.maxDurationMs);
   const startedAt = performance.now();
   let candidate: BenchmarkCandidate;
@@ -168,19 +169,45 @@ export async function executeReaderBenchmarkCase(
   try {
     const artifact = await app.reader.readPageArtifact({
       url: benchmarkCase.input.url,
-      mode: benchmarkCase.policy.browserAllowed ? benchmarkCase.input.mode : "http",
+      requestId,
+      browserAllowed: benchmarkCase.policy.browserAllowed,
       cacheMode: "live",
+      maxAgeSeconds: Math.max(1, benchmarkCase.input.freshnessSeconds),
+      ...(benchmarkCase.policy.authProfile === null
+        ? {}
+        : { authProfile: benchmarkCase.policy.authProfile }),
+      budget: {
+        deadlineMs: benchmarkCase.policy.maxDurationMs,
+        maxAttempts: benchmarkCase.policy.maxAttempts,
+        maxDocumentBytes: config.maxResponseBytes * benchmarkCase.policy.maxAttempts,
+        maxBrowserMs: benchmarkCase.policy.maxBrowserMs,
+        maxBrowserContexts: benchmarkCase.policy.browserAllowed ? 1 : 0,
+        maxOptionalModelTokens: 0,
+      },
       signal: controller.signal,
     });
-    candidate = candidateFromPageArtifact(artifact);
+    candidate = candidateFromPageArtifact(
+      artifact,
+      app.attemptLedger.list(requestId),
+      app.attemptLedger.project(requestId),
+    );
   } catch (error) {
     const normalized = normalizeError(error);
+    if (normalized.execution === null) {
+      throw new Error("benchmark failure is missing execution-plan provenance", { cause: normalized });
+    }
     const httpStatus = typeof normalized.details.httpStatus === "number"
       ? normalized.details.httpStatus
       : undefined;
     candidate = {
       outcome: benchmarkOutcomeForErrorCode(normalized.code, httpStatus),
       errorCode: normalized.code,
+      provenance: executionProvenanceFromLedger(
+        requestId,
+        normalized.execution,
+        app.attemptLedger.list(requestId),
+        app.attemptLedger.project(requestId),
+      ),
     };
     failureDetails = normalized.details;
   } finally {
@@ -216,7 +243,6 @@ export async function runReaderBenchmarkCaseFile(path: string): Promise<{
     cost: executionCostForBenchmarkRun(
       execution.candidate,
       execution.durationMs,
-      execution.failureDetails,
     ),
   };
 }
