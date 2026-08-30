@@ -1,4 +1,4 @@
-import type { ReadErrorCode } from "./errors.js";
+import type { ReadErrorCode, ReadErrorDetails } from "./errors.js";
 
 export const cacheModes = ["prefer-cache", "live", "cache-only"] as const;
 export type CacheMode = (typeof cacheModes)[number];
@@ -10,19 +10,18 @@ export const searchSources = ["auto", "local", "web"] as const;
 export type SearchSource = (typeof searchSources)[number];
 
 export type FetchMethod = "http" | "browser";
-export type ExtractionMethod = "readability" | "document" | "plain";
-export type ContentStatus = "usable" | "uncertain";
-export type ContentWarningCode = "SHORT_CONTENT" | "FALLBACK_EXTRACTION";
-
-export type ContentValidation = {
-  status: ContentStatus;
-  warnings: Array<{
-    code: ContentWarningCode;
-    message: string;
-  }>;
-};
-
-export type AccessProviderId = "cache" | "http" | "browser" | "feed" | "pdf" | "adapter";
+export type ExtractionMethod =
+  | "json"
+  | "json-ld"
+  | "rss"
+  | "atom"
+  | "sitemap"
+  | "pdf"
+  | "readability"
+  | "document"
+  | "plain";
+export const accessProviderIds = ["cache", "http", "browser", "feed", "pdf", "adapter"] as const;
+export type AccessProviderId = (typeof accessProviderIds)[number];
 
 export type ExecutionBudget = {
   deadlineMs: number;
@@ -51,7 +50,11 @@ export type ReadIntent = {
   url: string;
   operation: "read" | "inspect" | "map" | "crawl" | "extract";
   output: { format: "markdown" | "json"; schemaId?: string };
-  freshness: { maxAgeSeconds: number; allowStaleWhileRevalidate: boolean };
+  freshness: {
+    maxAgeSeconds: number;
+    allowStaleWhileRevalidate: boolean;
+    staleWhileRevalidateSeconds?: number;
+  };
   authorization: { profileId: string | null; allowedOrigins: string[] };
   completion: ReadCompletion;
   budget: ExecutionBudget;
@@ -80,6 +83,7 @@ export type PlannedStageInput = {
   url: string;
   operation: ReadIntent["operation"];
   authorizationProfileId: string | null;
+  allowedOrigins: string[];
   completion: ReadCompletion;
 };
 
@@ -124,8 +128,14 @@ export type StageResult = {
   stageId: string;
   outcome: "succeeded" | "failed" | "stopped" | "cancelled";
   rawRef: string | null;
+  traceRef: string | null;
   candidateArtifactRef: string | null;
-  error: { code: ReadErrorCode; message: string; retryable: boolean } | null;
+  error: {
+    code: ReadErrorCode;
+    message: string;
+    retryable: boolean;
+    details: ReadErrorDetails;
+  } | null;
   usage: ResourceUsage;
   startedAt: string;
   completedAt: string;
@@ -135,6 +145,7 @@ export type ValidationResult = {
   outcome: "valid" | "uncertain" | "invalid";
   validatorVersion: string;
   checks: Array<{ code: string; passed: boolean | null; message: string }>;
+  terminalError: { code: ReadErrorCode; message: string } | null;
 };
 
 export type AttemptInput = {
@@ -158,6 +169,37 @@ export type AttemptRecord = AttemptInput & {
   recordedAt: string;
 };
 
+export type RequestTerminalState =
+  | "completed"
+  | "completed_uncertain"
+  | "invalid"
+  | "failed"
+  | "policy_stop"
+  | "budget_exhausted"
+  | "cancelled";
+
+export type RequestTerminalError = {
+  code: ReadErrorCode;
+  message: string;
+  retryable: boolean;
+  details: ReadErrorDetails;
+};
+
+export type RequestTerminalInput = {
+  requestId: string;
+  planId: string;
+  state: RequestTerminalState;
+  artifactKey: string | null;
+  contentHash: string | null;
+  validatorVersion: string | null;
+  error: RequestTerminalError | null;
+};
+
+export type RequestTerminalProjection = RequestTerminalInput & {
+  publicationKey: string | null;
+  committedAt: string;
+};
+
 export type AttemptProjection = {
   requestId: string;
   attempts: number;
@@ -165,6 +207,7 @@ export type AttemptProjection = {
   lastOutcome: AttemptRecord["outcome"];
   lastStageId: string;
   usage: ResourceUsage;
+  terminal: RequestTerminalProjection | null;
 };
 
 export type AgentIdentityEvidence = {
@@ -253,6 +296,7 @@ export type ReadPageOptions = {
   requestId?: string;
   cacheMode?: CacheMode;
   maxAgeSeconds?: number;
+  staleWhileRevalidateSeconds?: number;
   browserAllowed?: boolean;
   authProfile?: string;
   browserReadiness?: BrowserReadinessPolicy;
@@ -264,6 +308,9 @@ export type FetchEvidence = {
   contentType: string;
   responseBytes: number;
   finalUrl: string;
+  etag?: string;
+  lastModified?: string;
+  notModified?: boolean;
   browserReadiness?: BrowserReadinessEvidence;
   proxyUsed?: boolean;
   agentIdentity?: AgentIdentityEvidence;
@@ -272,6 +319,7 @@ export type FetchEvidence = {
 
 export type RawPage = FetchEvidence & {
   body: string;
+  bodyBytes?: Uint8Array;
   fetchedAt: string;
   method: FetchMethod;
 };
@@ -300,20 +348,24 @@ export type ReadPageResult = {
   publishedTime: string | null;
   contentMarkdown: string;
   contentHash: string;
-  completeness: "complete";
-  validation: ContentValidation;
+  completeness: "complete" | "uncertain";
+  validation: ValidationResult;
   evidence: {
     httpStatus: number;
     contentType: string;
     responseBytes: number;
-    contentCharacters: number;
-    extractionMethod: ExtractionMethod;
+      contentCharacters: number;
+      extractionMethod: ExtractionMethod;
+      extractorVersion: string;
+      validatorVersion: string;
+      cacheStatus?: "live" | "fresh" | "revalidated" | "stale" | "replayed";
     attempts?: number;
     retryAttempts?: number;
     totalRetryDelayMs?: number;
     fetchAttempts?: Record<FetchMethod, number>;
     responseBytesByMethod?: Record<FetchMethod, number>;
     fetchDurationMsByMethod?: Record<FetchMethod, number>;
+    phaseDurationsMs?: { extraction: number; validation: number };
     requestId: string;
     accessPlan: AccessPlanEvidence;
     browserReadiness?: BrowserReadinessEvidence;
@@ -539,6 +591,46 @@ export type CrawlerStatsResult = {
     code: string;
     count: number;
   }>;
+  finalStates: Record<RequestTerminalState, number>;
+  cache: Record<"live" | "fresh" | "revalidated" | "stale" | "replayed", number>;
+  versions: {
+    planners: Array<{ version: string; count: number }>;
+    providers: Array<{ provider: AccessProviderId; version: string; count: number }>;
+    extractors: Array<{ version: string; count: number }>;
+    validators: Array<{ version: string; count: number }>;
+  };
+  stages: Array<{
+    stageId: string;
+    provider: AccessProviderId;
+    providerVersion: string;
+    outcome: StageResult["outcome"];
+    attempts: number;
+    durationMs: number;
+    resources: ResourceUsage;
+  }>;
+  resources: ResourceUsage;
+  phaseDurationsMs: {
+    provider: number;
+    extraction: number;
+    validation: number;
+    endToEnd: number;
+  };
+  transitions: Array<{
+    plannerVersion: string;
+    stageId: string;
+    provider: AccessProviderId;
+    reasonCode: PlannedStageReasonCode;
+    count: number;
+  }>;
+  crawlCoverage: {
+    jobs: number;
+    discoveredPages: number;
+    publishedPages: number;
+    succeededPages: number;
+    failedPages: number;
+    stoppedPages: number;
+    coverageRate: number | null;
+  };
   daily: CrawlerStatsDay[];
 };
 
@@ -588,10 +680,16 @@ export type PageMonitor = {
 
 export type PageFetchOptions = {
   authProfile?: string;
+  allowedOrigins?: string[];
   signal?: AbortSignal;
   browserReadiness?: BrowserReadinessPolicy;
   maxResponseBytes?: number;
   timeoutMs?: number;
+  revalidate?: {
+    url: string;
+    etag?: string;
+    lastModified?: string;
+  };
 };
 
 export interface PageFetcher {

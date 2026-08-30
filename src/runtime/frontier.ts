@@ -114,7 +114,14 @@ type ActivePage = {
   promise: Promise<void>;
 };
 
+type PublicationWaiter = {
+  jobId: string;
+  resolveIfReady(): void;
+  reject(error: unknown): void;
+};
+
 const terminalStatuses = new Set<FrontierJobStatus>(["completed", "failed", "cancelled"]);
+const maxPublicationWaiters = 256;
 
 function normalizedInput(config: AppConfig, value: DurableCrawlOptions): DurableCrawlOptions {
   const browserAllowed = value.browserAllowed ?? true;
@@ -261,6 +268,7 @@ function publicJob(job: FrontierJob): CrawlJob {
 export class DurableCrawlService {
   private readonly owner = randomUUID();
   private readonly activePages = new Map<string, ActivePage>();
+  private readonly publicationWaiters = new Set<PublicationWaiter>();
   private wakeTimer: NodeJS.Timeout | null = null;
   private draining = false;
   private drainAgain = false;
@@ -311,6 +319,7 @@ export class DurableCrawlService {
     for (const active of this.activePages.values()) {
       if (active.lease.page.crawlId === id) active.controller.abort(crawlCancelledError());
     }
+    this.notifyPublicationWaiters(id);
     return publicJob(job);
   }
 
@@ -331,6 +340,68 @@ export class DurableCrawlService {
         error: publication.error as CrawlJobError | null,
       })),
     };
+  }
+
+  async waitForPages(
+    id: string,
+    afterSequence: number,
+    limit: number,
+    waitMs: number,
+    signal?: AbortSignal,
+  ): Promise<CrawlPageBatch> {
+    if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 30_000) {
+      throw new ReadError("INVALID_ARGUMENT", "waitMs must be between 0 and 30000.");
+    }
+    if (signal?.aborted === true) throw crawlCancelledError();
+    const initial = this.pages(id, afterSequence, limit);
+    if (waitMs === 0 || initial.pages.length > 0 || initial.done) return initial;
+    if (this.publicationWaiters.size >= maxPublicationWaiters) {
+      throw new ReadError("PROVIDER_UNAVAILABLE", "The crawl publication wait queue is full.", {
+        retryable: true,
+        details: { maxWaiters: maxPublicationWaiters },
+      });
+    }
+
+    return new Promise<CrawlPageBatch>((resolve, reject) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      const cleanup = (): void => {
+        if (timer !== null) clearTimeout(timer);
+        this.publicationWaiters.delete(waiter);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const settle = (operation: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        operation();
+      };
+      const read = (): CrawlPageBatch => this.pages(id, afterSequence, limit);
+      const waiter: PublicationWaiter = {
+        jobId: id,
+        resolveIfReady: () => {
+          try {
+            const batch = read();
+            if (batch.pages.length > 0 || batch.done) settle(() => resolve(batch));
+          } catch (error) {
+            settle(() => reject(error));
+          }
+        },
+        reject: (error) => settle(() => reject(error)),
+      };
+      const onAbort = (): void => waiter.reject(crawlCancelledError());
+      this.publicationWaiters.add(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      timer = setTimeout(() => {
+        try {
+          const batch = read();
+          settle(() => resolve(batch));
+        } catch (error) {
+          settle(() => reject(error));
+        }
+      }, waitMs);
+      waiter.resolveIfReady();
+    });
   }
 
   private requireJob(id: string): FrontierJob {
@@ -379,7 +450,10 @@ export class DurableCrawlService {
             ...(input.budget === undefined ? {} : { requestedBudget: input.budget }),
             originIntervalMs: this.config.crawlMinHostIntervalMs,
           });
-          if (lease === null) break;
+          if (lease === null) {
+            this.notifyPublicationWaiters(job.id);
+            break;
+          }
           this.startLease(lease, input);
           available -= 1;
           jobAvailable -= 1;
@@ -459,6 +533,7 @@ export class DurableCrawlService {
           }];
         });
       this.store.commitSuccess(lease, artifact, discovered, usageFromArtifact(artifact));
+      this.notifyPublicationWaiters(lease.page.crawlId);
     } catch (error) {
       if (this.closing) {
         this.store.releaseLease(lease);
@@ -477,6 +552,7 @@ export class DurableCrawlService {
       const actual = usageFromError(normalized);
       if (cancelled) this.store.commitStopped(lease, normalized.toJSON(), actual);
       else this.store.commitFailure(lease, normalized.toJSON(), actual);
+      this.notifyPublicationWaiters(lease.page.crawlId);
     }
   }
 
@@ -488,9 +564,16 @@ export class DurableCrawlService {
     }
   }
 
+  private notifyPublicationWaiters(jobId: string): void {
+    for (const waiter of [...this.publicationWaiters]) {
+      if (waiter.jobId === jobId) waiter.resolveIfReady();
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    for (const waiter of [...this.publicationWaiters]) waiter.reject(crawlCancelledError());
     if (this.wakeTimer !== null) clearTimeout(this.wakeTimer);
     for (const active of this.activePages.values()) active.controller.abort();
     await Promise.allSettled([...this.activePages.values()].map((active) => active.promise));

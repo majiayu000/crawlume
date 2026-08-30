@@ -1,6 +1,6 @@
 # RFC：Diaoyan 下一代爬虫技术选型与目标架构
 
-状态：Proposed，受控 HTTP 引擎与 Browser Readiness Tournament 已完成；等待真实工作负载与 Provider Benchmark
+状态：Approved and implemented for the local modular Profile；集群、远程 Provider 与新语言扩展仍由量化门槛触发
 日期：2026-08-28
 研究依据：[crawler-architecture-landscape.md](./crawler-architecture-landscape.md)
 真值合同：[reliability-benchmark-spec.md](./reliability-benchmark-spec.md)
@@ -19,7 +19,7 @@
 | Browser | Playwright Core + 本机 Chrome，独立进程/容量池 | Browserless/Browserbase/自建远程池 Provider | 复用当前能力，隔离 Chrome 故障和资源预算 |
 | Local metadata/frontier | SQLite WAL | PostgreSQL | 单文件部署与事务去重；多机时平滑切换权威库 |
 | Cluster metadata/frontier | 不在 P0 部署 | PostgreSQL lease + `SKIP LOCKED` | 多 Worker 事务领取成熟，不需先引入消息中间件 |
-| Blob | 本地 content-addressed filesystem | S3 兼容 object storage | 原始证据不可变、便于去重和保留策略 |
+| Blob | SQLite 内 immutable content-addressed raw/artifact tables | S3 兼容 object storage | 当前单文件部署保持原始证据不可变；多机再拆 object storage |
 | Queue transport | 数据库 lease | 可选 RabbitMQ 通知 | 权威状态只有一份；通知层按实测添加 |
 | Extraction | 确定性 Registry：JSON/feed/sitemap/PDF/article/JSON-LD | Python/模型/站点 Adapter Worker | 热路径可解释，昂贵能力按需启用 |
 | Validation | 独立版本化 Validator | 站点/Schema validator plugin | 防止 Provider 把 2xx、登录墙或残缺内容当成功 |
@@ -40,9 +40,10 @@ Artifact 发布必须幂等。错误、预算耗尽和政策停止都是一等�
 
 ## 2. 背景与决策范围
 
-当前代码是 TypeScript 的本地优先 Reader，已有 CLI/MCP/HTTP、Undici、Playwright、SQLite cache、
-抓取策略、job、monitor、metrics 和合规相关模块。现有内部设计投入较小，本 RFC 不保护内部类或目录；
-在没有明确破坏性产品决策前，只保护 [spec.md](./spec.md) 中已经交付的外部行为。
+当前代码已经是 TypeScript 的本地优先模块化 Retrieval Runtime，CLI/MCP 共用 ReadIntent、Planner、
+Provider/Extractor/Validator Registry、Attempt Ledger、Raw/Artifact Store、Durable Frontier、ResourceGovernor、
+Metrics 和合规边界。具体实现与验证状态见 [architecture-completion-ledger.md](./architecture-completion-ledger.md)；
+公共合同以 [spec.md](./spec.md) 为准。
 
 本 RFC 决定：
 
@@ -122,7 +123,7 @@ Artifact 发布必须幂等。错误、预算耗尽和政策停止都是一等�
 
 ### 4.3 C：模块化耐久内核，渐进部署（推荐）
 
-方案：P0 是单应用进程、独立 Browser 子进程、SQLite WAL 和本地 blob；组件通过明确 port 交互，
+方案：P0 是单应用进程、本机 Chrome 子进程、SQLite WAL/CAS；组件通过明确 port 交互，
 不经网络 RPC。集群 profile 将 metadata/frontier port 换成 PostgreSQL，Provider 变为独立 Worker，
 业务状态机不变。
 
@@ -188,7 +189,7 @@ flowchart TB
     end
     subgraph State[State]
       DB[(SQLite WAL / PostgreSQL)]
-      BS[(Filesystem / Object store)]
+      BS[(SQLite CAS / Object store)]
     end
 
     API --> IN --> PG --> PL --> FR
@@ -486,15 +487,16 @@ False Success Rate、Browser Uplift、Valid Latency 和 Cost per Valid Artifact 
 
 ## 14. 实施顺序与决策门
 
-### Phase 0：先建立证据，不改主执行路径
+### Phase 0：先建立证据（已完成受控/公开 Profile）
 
 1. 落地 Benchmark schema、受控站点和 20–30 个高价值 fixture。
 2. 对当前实现跑 baseline，拆出 valid/invalid/uncertain，而非只看测试通过。
-3. 用相同 URL 对 Crawlee prototype、Firecrawl/Jina 等可用 Provider 做小样本对照。
+3. 外部 Provider/竞品对照只有在预算、地区和数据边界获批后运行；当前未伪造此证据。
 
-退出条件：能稳定复现 false success、browser uplift、retry waste 和每阶段成本。
+退出条件已满足：PR 230/230、Nightly 280/280 Truth 通过，Optimization Loop 可复现 browser uplift、
+retry recovery/waste、Extractor 对照和每阶段资源成本；当前 Gate 为 `canary-ready`。
 
-### Phase 1：真值和账本
+### Phase 1：真值和账本（已完成）
 
 1. 定义 ReadIntent、StageResult、ValidationResult、TypedError。
 2. 在当前 Reader facade 后加入 Validator Registry 和 append-only Attempt。
@@ -502,23 +504,25 @@ False Success Rate、Browser Uplift、Valid Latency 和 Cost per Valid Artifact 
 
 退出条件：P0 正确性门槛通过；公共 CLI/MCP 合同未回归。
 
-### Phase 2：耐久 Frontier
+### Phase 2：耐久 Frontier（已完成本地 Profile）
 
 1. SQLite WAL schema、atomic lease、expiry/recovery、origin state。
 2. 将 site crawl 从内存 BFS 迁入 Frontier。
-3. 加进程 kill、重复领取、取消、磁盘满和 checkpoint 测试。
+3. 加进程 kill、重复领取、取消、预算耗尽和 publication checkpoint 测试。
 
-退出条件：100k 容量和恢复门槛通过。
+退出条件：公开合同支持最多 10,000 页；500 页并发和 1,000 页 SIGKILL 恢复验收通过。100k 不在
+当前公开合同内，不能把未批准容量写成完成门槛。
 
-### Phase 3：Planner 与执行器隔离
+### Phase 3：Planner 与执行器隔离（已完成本地 Profile）
 
 1. HTTP、Browser、feed/PDF 变为统一 Provider。
-2. 落地硬预算和三层 ResourceGovernor。
+2. 落地硬预算和 HTTP/Browser/Auth 三池 Runtime ResourceGovernor。
 3. browser child process、readiness 和 trace reference。
 
-退出条件：HTTP-first 相对 baseline 降低 cost per valid，且 false success 不回归。
+退出条件：统一 Benchmark 0 false success；离线 Shadow 15 组中 Browser 相对主路径恢复 5 组，成本与
+Uplift 保留在内容寻址报告中。生产策略不在线自修改。
 
-### Phase 4：只按触发条件扩展
+### Phase 4：只按触发条件扩展（条件未触发）
 
 - 多主机需求触发 PostgreSQL profile。
 - 浏览器容量触发独立/远程 Browser Worker。
@@ -542,12 +546,14 @@ False Success Rate、Browser Uplift、Valid Latency 和 Cost per Valid Artifact 
 
 ## 16. 决策状态
 
-当前建议批准：
+已经批准并实现：
 
 - C 方案作为目标架构；
 - TypeScript/Node 控制面、Undici、Playwright、SQLite→PostgreSQL、filesystem→object storage；
-- Validator 和 Attempt Ledger 先于新调度器；
+- 本地 TypeScript/Node、Undici、Playwright、SQLite lease/CAS、确定性 Registry、Validator、Attempt
+  Ledger、Frontier、ResourceGovernor、统一 Benchmark 和离线 Optimization Loop；
 - 所有新基础设施由量化门槛触发。
 
-在用户补充第 15 节事实并完成 Phase 0 baseline 前，不批准：整体重写、微服务化、Go/Rust 重写、
-Redis/RabbitMQ/Kafka/Temporal、默认托管 Provider、browser-first。
+仍未批准或未触发：整体重写、微服务化、Go/Rust 重写、PostgreSQL 多主机、
+Redis/RabbitMQ/Kafka/Temporal、默认托管 Provider、远程 Browser、browser-first、模型热路径和具体站点
+Adapter。第 15 节事实只决定这些条件式分支，不反向否定已完成的本地 Profile。

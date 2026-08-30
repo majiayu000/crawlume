@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 describe("FrontierStore", () => {
-  it("explicitly migrates legacy jobs and fails active work as unsupported", () => {
+  it("rejects the removed legacy job schema without rewriting its data", () => {
     const path = databasePath();
     const legacy = new DatabaseSync(path);
     legacy.exec(`
@@ -65,26 +65,19 @@ describe("FrontierStore", () => {
     `);
     legacy.close();
 
-    const store = new FrontierStore(path, () => 999);
-    expect(store.getJob("legacy-running")).toMatchObject({
-      id: "legacy-running",
-      status: "failed",
-      progress: { discovered: 0, queued: 0, leased: 0 },
-    });
-    store.close();
+    expect(() => new FrontierStore(path, () => 999)).toThrow(
+      "Legacy crawl_jobs schema is unsupported",
+    );
 
-    const migrated = new DatabaseSync(path);
-    const row = migrated.prepare(
-      "SELECT status, error_json, completed_at_ms, schema_version FROM crawl_jobs WHERE id = ?",
+    const unchanged = new DatabaseSync(path);
+    const row = unchanged.prepare(
+      "SELECT status, completed_at_ms FROM crawl_jobs WHERE id = ?",
     ).get("legacy-running") as {
       status: string;
-      error_json: string;
-      completed_at_ms: number;
-      schema_version: number;
+      completed_at_ms: number | null;
     };
-    expect(row).toMatchObject({ status: "failed", completed_at_ms: 999, schema_version: 1 });
-    expect(JSON.parse(row.error_json)).toMatchObject({ code: "UNSUPPORTED" });
-    migrated.close();
+    expect(row).toEqual({ status: "running", completed_at_ms: null });
+    unchanged.close();
   });
 
   it("migrates a real SQLite file and creates a job with its root queued", () => {

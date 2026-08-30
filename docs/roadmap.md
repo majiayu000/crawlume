@@ -88,49 +88,55 @@
 
 ## v0.11 Reliability Truth
 
-- 实现 `docs/reliability-benchmark-spec.md` 的 Case Schema、独立 Truth Evaluator 和 Controlled Site（首版已完成）。
-- 区分 `valid`、`uncertain`、`invalid`、`failed`、`policy_stop`、`unsupported` 和 `harness_error`（聚合首版已完成）。
-- 建立首个分层 Corpus 与可复现 baseline（受控 HTTP、Readiness Tournament 和 6-Case Public URL v1 已完成；正式 Layer A/Release 配额未完成）。
-- 记录 False Success、Cost per Valid Artifact、Browser Uplift、Retry Recovery/Waste（分段 fetch trace、资源向量聚合与首个 retry-waste 实跑已完成）。
+- 实现版本化 Case Schema、独立 Truth Evaluator、Controlled Site 和统一 `pnpm bench -- --mode ...` 入口（已完成）。
+- 区分 `valid`、`uncertain`、`invalid`、`failed`、`policy_stop`、`unsupported` 和 `harness_error`（已完成）。
+- PR 固定运行 46 个受控 Case×5；Nightly 增加 10 个未过期公开 Canary×5，并记录环境/配置指纹（已完成）。
+- 记录 False Success、Cost per Valid Artifact、Browser Uplift、Retry Recovery/Waste，并支持同 Case Set
+  Release 配对比较与确定性置信区间（已完成）。
 - Release 只允许在同 Case Set、配置和环境证据下比较，不宣称无证据的竞品领先。
 
 ## v0.12 Access Planner 与 Attempt Ledger
 
-- `ReadIntent`、`ExecutionBudget`、`AccessPlan`、`StageResult` 和 `ValidationResult` 稳定合同（首版已完成；已增加 completion、PlanningFacts、reason code 和内容寻址 Plan ID）。
-- Cache、HTTP、Browser 进入统一 Provider Stage；破坏性删除 `mode`，边界只声明是否允许 Browser、完成条件和预算（Reader、Map、Crawl 首版已完成）。
-- append-only Attempt Ledger 和可重放 projection（SQLite store 与 Reader/Map/Crawl 接线首版已完成；耐久 Frontier 已接入异步 Crawl）。
+- CLI、MCP、Reader 共用 `ReadIntent` 边界；`ExecutionBudget`、内容寻址 `AccessPlan`、统一
+  `StageResult` 和三态 `ValidationResult` 合同已完成。
+- Cache、HTTP、Browser、Feed、PDF 进入统一 Provider Registry；破坏性删除 `mode`，Adapter 默认
+  unavailable，未知 Provider 明确失败（已完成）。
+- append-only Attempt Ledger、request terminal、幂等 publication 和重启重放已完成；旧脱离运行路径的
+  Job Service 已删除。
 - Stage Executor 已从 Reader 拆出；Stage-level retry 不重复已成功阶段，全局 deadline、attempt、主文档
   bytes、Browser 时间和 Context 数量均以 `BUDGET_EXHAUSTED` 显式终止（每页与异步 Crawl 累计预算首版已完成）。
 - Benchmark 成功、失败和策略停止均携带可复算 Plan + Attempt Ledger provenance；主文档 bytes 与
   Provider attempts 是代理成本，不宣称为全链路网络总量。
 - 429/`Retry-After` 进入按 origin 调度，不通过身份轮换规避。
 - `ReaderService.fetchWithMode` 与 `SiteService.shouldRender` 均已删除；Reader、Map、Crawl 统一提交 Intent，由确定性 Planner、Stage Executor 和 Attempt Ledger 执行。
-- 已加入 7 类真实受控 HTTP 故障：慢响应头、慢响应体、分块超限、重定向链、预算内/预算外 `Retry-After` 和持续 500；正式 40-Case 配额仍未完成。
+- 46 个受控 Case 已覆盖格式、重定向、Retry、状态码、Policy Stop、Browser、超时、溢出和不完整内容。
 
 ## v0.13 Browser Readiness 与内容质量
 
 - 用正文稳定、目标条件和硬预算替换固定浏览器等待（正文稳定、三策略 Tournament、生产
   Intent/Adapter selector 与预算化滚动首版已完成）。
-- Browser/Context 健康、自动回收、失败 Trace 抽样和敏感信息清理。
-- Extractor Registry 与 Validator Registry。
-- RSS、Sitemap、JSON-LD、PDF 等确定性能力。
-- 同一 raw response 可运行多个 Extractor，不因抽取失败重复下载。
-- LLM 仅作为显式、预算化的可选 uncertain 路径。
+- Browser/Context 健康、自动回收、失败 Trace 有界存储和敏感信息清理（已完成）。
+- Extractor Registry、Validator Registry、JSON/RSS/Atom/Sitemap/JSON-LD/PDF 等确定性能力（已完成）。
+- 同一 raw response 多 Extractor、不重复下载，以及 Raw/Artifact 内容寻址存储（已完成）。
+- LLM 仍是条件式能力；当前没有 token 预算和必要性证据，因此未启用。
 
-## v0.14 Durable Concurrent Crawl Engine（首版已完成）
+## v0.14 Durable Concurrent Crawl Engine（已完成本地 Profile）
 
 - 页级持久 Frontier、lease、checkpoint、去重、中断恢复和分页 publication 已完成。
 - HTTP、Browser、授权 Session 分池。
-- 全局资源预算、按 origin 固定间隔/429 cooldown 和 backpressure 首版已完成；自适应并发与 Circuit Breaker 待实现。
-- ETag/Last-Modified revalidation、singleflight、stale-while-revalidate 和 Cache 清理。
-- cursor 页面结果和可解释部分失败已完成；推送式流输出待实现。
+- HTTP、匿名 Browser、授权 Session 分池；有界 backpressure、origin delay、429/503 cooldown、Circuit
+  Breaker 和有界自适应并发已完成。
+- ETag/Last-Modified revalidation、singleflight、显式 stale-while-revalidate 和 Cache 清理已完成。
+- cursor 结果、可解释部分失败和最多 30 秒的 publication wait 已完成；重连仍以 SQLite cursor 重放为准。
 
-## v0.15 Optimization Loop 与首批 Adapter
+## v0.15 Optimization Loop 与 Adapter Gate（已完成）
 
-- HTTP/Browser Shadow、Readiness A/B、Retry Counterfactual、Extractor Tournament。
-- Planner 策略版本、Benchmark 对照、review 和回滚。
-- 只有通过使用量、失败成本和维护 ROI Gate 的站点才建立 Adapter。
-- 每个 Adapter 有版本化 Schema、Fixture、Live Canary、错误 Case 和退役条件。
+- 离线 HTTP/Browser Shadow、Readiness A/B、Retry Counterfactual、Extractor Tournament 已由
+  `pnpm bench:optimize` 实现；不采样生产流量、不在线自修改。
+- 候选策略内容寻址，只有显式 review 才能 release，rollback 只能指向已发布祖先。
+- 受信任 Site Adapter Registry、版本化 Schema、Fixture/Canary/Error Case ID、ROI Gate 和退役条件已完成。
+- 当前通用 Nightly 280/280 Truth 通过且没有私有配对 Release 证据，因此默认 Registry 为空，不虚构
+  首批具体站点 Adapter。
 
 ## 可选的托管服务外壳
 
@@ -147,5 +153,5 @@
 错误成功率和单位有效结果成本；原始请求成功率不能单独作为发布证据。
 
 机器判定 Gate 已实现 `experimental`、`canary-ready`、`release-candidate` 和
-`production-proven` 四级。当前 Corpus 规模仍属于 `experimental`；代码通过少量公网 Canary 不能被描述为
-生产级。
+`production-proven` 四级。当前受控和公开证据达到 `canary-ready`；缺少私有 Release Case 与生产
+rollout，不能描述为 `release-candidate`、`production-proven` 或优于竞品。

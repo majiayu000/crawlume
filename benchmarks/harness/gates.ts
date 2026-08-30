@@ -85,6 +85,111 @@ export type BenchmarkGateEvaluation = {
   violations: BenchmarkGateViolation[];
 };
 
+function layerCoverage(
+  runs: BenchmarkCorpusRun[],
+  layer: "controlled" | "live",
+): BenchmarkLayerCoverage {
+  const counts = new Map<string, number>();
+  for (const run of runs) {
+    if (run.benchmarkCase.layer !== layer) continue;
+    counts.set(run.benchmarkCase.id, (counts.get(run.benchmarkCase.id) ?? 0) + 1);
+  }
+  return {
+    distinctCases: counts.size,
+    minRepeats: counts.size === 0 ? 0 : Math.min(...counts.values()),
+  };
+}
+
+function usageEquals(
+  left: Record<string, number>,
+  right: Record<string, number>,
+): boolean {
+  return Object.keys(left).every((field) => left[field] === right[field]);
+}
+
+export function benchmarkGateInputFromReports(
+  reports: BenchmarkCorpusReport[],
+  comparison: BenchmarkReleaseComparison | null,
+): BenchmarkGateInput {
+  const runs = reports.flatMap(({ runs: reportRuns }) => reportRuns);
+  if (runs.length === 0) throw new Error("benchmark gate requires at least one report run");
+  const seenRunKeys = new Set<string>();
+  for (const report of reports) {
+    for (const run of report.runs) {
+      const key = `${report.caseSetVersion}:${report.caseSetHash}:${run.benchmarkCase.id}#${run.repeat}`;
+      if (seenRunKeys.has(key)) throw new Error(`duplicate benchmark gate run: ${key}`);
+      seenRunKeys.add(key);
+    }
+  }
+
+  let completeProvenance = 0;
+  let measuredRuns = 0;
+  let plannedProviderViolations = 0;
+  let ledgerMismatches = 0;
+  let budgetViolations = 0;
+  let policyViolations = 0;
+  let scopeLeaks = 0;
+  for (const run of runs) {
+    if (run.evaluation.outcome === "harness_error") continue;
+    measuredRuns += 1;
+    if (run.candidate === null) continue;
+    if (parseBenchmarkCandidate(run.candidate) !== undefined) completeProvenance += 1;
+    const { provenance } = run.candidate;
+    const planned = new Map(provenance.plan.plannedStages.map((stage) => [stage.stageId, stage.provider]));
+    plannedProviderViolations += provenance.attempts.filter(
+      (attempt) => planned.get(attempt.stageId) !== attempt.provider,
+    ).length;
+    const summedUsage = Object.fromEntries(
+      Object.keys(provenance.projection.usage).map((field) => [
+        field,
+        provenance.attempts.reduce(
+          (sum, attempt) => sum + attempt.usage[field as keyof typeof attempt.usage],
+          0,
+        ),
+      ]),
+    ) as Record<string, number>;
+    if (
+      provenance.projection.attempts !== provenance.attempts.length ||
+      !usageEquals(summedUsage, provenance.projection.usage)
+    ) ledgerMismatches += 1;
+    const usage = provenance.projection.usage;
+    if (
+      provenance.attempts.length > run.benchmarkCase.policy.maxAttempts ||
+      usage.documentBytesIn > run.benchmarkCase.policy.maxDocumentBytes ||
+      usage.browserMilliseconds > run.benchmarkCase.policy.maxBrowserMs
+    ) budgetViolations += 1;
+    if (
+      !run.benchmarkCase.policy.browserAllowed &&
+      provenance.attempts.some(({ provider }) => provider === "browser")
+    ) policyViolations += 1;
+    if (
+      run.candidate.outcome === "ok" && run.candidate.artifact !== undefined &&
+      new URL(run.candidate.artifact.sourceUrl).origin !==
+        new URL(run.candidate.artifact.finalUrl).origin
+    ) scopeLeaks += 1;
+  }
+
+  return {
+    layers: {
+      controlled: layerCoverage(runs, "controlled"),
+      live: layerCoverage(runs, "live"),
+      private: { distinctCases: 0, minRepeats: 0 },
+    },
+    truthPassRate: runs.filter(({ evaluation }) => evaluation.passed).length / runs.length,
+    falseSuccesses: runs.filter(({ evaluation }) => evaluation.falseSuccess).length,
+    harnessErrors: runs.filter(({ evaluation }) => evaluation.outcome === "harness_error").length,
+    provenanceCompleteness: measuredRuns === 0 ? 0 : completeProvenance / measuredRuns,
+    plannedProviderViolations,
+    ledgerMismatches,
+    budgetViolations,
+    policyViolations,
+    scopeLeaks,
+    pairedBaseline: comparison !== null,
+    costPerValidDelta: comparison?.costPerValidDelta ?? 0,
+    validRateDelta: comparison?.validRateDelta ?? 0,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -445,3 +550,9 @@ export function evaluateBenchmarkGate(input: unknown): BenchmarkGateEvaluation {
     violations,
   };
 }
+import { parseBenchmarkCandidate } from "./contract.js";
+import type {
+  BenchmarkCorpusReport,
+  BenchmarkCorpusRun,
+  BenchmarkReleaseComparison,
+} from "./corpus.js";

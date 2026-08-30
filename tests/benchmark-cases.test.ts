@@ -27,6 +27,7 @@ function benchmarkCase(overrides: Partial<BenchmarkCase> = {}): BenchmarkCase {
       authProfile: null,
       maxAttempts: 2,
       maxDurationMs: 10_000,
+      maxDocumentBytes: 100_000,
       maxBrowserMs: 3_000,
     },
     truth: {
@@ -80,6 +81,7 @@ function provenance(overrides: Partial<BenchmarkExecutionProvenance> = {}): Benc
       lastOutcome: "succeeded",
       lastStageId: "http-read",
       usage,
+      terminal: null,
     },
     ...overrides,
   };
@@ -138,6 +140,13 @@ describe("benchmark case schema", () => {
     expect(() => parseBenchmarkCase(value)).toThrow(
       "maxBrowserMs must be zero when browser is disallowed",
     );
+  });
+
+  it("requires an explicit document byte budget", () => {
+    const value = benchmarkCase() as unknown as { policy: Record<string, unknown> };
+    delete value.policy.maxDocumentBytes;
+
+    expect(() => parseBenchmarkCase(value)).toThrow("maxDocumentBytes");
   });
 
   it("rejects non-HTTP inputs and reversed review windows", () => {
@@ -345,7 +354,7 @@ describe("independent benchmark truth evaluator", () => {
       contentMarkdown: "ground truth paragraph",
       contentHash: "sha256-example",
       completeness: "complete",
-      validation: { status: "usable", warnings: [] },
+      validation: { outcome: "valid", validatorVersion: "generic-content-v1", checks: [], terminalError: null },
       discoveredLinks: ["https://example.com/next"],
       evidence: {
         httpStatus: 200,
@@ -353,6 +362,8 @@ describe("independent benchmark truth evaluator", () => {
         responseBytes: 2_048,
         contentCharacters: 22,
         extractionMethod: "readability",
+        extractorVersion: "readability-v1",
+        validatorVersion: "generic-content-v1",
         requestId: "request-test",
         accessPlan: {
           planId: `plan_${"a".repeat(64)}`,

@@ -1,12 +1,15 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
 import { createDurableCrawlSite } from "../../benchmarks/controlled-site/durable-crawl.js";
 import {
   collectCrawlPages,
+  requireStructuredResult,
   startCrawl,
   waitForTerminalCrawl,
 } from "../../benchmarks/harness/crawl-e2e.js";
@@ -15,6 +18,8 @@ import {
   type BuiltMcpProcess,
 } from "../../benchmarks/harness/mcp-process.js";
 import { inspectCrawlDatabase } from "../../benchmarks/harness/sqlite-inspector.js";
+
+const execFileAsync = promisify(execFile);
 
 function processEnvironment(proxyUrl: string): Record<string, string> {
   return {
@@ -100,6 +105,124 @@ describe("durable crawl MCP process", () => {
         concurrency: 2,
         crawlBudget: { maxProviderAttempts: 20 },
       });
+    } finally {
+      await process?.close().catch(() => undefined);
+      await site.close();
+      await rm(dataDirectory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("waits for the next publication and resumes from the SQLite cursor after disconnect", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-wait-e2e-"));
+    const site = await createDurableCrawlSite({ pages: 2, holdPageResponses: true });
+    const environment = processEnvironment(site.proxyUrl);
+    let first: BuiltMcpProcess | null = null;
+    let restarted: BuiltMcpProcess | null = null;
+    try {
+      first = await startBuiltMcpProcess({ dataDirectory, environment });
+      const started = await startCrawl(first, {
+        url: site.seedUrl,
+        browserAllowed: false,
+        cacheMode: "live",
+        maxPages: 2,
+        maxDepth: 1,
+        concurrency: 1,
+      });
+      await site.waitForPageRequests(1);
+
+      const firstPublicationPromise = first.callTool("get_crawl_pages", {
+        jobId: started.id,
+        afterSequence: 0,
+        limit: 10,
+        waitMs: 30_000,
+      });
+      site.releasePage(0);
+      const firstPublication = requireStructuredResult(
+        await firstPublicationPromise,
+        "get_crawl_pages",
+      );
+      expect(firstPublication).toMatchObject({ nextSequence: 1, done: false });
+      expect(firstPublication.pages).toEqual([
+        expect.objectContaining({ publicationSequence: 1, url: site.seedUrl }),
+      ]);
+
+      await site.waitForPageRequests(2);
+      const interrupted = first.callTool("get_crawl_pages", {
+        jobId: started.id,
+        afterSequence: 1,
+        limit: 10,
+        waitMs: 30_000,
+      }).then(
+        () => ({ rejected: false as const }),
+        (error: unknown) => ({ rejected: true as const, error }),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await first.kill("SIGKILL");
+      first = null;
+      expect(await interrupted).toMatchObject({ rejected: true });
+
+      site.setHoldPageResponses(false);
+      restarted = await startBuiltMcpProcess({ dataDirectory, environment });
+      const completed = await waitForTerminalCrawl(restarted, started.id, 30_000);
+      expect(completed.status).toBe("completed");
+      const resumed = requireStructuredResult(
+        await restarted.callTool("get_crawl_pages", {
+          jobId: started.id,
+          afterSequence: 1,
+          limit: 10,
+          waitMs: 30_000,
+        }),
+        "get_crawl_pages",
+      );
+      expect(resumed).toMatchObject({ nextSequence: 2, done: true });
+      expect(resumed.pages).toEqual([
+        expect.objectContaining({ publicationSequence: 2 }),
+      ]);
+    } finally {
+      await first?.close().catch(() => undefined);
+      await restarted?.close().catch(() => undefined);
+      await site.close();
+      await rm(dataDirectory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("returns the same privacy-preserving runtime projection through MCP and CLI", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-metrics-parity-e2e-"));
+    const site = await createDurableCrawlSite({ pages: 1 });
+    const environment = processEnvironment(site.proxyUrl);
+    let process: BuiltMcpProcess | null = null;
+    try {
+      process = await startBuiltMcpProcess({ dataDirectory, environment });
+      requireStructuredResult(await process.callTool("read_page", {
+        url: site.seedUrl,
+        browserAllowed: false,
+        cacheMode: "live",
+      }), "read_page");
+      const mcpStats = requireStructuredResult(
+        await process.callTool("get_crawler_stats", { days: 1 }),
+        "get_crawler_stats",
+      );
+      const { stdout } = await execFileAsync(
+        globalThis.process.execPath,
+        [join(globalThis.process.cwd(), "dist/cli/main.js"), "stats", "--days", "1"],
+        {
+          cwd: globalThis.process.cwd(),
+          env: { ...globalThis.process.env, DIAOYAN_DATA_DIR: dataDirectory, ...environment },
+        },
+      );
+      const cliStats = JSON.parse(stdout) as Record<string, unknown>;
+      const { generatedAt: _mcpGeneratedAt, ...stableMcpStats } = mcpStats;
+      const { generatedAt: _cliGeneratedAt, ...stableCliStats } = cliStats;
+      expect(stableCliStats).toEqual(stableMcpStats);
+      expect(stableMcpStats).toMatchObject({
+        finalStates: { completed: 1 },
+        versions: {
+          planners: [{ version: "access-planner-v1", count: 1 }],
+          validators: [{ version: "generic-content-v1", count: 1 }],
+        },
+        cache: { live: 1 },
+      });
+      expect(JSON.stringify(stableMcpStats)).not.toContain(site.seedUrl);
     } finally {
       await process?.close().catch(() => undefined);
       await site.close();

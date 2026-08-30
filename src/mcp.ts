@@ -31,9 +31,10 @@ const browserReadinessInput = z.object({
 
 const readPageInput = z.object({
   url: z.url().describe("Public http or https URL to read."),
-  browserAllowed: z.boolean().default(true),
-  cacheMode: z.enum(cacheModes).default("prefer-cache"),
-  maxAgeSeconds: z.int().positive().max(604_800).default(900),
+  browserAllowed: z.boolean().optional(),
+  cacheMode: z.enum(cacheModes).optional(),
+  maxAgeSeconds: z.int().positive().optional(),
+  staleWhileRevalidateSeconds: z.int().nonnegative().optional(),
   authProfile: z
     .string()
     .regex(/^[A-Za-z0-9._-]{1,64}$/)
@@ -53,7 +54,7 @@ const siteScopeInput = {
 
 const mapSiteInput = z.object({
   url: z.url().describe("Public site URL to start mapping."),
-  browserAllowed: z.boolean().default(true),
+  browserAllowed: z.boolean().optional(),
   authProfile: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).optional(),
   ...siteScopeInput,
   maxPages: siteScopeInput.maxPages.max(500).default(50),
@@ -96,6 +97,7 @@ const crawlJobInput = z.object({
 const crawlPagesInput = crawlJobInput.extend({
   afterSequence: z.int().min(0).default(0),
   limit: z.int().min(1).max(1_000).default(100),
+  waitMs: z.int().min(0).max(30_000).default(0),
 });
 
 const crawlerStatsInput = z.object({
@@ -137,14 +139,14 @@ function errorResult(error: unknown): CallToolResult {
 }
 
 function toReadOptions(args: z.infer<typeof readPageInput>): ReadPageOptions {
-  const common = {
-    url: args.url,
-    browserAllowed: args.browserAllowed,
-    cacheMode: args.cacheMode,
-    maxAgeSeconds: args.maxAgeSeconds,
-  };
   return {
-    ...common,
+    url: args.url,
+    ...(args.browserAllowed === undefined ? {} : { browserAllowed: args.browserAllowed }),
+    ...(args.cacheMode === undefined ? {} : { cacheMode: args.cacheMode }),
+    ...(args.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: args.maxAgeSeconds }),
+    ...(args.staleWhileRevalidateSeconds === undefined
+      ? {}
+      : { staleWhileRevalidateSeconds: args.staleWhileRevalidateSeconds }),
     ...(args.authProfile === undefined ? {} : { authProfile: args.authProfile }),
     ...(args.browserReadiness === undefined
       ? {}
@@ -155,7 +157,7 @@ function toReadOptions(args: z.infer<typeof readPageInput>): ReadPageOptions {
 function toMapOptions(args: z.infer<typeof mapSiteInput>): MapSiteOptions {
   return {
     url: args.url,
-    browserAllowed: args.browserAllowed,
+    ...(args.browserAllowed === undefined ? {} : { browserAllowed: args.browserAllowed }),
     maxPages: args.maxPages,
     maxDepth: args.maxDepth,
     includeSubdomains: args.includeSubdomains,
@@ -406,9 +408,12 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
       inputSchema: crawlPagesInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async ({ jobId, afterSequence, limit }): Promise<CallToolResult> => {
+    async ({ jobId, afterSequence, limit, waitMs }, context): Promise<CallToolResult> => {
       try {
-        return successResult({ ...app.jobs.pages(jobId, afterSequence, limit) });
+        const batch = waitMs === 0
+          ? app.jobs.pages(jobId, afterSequence, limit)
+          : await app.jobs.waitForPages(jobId, afterSequence, limit, waitMs, context.mcpReq.signal);
+        return successResult({ ...batch });
       } catch (error) {
         return errorResult(error);
       }
@@ -492,7 +497,7 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     {
       title: "Get crawler statistics",
       description:
-        "Return privacy-preserving daily success, failure, cache, method, byte, retry, and duration aggregates.",
+        "Return privacy-preserving final-state, version, stage, resource, cache, crawl-coverage, and daily aggregates.",
       inputSchema: crawlerStatsInput,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },

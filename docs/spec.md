@@ -1,4 +1,4 @@
-# Diaoyan Crawler v0.9.1
+# Diaoyan Crawler v0.10.4
 
 ## 目标
 
@@ -32,13 +32,15 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 输入：
 
 - `url`: 必填，`http` 或 `https` URL。
-- `mode`: `auto`、`http` 或 `browser`，默认 `auto`。
+- `browserAllowed`: 是否允许 Planner 使用浏览器，默认 `true`；`false` 时 Browser 预算固定为 0。
 - `cacheMode`: `prefer-cache`、`live` 或 `cache-only`，默认 `prefer-cache`。
 - `maxAgeSeconds`: 可接受的缓存年龄，默认 900 秒。
+- `staleWhileRevalidateSeconds`: 可选的显式陈旧复用窗口；返回结果必须标记 `stale`，后台刷新失败
+  由运行时 drain/close 明确暴露。
 - `authProfile`: 可选的专用浏览器 Profile 名称。
 - `browserReadiness`: 可选的显式浏览器终态策略。必须包含 1–512 字符的 CSS `target.selector`；
   可指定 `attached|visible`、最小匹配数、100–120000ms 超时，以及最多 100 步的有界
-  `scroll-to-end` 交互。显式 HTTP 模式不接受该参数。
+  `scroll-to-end` 交互。`browserAllowed=false` 时不接受该参数。
 
 成功返回：
 
@@ -46,8 +48,8 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 - 标题、作者、发布时间、Markdown 正文。
 - HTTP 状态、Content-Type、响应字节数、正文字符数和 SHA-256。
 - 提取方法和缓存命中状态。
-- `validation.status`：`usable` 或 `uncertain`。
-- `validation.warnings`：稳定 warning code 与可读说明。
+- `completeness`：`complete` 或 `uncertain`。
+- `validation.outcome`：`valid` 或 `uncertain`；`validatorVersion` 与逐项 `checks` 必须随结果返回。
 - Browser 结果包含 `browserReadiness.policy/reason/waitedMs`；目标策略额外返回匹配数、交互类型和
   已执行步数。
 
@@ -73,7 +75,8 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 
 - `start_crawl`：立即返回 UUID；支持 1–32 并发、最高 10,000 页和 Crawl 累计硬预算。
 - `get_crawl`：返回 `queued`、`running`、`paused`、`completed`、`failed` 或 `cancelled`，以及页级 progress、累计 usage、预算和错误。
-- `get_crawl_pages`：按不可变 publication sequence 分页读取页面终态，cursor 可安全重放。
+- `get_crawl_pages`：按不可变 publication sequence 分页读取页面终态，cursor 可安全重放；可选
+  `waitMs=0..30000` 有界等待新 publication、Job 终局、超时或请求取消。
 - `pause_crawl` / `resume_crawl`：暂停领取新页面或从 SQLite Frontier 继续。
 - `cancel_crawl`：中断活动请求，并把未领取页面发布为明确的 `stopped` 终态。
 
@@ -84,8 +87,9 @@ Worker 使用 lease heartbeat 与 owner/generation fencing；进程中断后只�
 
 ### `get_crawler_stats`
 
-返回最近 1-90 个 UTC 自然日的内容读取聚合，默认 7 日。包括请求、成功、失败、成功率、缓存
-命中、实时读取方式、响应字节、正文字符、读取尝试、重试等待、墙钟耗时、失败错误码和逐日数据。
+返回最近 1-90 个 UTC 自然日的内容读取聚合，默认 7 日。除请求、成功、失败、缓存、方法、字节、
+重试和耗时外，还返回最终状态、Planner/Provider/Extractor/Validator 版本、Stage/transition、六维
+资源向量和耐久 Crawl publication coverage。
 
 统计不保存 URL、hostname、标题、正文、搜索词、代理地址或授权 Profile。缓存命中的响应字节、
 尝试和重试等待按 0 计，避免重复计算已经发生过的上游成本；无请求时成功率和缓存命中率返回
@@ -93,7 +97,7 @@ Worker 使用 lease heartbeat 与 owner/generation fencing；进程中断后只�
 
 ### 页面变化 Monitor
 
-- `start_monitor`：持久化单 URL、读取模式、可选授权 Profile 和 60-604800 秒间隔，立即调度。
+- `start_monitor`：持久化单 URL、`browserAllowed`、可选授权 Profile 和 60-604800 秒间隔，立即调度。
 - `get_monitor`：返回状态、下次运行、成功基线 Hash、计数和最后运行。
 - `list_monitors`：返回最近创建的监控，默认 20、最大 100。
 - `cancel_monitor`：永久停止监控；运行中任务收到协作式取消信号。
@@ -108,16 +112,37 @@ Worker 使用 lease heartbeat 与 owner/generation fencing；进程中断后只�
 
 ## 读取策略
 
-`auto` 首先执行 HTTP 读取：
+默认 Planner 首先尝试版本化缓存和 HTTP：
 
 1. 401、402、403、429 和 5xx 必须原样失败，不切换 UA，不静默换提供商。
 2. HTTP 200 但检测为 JavaScript 壳或正文不完整时，允许切换到真实浏览器渲染。
 3. 浏览器渲染后仍不完整时返回明确错误。
 4. 指定 `authProfile` 时直接使用浏览器路径。
-5. 指定 `browserReadiness` 时，`auto` 直接使用浏览器并等待明确终态；不得先返回绕过 DOM 条件的
+5. 指定 `browserReadiness` 时直接使用浏览器并等待明确终态；不得先返回绕过 DOM 条件的
    HTTP 正文。
 
-`http` 和 `browser` 只使用指定路径，不自动切换。
+`browserAllowed=false` 明确禁止 Browser Stage；`authProfile` 或显式 DOM completion 要求 Browser。
+公开 CLI/MCP 不保留 `auto|http|browser` mode 兼容层。
+
+## 可靠性运行时
+
+- CLI、MCP 和 Reader 通过同一个 `ReadIntent` 归一化边界产生内容寻址 Plan；相同输入得到相同默认值、
+  错误和 Plan ID。
+- Provider Registry 使用统一 `StageResult` 执行 Cache、HTTP、Browser、Feed 和 PDF；Adapter Provider
+  默认明确 unavailable，未知 Provider 不得误路由 Browser。
+- Extractor Registry 可在同一 raw response 上确定性尝试 JSON、JSON-LD、RSS、Atom、Sitemap、PDF、
+  Readability、Clean Document 和 Plain，不因换 Extractor 重新下载。
+- 版本化 Validator 独占 `valid/uncertain/invalid` 判定；Provider 和 Extractor 只能产生候选。
+- Raw object 与 Artifact 都内容寻址且不可变；共享 Artifact key 绑定 Intent、授权/许可上下文和
+  Extractor/Validator 版本。授权 Profile 或受限 RSL 内容不得进入共享 Store/Index。
+- 条件请求支持 ETag/Last-Modified/304；同计划并发读取 singleflight；SWR 只在调用方显式请求时启用。
+- Attempt Ledger 追加每次 Provider Stage，并原子提交 request terminal/publication；相同 requestId 在
+  重启后重放 Artifact 或原始 typed error，不重新抓取已提交结果。
+- Runtime ResourceGovernor 分开管理 HTTP、匿名 Browser 和授权 Session 容量，提供有界等待、取消、
+  origin 并发、429/503 cooldown、Circuit Breaker 和有界 AIMD；不引入分布式队列。
+- Browser 失败 Trace 只在失败时写本地有界摘要，清理 Cookie、Authorization、Profile 内容和敏感正文。
+- Site Adapter 只能由受信任代码显式注册，必须有版本化 Manifest/Schema/Case ID、合格 ROI 评估和
+  退役条件。当前默认 Registry 为空，没有具体站点 Adapter。
 
 Browser 默认使用正文指纹稳定窗口作为通用兜底。显式目标策略以 CSS selector 的 attached/visible
 状态和最小匹配数作为成功条件；`scroll-to-end` 只能在声明最大步数和单步等待后执行。目标在总超时
@@ -239,6 +264,11 @@ Webhook，也不把读取错误转换成“未变化”。
 - `SSRF_BLOCKED`
 - `ROBOTS_DISALLOWED`
 - `ROBOTS_UNAVAILABLE`
+- `RSL_INVALID`
+- `RSL_PROHIBITED`
+- `RSL_LICENSE_REQUIRED`
+- `RSL_PAYMENT_REQUIRED`
+- `RSL_CONFIRMATION_REQUIRED`
 - `AUTH_REQUIRED`
 - `PAYMENT_REQUIRED`
 - `ACCESS_DENIED`
@@ -255,6 +285,8 @@ Webhook，也不把读取错误转换成“未变化”。
 - `BROWSER_POOL_EXHAUSTED`
 - `PROFILE_NOT_FOUND`
 - `CACHE_MISS`
+- `BUDGET_EXHAUSTED`
+- `PROVIDER_UNAVAILABLE`
 - `SEARCH_PROVIDER_NOT_CONFIGURED`
 - `SEARCH_PROVIDER_ERROR`
 - `JOB_NOT_FOUND`
@@ -274,12 +306,13 @@ Webhook，也不把读取错误转换成“未变化”。
 - 限制重定向次数、响应体大小、请求时间和浏览器执行时间。
 - HTTP 路径不执行页面脚本；浏览器运行在专用 Profile 中。
 - Profile 和 SQLite 数据放在仓库外的数据目录；Profile 内容永不通过 MCP 返回。
-- 缓存只保存成功、完整的读取结果。
+- 共享缓存只保存可返回的公开匿名 Artifact；授权 Profile 和受限许可上下文不得进入共享缓存或索引。
 - 站点 Map/Crawl 默认同主机、串行、有界；不自动扩大到外域或子域。
 
 ## 内容完整性
 
-提取顺序：Mozilla Readability，失败后才使用清理过的 `body`。HTML 在转 Markdown 前移除脚本、样式、表单、嵌入对象和危险 URL。
+提取由确定性 Registry 按内容类型路由；HTML 可在同一 raw response 上比较 JSON-LD、Readability 与
+清理后的 Document 候选。HTML 转 Markdown 前移除脚本、样式、表单、嵌入对象和危险 URL。
 
 以下情况必须失败：
 
@@ -294,9 +327,9 @@ Webhook，也不把读取错误转换成“未变化”。
 
 验收层只复用提取阶段已有数据，不发起额外请求，不调用 LLM 或 Embedding，也不启动第二次浏览器读取。
 
-- 正常 Readability/纯文本结果返回 `usable`。
-- 通过完整性门槛但少于 500 个字符时返回 `uncertain` 和 `SHORT_CONTENT`。
-- Readability 不足并使用清理后的 document 兜底时返回 `uncertain` 和 `FALLBACK_EXTRACTION`。
+- 所有必需检查通过时返回 `validation.outcome=valid`。
+- 通过最低门槛但推荐长度或候选置信条件无法确认时返回 `validation.outcome=uncertain` 和对应 check。
+- Validator 判为 `invalid` 时不得包装成功；Planner 只按既定 Plan 升级或终止。
 - 挑战页、登录墙、付费墙、应用壳和不完整正文继续返回结构化错误，不进入成功验收结果。
 
 该状态只描述提取可信度，不评价来源权威性、事实真实性或与 Agent 任务的相关性。
@@ -319,7 +352,7 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
 - 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
 - 单元测试覆盖低成本验收状态与稳定 warning code。
-- MCP 客户端可以列出并调用十四个工具。
+- MCP 客户端可以列出并调用十八个工具。
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。
@@ -329,3 +362,5 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 页面 Monitor 可建立 Hash 基线、检测变化、失败后继续调度、取消并在服务重启后恢复。
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。
+- `pnpm bench -- --mode pr` 的 46 个受控 Case×5 次通过；Nightly 的 10 个未过期公开 Canary 由
+  `DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly` 在 Fake-IP 环境复现。

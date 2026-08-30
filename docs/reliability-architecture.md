@@ -1,12 +1,12 @@
 # Diaoyan 可靠性与成本优化架构
 
-状态：Architecture Foundation，Benchmark/Readiness、确定性 Planner 与 Reader/Map/Crawl Ledger/Stage Runtime 首版已实现
+状态：Approved and implemented（本地单机 Profile）；条件式集群、托管 Provider、模型和具体站点 Adapter 未启用
 最后更新：2026-08-30
 配套真值规范：[reliability-benchmark-spec.md](./reliability-benchmark-spec.md)
 
-选型说明：本文描述的是较早形成的候选组件设计。跨项目架构调研和四方案决策见
-[technology-selection-rfc.md](./technology-selection-rfc.md)；RFC 仍为 Proposed，批准后应以其决策为准
-统一本文，不能把两份目标文档同时当作已实现事实。
+选型说明：跨项目架构调研和四方案决策见 [technology-selection-rfc.md](./technology-selection-rfc.md)。
+本地模块化方案已经按 [architecture-completion-ledger.md](./architecture-completion-ledger.md) 落地；
+本文描述已实现的边界和仍需外部证据触发的扩展，具体公共行为以 [spec.md](./spec.md) 为准。
 
 ## Objective
 
@@ -27,17 +27,17 @@ subject to policy, authorization, freshness and resource budgets
 | Area | Evidence | Implication |
 | --- | --- | --- |
 | Entrypoints | `src/mcp.ts`、`src/cli/main.ts`、`src/server.ts` | CLI/MCP 已共享应用核心，继续保持公共合同薄层 |
-| Composition | `src/app.ts` 构造 HTTP、Browser、Cache、Job、Monitor、Metrics | 当前依赖组装清晰，适合渐进加入 Planner/Runtime，不需要先拆包 |
-| Access decision | `src/reliability/planner.ts` 生成内容寻址 Plan；`src/reader.ts` 按 Stage 执行；`read`、显式 `discovery`、`crawl` 共用该路径 | `fetchWithMode`、公开 `mode` 和 Site `shouldRender` 均已删除 |
-| Browser runtime | `src/runtime/readiness.ts` 与 `src/fetch/browser.ts` 已支持正文稳定兜底、目标 selector、attached/visible、预算化滚动、总预算硬超时和 readiness 证据 | 更多交互类型、站点 Adapter 策略和完整阶段 Trace 仍待实现 |
-| Extraction | `src/extract.ts` 使用 JSON/plain、Readability、Document fallback | 缺少 content-type/站点 Extractor Registry |
-| Validation | `src/validation.ts` 只检查字数和 fallback 方法 | 当前 `ok` 不能等同语义有效，需要独立 Validator Contract |
+| Composition | `src/app.ts` 构造共享 Intent、Provider Registry、Stage Executor、Governor、Store、Frontier、Monitor 和 Metrics | 单一 composition root，不在 import 时启动隐藏 Worker |
+| Access decision | `src/reliability/read-intent.ts` 与 `planner.ts` 生成内容寻址 Plan；Reader/Map/Crawl 共用 Stage Runtime | `fetchWithMode`、公开 `mode` 和 Site `shouldRender` 已删除 |
+| Browser runtime | `src/runtime/readiness.ts`、`src/fetch/browser.ts`、`src/browser-pool.ts` 和 `src/browser-trace.ts` | 目标/正文稳定、预算化滚动、生命周期回收和脱敏失败 Trace 已完成 |
+| Extraction | `src/extract.ts` 的确定性 Registry 支持 JSON、JSON-LD、RSS/Atom、Sitemap、PDF、Article、Document、Plain | 同 raw 多候选已完成；模型 Extractor 未启用 |
+| Validation | `src/validation.ts` 的版本化 Registry 独占 `valid/uncertain/invalid` 判定 | Provider/Extractor 不再把候选直接声明为成功 |
 | Crawl state | 同步 `src/site.ts` 保持有界串行；异步 Crawl 使用 SQLite 页级 Frontier、lease、fencing、并发 Worker 和 cursor publication | 单机首版已完成；多机权威 Frontier 尚未实现 |
-| Retry | `src/crawl-policy.ts` 接受每 Stage retry policy；异步 Frontier 持久化 origin interval、429 cooldown 和 Crawl 累计预算 | 固定间隔首版已完成；自适应并发和 Circuit Breaker 尚缺 |
-| Cache | `src/cache.ts` TTL SQLite cache | 缺少 revalidation、singleflight、版本化 Artifact key 和清理 |
-| Metrics | `src/metrics.ts` 记录请求、错误码、bytes、attempt、duration | 是良好起点，但缺少有效真值、阶段耗时、浏览器成本和 Planner 路径 |
-| Tests | 全库测试覆盖 Planner/Runtime/Site，并有 7 类真实受控 HTTP 故障、75-run 真实 Chromium Readiness Tournament 与 6-Case 公网 Corpus | 当前规模仍只证明实验级纵向切片，不代表生产流量证明 |
-| Repo state | 2026-08-28 `main` at `074ac92`，无仓库级 AGENTS/CLAUDE 指令 | 本 Spec 以当前主线为证据，不声称远端或未来实现状态 |
+| Retry/resources | `src/runtime/runtime-resource-governor.ts` + Frontier origin state + Stage retry | HTTP/Browser/Auth 分池、backpressure、429/503 cooldown、Circuit 和有界 AIMD 已完成 |
+| Cache/store | `src/cache.ts` 的 immutable raw/artifact CAS 与 cache projection | 304、singleflight、显式 SWR、TTL/容量清理和授权隔离已完成 |
+| Metrics | `src/metrics.ts` 投影最终状态、版本、Stage、transition、资源、Cache 与 Crawl coverage | 聚合不保存 URL、Profile、正文或 Trace 内容 |
+| Tests | 52 个文件、463 个测试；PR 230/230、Nightly 280/280 Truth 通过；Optimization Loop 有独立报告 | 达到 `canary-ready`，仍不代表私有 Release 或生产 rollout |
+| Adapter | `src/adapters.ts` 的受信 Manifest/Schema/ROI/retirement 合同 | 默认 Registry 为空；没有证据时不创建具体站点 Adapter |
 
 ## Reference Models Considered
 
@@ -87,33 +87,28 @@ TypeScript 暂无该 Skill 的语言专项参考，本设计直接应用上述�
 
 ## Boundary Map
 
-建议渐进目录，不要求一次性移动现有代码：
+当前实现位置：
 
 ```text
+src/types.ts             # Intent、Plan、Stage、Validation、Usage 合同
 src/reliability/
-  contracts.ts          # 纯类型和 invariant
-  planner.ts            # 纯 AccessPlan 决策
-  validation.ts         # Validator Registry 和组合规则
-  cost.ts               # ResourceUsage、CostModel
+  read-intent.ts         # CLI/MCP/Reader 共享归一化边界
+  planner.ts             # 纯 AccessPlan 决策
+
+src/extract.ts           # 确定性 Extractor Registry
+src/validation.ts        # Validator Registry 和组合规则
+src/cache.ts             # raw/artifact CAS 与 cache projection
+src/jobs.ts              # append-only Attempt 与 request terminal
+src/adapters.ts          # 受信 Site Adapter 与 ROI Gate
+src/browser-trace.ts     # 脱敏、有界失败 Trace
 
 src/runtime/
   executor.ts           # 按 plan 执行 stage
-  attempt-ledger.ts     # 事件追加与 projection
   frontier.ts           # 页级耐久队列
-  resource-governor.ts  # 全局与按 origin 的资源控制
+  providers.ts          # 统一 Provider Stage Registry
+  resource-governor.ts  # Crawl 累计硬预算
+  runtime-resource-governor.ts # HTTP/Browser/Auth 容量与反馈控制
   readiness.ts          # Browser readiness runtime
-
-src/providers/
-  cache.ts
-  http.ts
-  browser.ts
-  feed.ts
-  pdf.ts
-
-src/adapters/
-  registry.ts
-  generic-article.ts
-  ...                   # 后续经 Benchmark 证明价值后增加
 
 benchmarks/
   schema/
@@ -192,7 +187,8 @@ type StageResult = {
   stageId: string;
   outcome: "succeeded" | "failed" | "stopped" | "cancelled";
   rawRef: string | null;
-  candidateArtifact: CandidateArtifact | null;
+  traceRef: string | null;
+  candidateArtifactRef: string | null;
   error: TypedReadError | null;
   usage: ResourceUsage;
   startedAt: string;
@@ -241,11 +237,11 @@ accepted
 
 ```text
 1. versioned cache lookup
-2. matching adapter plan, when one exists
-3. feed/json/json-ld/pdf capability route
-4. HTTP fetch -> extract -> validate
+2. HTTP fetch -> registered site adapter when an eligible exact-host adapter exists
+3. otherwise route the same raw response through format/article/document extractors
+4. validate every candidate independently
 5. Browser fetch only when validation proves rendering/interaction is needed
-6. alternate extractor on the same raw response before refetch
+6. rerun adapter/extractors on the Browser raw response without duplicate fetches
 7. explicit uncertain/failure/policy stop
 ```
 
@@ -286,7 +282,7 @@ Attempt Ledger 必须记录每次尝试的 provider、stage、错误、等待、
 - 候选正文长度达到阈值。
 - 候选内容 Hash 在连续采样窗口稳定。
 - 已知关键请求完成，或达到允许的 network quiet 条件。
-- Deadline/Browser budget 到期时明确返回 `READINESS_TIMEOUT`。
+- Deadline/Browser budget 到期时明确返回 `FETCH_TIMEOUT`。
 
 Generic Policy 只用保守 DOM/正文稳定条件；目标 selector/字段断言来自 Intent 或 versioned Adapter。
 scroll/click 等 InteractionPolicy 必须显式声明 scope、终态和预算，Generic Policy 不主动交互。图片、
@@ -314,12 +310,10 @@ Content-Type Router
 
 同一 rawRef 可以运行多个廉价 Extractor，避免重复 Fetch。Adapter 必须声明：
 
-- `id`、`version`、匹配 host/path/content-type。
-- 支持的 operation 和输出 Schema。
-- 需要的 Provider/Readiness 能力。
-- 必需与禁止 Validation checks。
-- Fixture、Live Canary、错误 Case。
-- 退役和回退条件。
+- `id`、`version` 和精确 HTTPS host。
+- 显式 capability 与版本化输出 Schema。
+- Fixture、Live Canary、错误 Case 的稳定 ID。
+- 评估窗口、使用量/净收益门槛、官方结构化源和退役条件。
 
 LLM 只允许作为显式、预算化、可替换的可选 Extractor/Validator，默认不进入热路径；模型不可用时
 必须返回明确错误或使用已声明的确定性路径，禁止 silent degradation。
@@ -336,20 +330,23 @@ type FrontierRequest = {
   depth: number;
   discoveredFrom: string | null;
   priority: number;
-  state: "queued" | "leased" | "completed" | "failed" | "stopped";
+  state: "queued" | "leased" | "succeeded" | "failed" | "stopped";
   nextEligibleAt: string;
   leaseOwner: string | null;
   leaseExpiresAt: string | null;
 };
 ```
 
-ResourceGovernor 同时执行：
+Runtime ResourceGovernor 同时执行：
 
-- 全局 HTTP、Browser Context、内存、CPU、文件描述符和数据库写入预算。
+- HTTP、匿名 Browser Context 和授权 Session 分池；授权 Profile 保持串行。
 - 每 origin 并发、最小间隔、延迟反馈、429/503 暂停和 Circuit Breaker。
 - HTTP Queue 与 Browser Queue 分池，避免浏览器慢任务阻塞静态页面。
-- Backpressure：下游 Artifact/DB 写入变慢时停止领取新任务。
-- AIMD 式渐进扩容，错误率、p95 或内存恶化时快速收缩。
+- 等待队列固定有界且可取消；同步 Artifact/SQLite 阶段通过事件循环对 intake 形成 backpressure。
+- AIMD 式渐进扩容，retryable failure 或延迟恶化时快速收缩。
+
+它不采集 CPU、RSS、文件描述符或系统负载，也不声称跨进程协调；Crawl 累计硬预算由
+`src/runtime/resource-governor.ts` 单独负责。
 
 P0 仍是单进程 SQLite Worker；先把页级状态和租约做正确，再考虑多进程。多租户、组织和分布式
 消息系统不是可靠性核心，也不进入本架构 P0/P1。
@@ -359,22 +356,22 @@ P0 仍是单进程 SQLite Worker；先把页级状态和租约做正确，再考
 Artifact cache key 至少包含：规范化 URL、ReadIntent 输出、授权范围、Adapter/Extractor/Validator
 版本和许可上下文 Hash。
 
-逐步加入：
+已实现：
 
 - ETag/Last-Modified 条件请求。
 - 同 key in-flight singleflight。
 - Stale-while-revalidate，但陈旧结果必须显式标记。
 - raw response 与 validated artifact 分离，允许复用 rawRef 重跑新 Extractor。
-- 容量、TTL、LRU/清理和 schema migration。
+- 容量、TTL 与无引用 raw/artifact 清理；不保留旧 Schema 兼容迁移。
 - 授权内容默认不进入共享 cache 或索引。
 
 ## Observability And Optimization Loop
 
-每次请求生成一个 trace ID，Stage Event 至少记录：
+每次请求生成 requestId 并追加 Stage Attempt；只有 Browser 失败才生成不可猜测的本地 `traceRef`。聚合至少记录：
 
 - Planner/Provider/Adapter/Extractor/Validator 版本。
-- Queue wait、HTTP、Browser、Extraction、Validation 分阶段耗时。
-- 网络字节、Browser ms、Context 启动、CPU、峰值内存和重试。
+- Provider、Extraction、Validation 与端到端阶段耗时。
+- 主文档字节、请求输出字节、Browser ms、Context 启动、模型 token 和重试等待。
 - 每次 Provider transition 的原因。
 - 最终 `valid/uncertain/invalid/failed/policy_stop`。
 - Cache hit/revalidation 和 Crawl coverage/duplicate。
@@ -391,14 +388,14 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 
 | Contract | Current source of truth | Consumers | Duplicate/fork | Action |
 | --- | --- | --- | --- | --- |
-| Public MCP/CLI input | `src/mcp.ts`、`src/cli/main.ts` | Agent、CLI | 已删除旧 `mode`；两层仍各自映射 browserAllowed/cache/freshness | 下一步引入共享 ReadIntent parser |
+| Public MCP/CLI input | `src/mcp.ts`、`src/cli/main.ts` + `src/reliability/read-intent.ts` | Agent、CLI、Reader | 传输 Schema 独立，语义归一化唯一 | 保持入口薄层 |
 | Access policy | `src/reliability/planner.ts` | Reader、Site | 无第二套 Site heuristic | 保持 Site 只提交 Intent |
-| Content gate detection | `src/extract.ts` | Reader/Stage Executor | 无 Site shell heuristic | 后续收敛到 Validator Registry evidence |
-| Request retry | Planner Stage policy + `src/crawl-policy.ts` + persisted origin state | Reader、Site、Frontier Worker | 每页与异步任务累计预算已统一；自适应调度未接入 | 以 Benchmark 触发自适应策略 |
+| Content gate detection | `src/validation.ts` | Stage Executor | Extractor 只产候选 | 保持版本化 checks |
+| Request retry/resources | Planner Stage policy + `src/crawl-policy.ts` + Runtime Governor + persisted origin state | Reader、Site、Frontier Worker | 单机容量与持久 origin 时序分工明确 | 多机才引入外部协调 |
 | Crawl state | `src/frontier-store.ts` + `src/runtime/frontier.ts` | MCP Job | 页级 Frontier 是规范源，Job 为 projection | 多机时迁移 PostgreSQL lease |
-| Cache | `src/cache.ts` | Reader/Index | raw/artifact 未分离 | 版本化 Artifact Store + rawRef |
-| Runtime metrics | `src/metrics.ts` | CLI/MCP stats | Benchmark truth 不存在 | 运行遥测与 Benchmark truth 分库/分合同 |
-| Architecture docs | 本文与 Benchmark Spec | Roadmap/实现任务 | `docs/spec.md` 是现状合同 | `spec.md` 继续描述已实现；本文描述目标架构 |
+| Cache | `src/cache.ts` | Reader/Index | raw/artifact 与 projection 已分离 | 保持授权/许可隔离 |
+| Runtime metrics | `src/metrics.ts` | CLI/MCP stats | Benchmark truth 保持独立合同 | 不把生产 Validator 当最终真值 |
+| Architecture docs | `spec.md`、本文、Benchmark Spec、完成账本 | 用户/维护者 | 历史 handoff 不作为当前事实 | 每个目标验证后同步 |
 
 ## Boundary Contracts
 
@@ -421,9 +418,9 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 | `mode=auto/http/browser` | 旧 CLI/MCP 公共合同 | Reader Facade | 已删除 | 完成；使用 `browserAllowed`、completion 和 budget |
 | `ReaderService.fetchWithMode` | 旧 auto policy | Reliability migration | 已删除 | 完成；single-page 委托 Planner Stage |
 | `SiteService.shouldRender` | Map 独立 fallback | Site migration | 已删除 | 完成；Map 使用 `completion=discovery` |
-| `CrawlRequestPolicy.execute` | 当前 operation retry | Runtime migration | Stage retry 覆盖现有 Case | 收敛为 Origin Governor + Stage Retry |
+| `CrawlRequestPolicy.execute` | 对 retryable 错误提供公开时序策略 | Runtime | 保留 | Governor 负责容量，Policy 负责每 Stage retry 时序 |
 | Job 级 `running -> queued` 恢复 | 已删除 | Frontier migration | 页级 lease/replay 与真实 SIGKILL 测试已通过 | 完成；仅回收过期 page lease |
-| 原 PageCache JSON blob | 当前 TTL cache | Store migration | versioned Artifact Store 可迁移读取 | 迁移完成且旧行 TTL 到期 |
+| 原 PageCache JSON blob | 已由 raw/artifact CAS 替代 | Store | 已删除 | 旧 Schema 明确不兼容，不增加迁移垫片 |
 
 ## Validation Matrix
 
@@ -431,39 +428,39 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 | --- | --- | --- |
 | Core unit | Planner、预算、状态转换确定性 | `pnpm test -- tests/reliability-planner.test.ts tests/attempt-ledger.test.ts` |
 | Provider contract | 相同错误/取消/usage 合同 | `pnpm test -- tests/provider-contract.test.ts` |
-| Extractor/Validator | 同 rawRef 多策略、真值独立 | `pnpm test -- tests/extractor-registry.test.ts tests/validator-registry.test.ts` |
+| Extractor/Validator | 同 rawRef 多策略、真值独立 | `pnpm test -- tests/extractor-registry.test.ts tests/validation.test.ts` |
 | Runtime integration | fallback、Stage retry、singleflight、budget | `pnpm test -- tests/reliability-runtime.test.ts` |
-| Browser headless | adaptive readiness、回收、Trace redaction | `pnpm test -- tests/browser-readiness.test.ts` |
-| Crawl recovery | lease、中断、去重、backpressure | `pnpm test -- tests/frontier.test.ts tests/crawl-recovery.test.ts` |
-| Benchmark | Valid/Invalid/Cost 可重复 | `pnpm bench --mode pr` |
+| Browser headless | adaptive readiness、回收、Trace redaction | `pnpm test -- tests/browser-readiness.test.ts tests/browser-pool.test.ts tests/browser-trace.test.ts` |
+| Crawl recovery | lease、中断、去重、backpressure | `pnpm test -- tests/frontier-store.test.ts tests/e2e/crawl-recovery.e2e.test.ts tests/e2e/crawl-scale.e2e.test.ts` |
+| Benchmark | Valid/Invalid/Cost 可重复 | `pnpm bench -- --mode pr` |
 | Breaking API | CLI/MCP/Reader 新合同一致且旧 `mode` 不再存在 | `pnpm check && pnpm test` |
 
-## P0/P1/P2 Roadmap
+## P0/P1/P2 Completion
 
 | Priority | Work | Files/modules | Done when | Verification |
 | --- | --- | --- | --- | --- |
-| P0 | Benchmark Schema、Truth Evaluator、Controlled Site | `benchmarks/` | 产生首个可复现 baseline | `pnpm bench --mode pr` |
+| P0 | Benchmark Schema、Truth Evaluator、Controlled Site（完成） | `benchmarks/` | 46 个受控 Case×5 | `pnpm bench -- --mode pr` |
 | P0 | Reliability contracts 与 Attempt Ledger（Reader/Map/Crawl 首版已完成） | `src/types.ts`、`src/jobs.ts`、`src/app.ts`、`src/reader.ts` | Provider 调用与 Ledger attempt 一一对应 | `pnpm test -- tests/attempt-ledger.test.ts tests/reliability-runtime.test.ts tests/site.test.ts` |
 | P0 | Deterministic Access Planner（Reader/Map/Crawl 已完成） | `src/reliability/planner.ts` | Plan 内容寻址、可解释，content/discovery/DOM/Auth/预算路径确定 | `pnpm test -- tests/reliability-planner.test.ts` |
 | P1 | Stage Executor 与细粒度重试（每页首版已完成） | `src/runtime/executor.ts` | 不重复成功 Stage；deadline、attempt、主文档字节和 Browser 预算显式失败 | `pnpm test -- tests/reliability-runtime.test.ts tests/site.test.ts` |
 | P1 | Composable Browser Readiness（首版已完成） | `src/runtime/readiness.ts`、Browser Provider、公开 Read Intent | Intent/Adapter 目标条件优先，Generic 稳定兜底，滚动有预算 | `pnpm test -- tests/browser-readiness.test.ts tests/readiness-tournament.test.ts && pnpm bench:readiness` |
-| P1 | Extractor/Validator Registry | `src/reliability/validation.ts`、`src/adapters/` | JSON/Feed/Article 等合同独立可测 | registry contract tests + Benchmark |
-| P1 | Artifact Store revalidation/singleflight | Cache/Store adapters | 相同请求合并，304 正确复用，版本升级可重抽取 | cache/revalidation tests |
-| P2 | Durable Frontier 与 ResourceGovernor | `src/runtime/frontier.ts`、`resource-governor.ts` | 页级恢复、按 origin 调节、HTTP/Browser 分池 | frontier/recovery/load tests |
-| P2 | Shadow 与策略发布闭环 | Benchmark + policy artifacts | 策略有版本、对照、审批和回滚 | shadow redaction + comparison tests |
-| P2 | 第一批站点 Adapter | `src/adapters/<site>/` | 每个 Adapter 有 schema、fixtures、canary、退役规则 | adapter contract + release Benchmark |
+| P1 | Extractor/Validator Registry（完成） | `src/extract.ts`、`src/validation.ts` | 确定性多候选与三态验证 | registry contracts + Benchmark |
+| P1 | Artifact Store revalidation/singleflight（完成） | `src/cache.ts` | 相同请求合并、304、SWR、版本隔离 | `tests/cache-reuse.test.ts`、`tests/storage.test.ts` |
+| P2 | Durable Frontier 与 ResourceGovernor（完成本地 Profile） | `src/runtime/frontier.ts`、两个 governor | 恢复、按 origin 调节、HTTP/Browser/Auth 分池 | recovery/load tests |
+| P2 | Shadow 与策略发布闭环（完成离线 Profile） | `benchmarks/optimization/` | 策略有版本、对照、审批和回滚 | `pnpm bench:optimize` |
+| P2 | Site Adapter 合同与 ROI Gate（完成；无具体站点） | `src/adapters.ts` | 只有合格配对证据才能注册 | `tests/adapter-contract.test.ts` |
 
 ## Exploration Program
 
 按假设运行实验，不按“功能看起来不错”实施：
 
-1. HTTP/Browse Shadow：测 Browser 的真实 Uplift 和误升级成本。
-2. Readiness A/B：固定等待对比正文稳定/目标 selector，观察 Valid Latency 与 False Success。
-3. Retry Counterfactual：记录若不重试的结果，估算每类错误的 Recovery/Waste。
-4. Extractor Tournament：同 rawRef 运行 Readability、Document、结构化 Extractor，独立 Truth 比较。
+1. HTTP/Browser Shadow：已在匿名受控 Case 离线运行，不采样生产流量。
+2. Readiness A/B：已复用 5 Case×3 策略×5 次真实 Chrome Tournament。
+3. Retry Counterfactual：已从 Nightly append-only Attempt 离线比较 no-retry/one-retry/current。
+4. Extractor Tournament：已在同 rawRef 比较 Article/Document 独立 Truth。
 5. Concurrency Sweep：在同 Corpus 上逐级提高全局/每 origin 并发，寻找成本和 p95 拐点。
 6. Cache Revalidation：比较 full fetch、conditional fetch、stale-while-revalidate 的新鲜度与成本。
-7. Adapter ROI：只有当某类页面失败量和付费价值同时足够，才建立专用 Adapter。
+7. Adapter ROI：Gate 已实现；当前没有满足条件的具体站点。
 8. Optional Model Gate：仅对 uncertain 样本调用模型，比较有效提升和 token 成本。
 
 每个实验必须预先写假设、主要指标、护栏指标、停止条件和结果；记录位置见
@@ -480,13 +477,13 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 
 ## Open Questions
 
-- 首个 Corpus 的付费场景和类别权重由哪些真实用户任务决定？
 - `uncertain` 是否默认返回正文，还是要求调用方显式允许？
-- raw response 的保留时间和隐私边界是什么？
 - 首批结构化 Adapter 选择 X、文档站、商品列表还是另一垂直？
-- 线上 Shadow 的最大采样率和 Browser 成本预算是多少？
+- 私有 Release Corpus、真实工作负载权重和生产 rollout 由谁提供与审核？
 
 ## Readiness
 
-本架构规范已经足够按依赖顺序启动 P0：先 Benchmark，再 Contracts/Ledger，再 Planner。它没有声明
-任何新模块已经实现，也没有声明 Diaoyan 已达到生产级可靠性、竞品等价或全网最高成功率。
+本地模块化 Profile 的合同、Ledger/Store、Provider/Extractor/Validator、Frontier/Governor、Metrics、
+Benchmark、离线 Optimization Loop 与 Adapter ROI Gate 已实现并有完成账本证据。当前机器 Gate 为
+`canary-ready`；私有 Release、生产 rollout、竞品对照、具体站点 Adapter、远程 Provider、集群和模型
+能力没有证据或未触发，不能描述为生产级可靠性、竞品等价或全网最高成功率。

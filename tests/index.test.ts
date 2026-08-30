@@ -26,7 +26,7 @@ function artifact(overrides: Partial<PageReadArtifact> = {}): PageReadArtifact {
     contentMarkdown: "MiniMax H3 includes practical inference optimization techniques.",
     contentHash: "hash-one",
     completeness: "complete",
-    validation: { status: "usable", warnings: [] },
+    validation: { outcome: "valid", validatorVersion: "generic-content-v1", checks: [], terminalError: null },
     discoveredLinks: [],
     evidence: {
       httpStatus: 200,
@@ -34,6 +34,8 @@ function artifact(overrides: Partial<PageReadArtifact> = {}): PageReadArtifact {
       responseBytes: 100,
       contentCharacters: 70,
       extractionMethod: "readability",
+      extractorVersion: "readability-v1",
+      validatorVersion: "generic-content-v1",
       requestId: "request-test",
       accessPlan: {
         planId: `plan_${"a".repeat(64)}`,

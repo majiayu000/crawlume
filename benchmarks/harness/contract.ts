@@ -161,6 +161,7 @@ export const benchmarkCaseSchema = z.object({
     authProfile: z.string().min(1).nullable(),
     maxAttempts: z.int().positive(),
     maxDurationMs: z.int().positive(),
+    maxDocumentBytes: z.int().positive(),
     maxBrowserMs: z.int().nonnegative(),
   }).strict(),
   truth: z.object({
@@ -249,6 +250,26 @@ const usageSchema = z.object({
   optionalModelTokens: z.int().nonnegative(),
 }).strict();
 
+const terminalSchema = z.object({
+  requestId: z.string().min(1),
+  planId: z.string().regex(/^plan_[a-f0-9]{64}$/u),
+  state: z.enum([
+    "completed", "completed_uncertain", "invalid", "failed", "policy_stop",
+    "budget_exhausted", "cancelled",
+  ]),
+  artifactKey: z.string().min(1).nullable(),
+  contentHash: z.string().min(1).nullable(),
+  validatorVersion: z.string().min(1).nullable(),
+  error: z.object({
+    code: z.enum(errorCodes),
+    message: z.string().min(1),
+    retryable: z.boolean(),
+    details: z.record(z.string(), z.union([z.boolean(), z.number(), z.string(), z.null()])),
+  }).strict().nullable(),
+  publicationKey: z.string().min(1).nullable(),
+  committedAt: z.iso.datetime({ offset: true }),
+}).strict();
+
 const provenanceSchema = z.object({
   schemaVersion: z.literal(1),
   requestId: z.string().min(1),
@@ -283,6 +304,7 @@ const provenanceSchema = z.object({
     lastOutcome: z.enum(["succeeded", "failed", "stopped", "cancelled"]),
     lastStageId: z.string().min(1),
     usage: usageSchema,
+    terminal: terminalSchema.nullable(),
   }).strict(),
 }).strict().superRefine((value, context) => {
   const planned = new Map(value.plan.plannedStages.map((stage) => [stage.stageId, stage]));
@@ -335,7 +357,7 @@ const benchmarkArtifactSchema = z.object({
   discoveredUrls: z.array(httpUrl),
   evidence: z.object({
     httpStatus: z.int().min(100).max(599),
-    contentType: z.string().min(1),
+    contentType: z.string(),
     responseBytes: z.int().nonnegative(),
     attempts: z.int().positive(),
     retryAttempts: z.int().nonnegative(),
@@ -393,6 +415,10 @@ const benchmarkCandidateSchema = z.discriminatedUnion("outcome", [
   }
 });
 
+export function parseBenchmarkCandidate(value: unknown): BenchmarkCandidate {
+  return benchmarkCandidateSchema.parse(value);
+}
+
 export function executionProvenanceFromLedger(
   requestId: string,
   accessPlan: AccessPlanEvidence,
@@ -433,6 +459,7 @@ export function executionProvenanceFromLedger(
       lastOutcome: projection.lastOutcome,
       lastStageId: projection.lastStageId,
       usage: projection.usage,
+      terminal: projection.terminal,
     },
   });
 }

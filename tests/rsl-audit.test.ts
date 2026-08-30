@@ -27,13 +27,15 @@ function result(overrides: Partial<ReadPageResult> = {}): ReadPageResult {
     contentMarkdown: "Sensitive page body that must not enter the audit.",
     contentHash: "content-hash",
     completeness: "complete",
-    validation: { status: "usable", warnings: [] },
+    validation: { outcome: "valid", validatorVersion: "generic-content-v1", checks: [], terminalError: null },
     evidence: {
       httpStatus: 200,
       contentType: "text/html",
       responseBytes: 1_000,
       contentCharacters: 800,
       extractionMethod: "readability",
+      extractorVersion: "readability-v1",
+      validatorVersion: "generic-content-v1",
       requestId: "request-test",
       accessPlan: {
         planId: `plan_${"a".repeat(64)}`,

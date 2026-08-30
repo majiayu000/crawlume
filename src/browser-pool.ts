@@ -15,11 +15,15 @@ type PoolEntry = {
   key: string;
   launch: Promise<Browser>;
   activeContexts: number;
+  contextStarts: number;
+  retiring: boolean;
 };
+
+const maxContextStartsPerBrowser = 100;
 
 export type BrowserLease = {
   browser: Browser;
-  release(): Promise<void>;
+  release(healthy?: boolean): Promise<void>;
 };
 
 export class BrowserPool {
@@ -46,10 +50,13 @@ export class BrowserPool {
       const reusable = this.entries.find(
         (entry) =>
           entry.key === key &&
+          !entry.retiring &&
+          entry.contextStarts < maxContextStartsPerBrowser &&
           entry.activeContexts < this.config.browserContextsPerInstance,
       );
       if (reusable !== undefined) {
         reusable.activeContexts += 1;
+        reusable.contextStarts += 1;
         return this.resolveLease(reusable);
       }
 
@@ -58,6 +65,8 @@ export class BrowserPool {
           key,
           launch: this.launcher(proxy),
           activeContexts: 1,
+          contextStarts: 1,
+          retiring: false,
         };
         this.entries.push(entry);
         return this.resolveLease(entry);
@@ -113,14 +122,18 @@ export class BrowserPool {
     let released = false;
     return {
       browser,
-      release: async (): Promise<void> => {
+      release: async (healthy = true): Promise<void> => {
         if (released) {
           return;
         }
         released = true;
         entry.activeContexts = Math.max(0, entry.activeContexts - 1);
-        if (!browser.isConnected()) {
+        if (!healthy || !browser.isConnected() || entry.contextStarts >= maxContextStartsPerBrowser) {
+          entry.retiring = true;
+        }
+        if (entry.retiring && entry.activeContexts === 0) {
           this.removeEntry(entry);
+          if (browser.isConnected()) await browser.close();
         }
         this.notifyWaiters();
       },

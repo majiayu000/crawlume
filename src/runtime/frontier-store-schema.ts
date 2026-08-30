@@ -252,34 +252,6 @@ const crawlJobsSchema = `
   CREATE INDEX IF NOT EXISTS crawl_jobs_queue ON crawl_jobs(status, created_at_ms);
 `;
 
-function migrateLegacyJobs(database: DatabaseSync, now: number): void {
-  const unsupported = JSON.stringify({
-    code: "UNSUPPORTED",
-    message: "Legacy active crawl jobs cannot be resumed without a page frontier.",
-  });
-  database.exec(`
-    ALTER TABLE crawl_jobs RENAME TO crawl_jobs_legacy_frontier;
-    DROP INDEX IF EXISTS crawl_jobs_queue;
-  `);
-  database.exec(crawlJobsSchema);
-  database.prepare(`
-    INSERT INTO crawl_jobs(
-      id, schema_version, status, input_json, created_at_ms, started_at_ms,
-      completed_at_ms, result_json, error_json, max_pages, budget_json, usage_json,
-      reserved_usage_json, cancel_requested
-    )
-    SELECT id, 1,
-      CASE WHEN status IN ('queued','running') THEN 'failed' ELSE status END,
-      input_json, created_at_ms, started_at_ms,
-      CASE WHEN status IN ('queued','running') THEN ? ELSE completed_at_ms END,
-      result_json,
-      CASE WHEN status IN ('queued','running') THEN ? ELSE error_json END,
-      1, '{}', ?, ?, cancel_requested
-    FROM crawl_jobs_legacy_frontier
-  `).run(now, unsupported, emptyUsageJson, emptyUsageJson);
-  database.exec("DROP TABLE crawl_jobs_legacy_frontier");
-}
-
 export function migrateFrontierSchema(database: DatabaseSync, now: () => number): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS frontier_schema_migrations (
@@ -297,7 +269,10 @@ export function migrateFrontierSchema(database: DatabaseSync, now: () => number)
       const columns = database.prepare("PRAGMA table_info(crawl_jobs)").all() as unknown as
         Array<{ name: string }>;
       if (columns.length > 0 && !columns.some((column) => column.name === "schema_version")) {
-        migrateLegacyJobs(database, now());
+        throw new ReadError(
+          "INTERNAL_ERROR",
+          "Legacy crawl_jobs schema is unsupported; start with a fresh data directory.",
+        );
       } else {
         database.exec(crawlJobsSchema);
       }

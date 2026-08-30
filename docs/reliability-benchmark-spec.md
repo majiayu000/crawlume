@@ -1,7 +1,7 @@
 # Diaoyan Reliability Benchmark 规范
 
-状态：Architecture Spec；HTTP baseline、首个 Browser canary 与 Readiness Tournament 已实现，完整内容/Provider baseline 待实现
-最后更新：2026-08-28
+状态：Implemented for controlled PR、public Nightly、paired Release compare and offline optimization；缺私有 Release/生产 rollout 证据
+最后更新：2026-08-30
 
 ## 目标
 
@@ -305,7 +305,8 @@ scraping sandbox 才允许分页/发现测试。Live truth 30 天复核，sandbo
 
 ## Case Manifest
 
-建议规范源为 `benchmarks/cases/*.json`，Schema 为 `benchmarks/schema/case.schema.json`：
+规范源为 `benchmarks/cases/*.json`，可执行 Schema 为
+`benchmarks/harness/contract.ts` 导出的 `benchmarkCaseSchema`：
 
 ```json
 {
@@ -323,6 +324,7 @@ scraping sandbox 才允许分页/发现测试。Live truth 30 天复核，sandbo
     "authProfile": null,
     "maxAttempts": 2,
     "maxDurationMs": 10000,
+    "maxDocumentBytes": 2000000,
     "maxBrowserMs": 3000
   },
   "truth": {
@@ -372,10 +374,9 @@ Case Loader
 | `pr` | 快速阻止确定性回归 | Layer A/B |
 | `nightly` | 完整资源与恢复测试 | Layer A/B，少量 C |
 | `release` | 发布候选对照 | 全部有效 Case |
-| `competitor` | 同 URL、同预算外部对照 | Layer C，显式 API Key |
-| `shadow` | 线上小样本比较规划路径 | 真实流量，严格采样和隐私边界 |
 
-外部竞品对照必须记录套餐、地区、选项和时间；不能把一次测试外推成永久排名。
+当前统一入口只实现上述三种模式。外部竞品对照仍需另行批准预算与数据边界；Optimization Loop 的
+Shadow 仅由 `pnpm bench:optimize` 在匿名受控 Case 离线运行，不是生产流量采样。
 
 当前单 Case 运行入口：
 
@@ -385,19 +386,33 @@ DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench:case -- \
   --case benchmarks/cases/quotes-js-auto.json
 ```
 
-当前小型 Corpus 聚合入口：
+统一 Corpus 入口：
 
 ```bash
-# Clash/TUN Fake-IP 环境才设置此前缀；其他环境直接运行 pnpm bench:corpus。
-DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench:corpus
+# PR：46 个受控 Case，每个至少 5 次。
+pnpm bench -- --mode pr
+
+# Nightly：受控 Case + 10 个未过期公开 Canary，每个至少 5 次。
+# Clash/TUN Fake-IP 环境才设置此前缀；其他环境直接运行。
+DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly
+
+# Release：每个 Case 至少 30 次，并只接受完全相同 Case Set/repeat keys 的基线。
+DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- \
+  --mode release --compare benchmarks/reports/release-baseline.json
 ```
 
-该命令按 Case ID 稳定排序运行 `benchmarks/cases/*.json`，输出 gitignored 的
-`corpus-latest.json` 与逐行原始记录 `corpus-latest.jsonl`。聚合器分别报告 Case 真值通过率、有效
+命令按 Case ID、repeat 稳定排序，每次使用独立数据目录，并输出 gitignored 的
+`<mode>-latest.json`、`<mode>-latest.jsonl` 与 `<mode>-gate.json`。报告携带 Case Set
+version/hash、Git SHA、Node/Chrome/OS、脱敏配置 Hash 和 repeat。聚合器分别报告 Case 真值通过率、有效
 Artifact 率、假成功、uncertain、Browser Uplift、Retry Recovery/Waste、有效延迟和资源向量形式的
 Cost per Valid Artifact；没有部署单价时不虚构货币成本。
 
-该 Case 通过生产 `ReaderService` 的 `auto` 路径，不 import 私有 extractor。报告同时保留外层 logical
+Release comparison 输出配对 outcome、有效率与 Cost per Valid 变化，以及 latency delta 的
+median/p95/max 和确定性 95% bootstrap CI。当前仓库只有 10 个公开 Canary，没有私有 30-Case、
+授权 WCXB/CleanEval 副本或生产 rollout 证据，因此机器 Gate 可以达到 `canary-ready`，但不得标成
+`release-candidate` 或 `production-proven`。
+
+每个 Case 通过生产 `ReaderService` 的共享 ReadIntent/Plan 路径，不 import 私有 extractor。报告同时保留外层 logical
 retry、按 HTTP/Browser 拆分的 fetch 次数和响应字节，再交给独立 Truth Evaluator；非 `valid` 结果
 以非零退出码结束。
 
@@ -412,7 +427,8 @@ retry、按 HTTP/Browser 拆分的 fetch 次数和响应字节，再交给独立
 
 ## 发布门槛
 
-建立首个 baseline 后再填写具体数值。没有 baseline 前不承诺虚构 SLO。
+受控与公开 baseline 已建立；第 203 节的门槛保持不变。没有私有 Release Corpus 和生产 rollout 前，
+不填写或承诺生产 SLO。
 
 每个 Release 至少满足：
 
@@ -423,15 +439,13 @@ retry、按 HTTP/Browser 拆分的 fetch 次数和响应字节，再交给独立
 - 浏览器路径必须报告 Uplift，不能仅报告浏览器成功数。
 - 恢复测试证明没有静默丢页和不可解释重复。
 
-## 建议实现位置
+## 实现位置
 
 | 边界 | 建议路径 | 禁止依赖 | 测试/验证 |
 | --- | --- | --- | --- |
-| Case Schema | `benchmarks/schema/` | 生产数据库 | Schema fixture validation |
-| Case Loader | `benchmarks/harness/cases.ts` | Provider 私有实现 | malformed/expired Case tests |
-| Truth Evaluator | `benchmarks/harness/evaluate.ts` | `src/validation.ts` 作为真值 | assertion matrix tests |
-| Run Coordinator | `benchmarks/harness/run.ts` | 直接调用私有 extractor | controlled-site integration |
-| Cost Aggregator | `benchmarks/harness/cost.ts` | 硬编码商业价格 | deterministic aggregation tests |
+| Case Schema/Loader | `benchmarks/harness/contract.ts`、`corpus.ts` | 生产数据库 | malformed/expired Case tests |
+| Truth/Cost/Gate | `benchmarks/harness/corpus.ts`、`metrics.ts`、`gates.ts` | `src/validation.ts` 作为真值；硬编码商业价格 | assertion/aggregation tests |
+| Run Coordinator | `benchmarks/harness/suite.ts` | 直接调用私有 extractor | public Reader controlled-site integration |
 | Controlled Site | `benchmarks/controlled-site/` | 外部网络 | fault-sequence E2E |
 | Reports | `benchmarks/reports/`，默认 gitignored | 凭证、Cookie、敏感正文 | redaction tests |
 
@@ -443,11 +457,12 @@ Readiness 真值合同和 Tournament 已从临时聚合文件拆到 `benchmarks/
 
 | 优先级 | 工作 | 完成条件 | 验证 |
 | --- | --- | --- | --- |
-| P0 | Case Schema、Layer A、Truth Evaluator、JSONL 报告 | 文章、Shell、gate、JSON、429、超时 Case 可确定运行 | `pnpm test -- tests/reliability-benchmark.test.ts` |
-| P0 | Controlled Site 和成本采集 | 能证明请求次数、等待、浏览器时间和恢复结果 | `pnpm test -- tests/reliability-controlled-site.test.ts` |
-| P1 | Layer C Canary 与 Case 过期机制 | 网站漂移不会伪装产品回归 | `pnpm bench --mode nightly` |
-| P1 | Release 对照和趋势报告 | 同 Case Set 可比较两个 Git SHA | `pnpm bench --mode release --compare <baseline>` |
-| P2 | 竞品与 Shadow 模式 | 外部配置可复现，敏感信息不入工件 | `pnpm bench --mode competitor`; redaction tests |
+| P0 | Case Schema、Layer A/B、Truth、JSONL 报告（完成） | 46 个受控 Case×5 稳定运行 | `pnpm bench -- --mode pr` |
+| P0 | 成本、Plan/Ledger provenance 与 Gate（完成） | 请求、等待、Browser、资源与终态可复算 | `pnpm test -- tests/benchmark-suite.test.ts tests/benchmark-corpus.test.ts` |
+| P1 | Layer C Canary 与过期机制（完成） | 10 个未过期公开 Canary×5 | `DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly` |
+| P1 | Release 配对比较（完成合同） | 完全相同 Case Set/repeat keys 才可比较 | `pnpm bench -- --mode release --compare <baseline>` |
+| P2 | 离线 Optimization Loop（完成） | 受控 Shadow/A-B/Counterfactual/Tournament；无敏感工件 | `pnpm bench:optimize` |
+| 条件式 | 私有 Release、竞品和生产 rollout | 外部数据、预算与审核齐备 | 尚未触发，不伪造证据 |
 
 ## 非目标
 
@@ -457,65 +472,22 @@ Readiness 真值合同和 Tournament 已从临时聚合文件拆到 `benchmarks/
 - 不把压测吞吐等同于内容正确性。
 - 不为 Benchmark 新建一套与生产无关的抓取实现。
 
-## 开放问题
+## 尚需外部决策
 
-- 首批付费场景优先文章/文档，还是结构化列表/监控？这决定 Corpus 权重。
-- PDF 与授权页面是否进入首个 P0，或作为 P1 独立能力包？
-- Live Canary 的人工复核周期由谁负责？
-- 外部竞品对照的预算上限和运行频率是多少？
+- 私有 Release Corpus 的类别权重、保留 Case 和审核 owner。
+- 生产 rollout 的流量、SLO、回滚窗口和数据留存边界。
+- 外部竞品对照的预算、地区、套餐和凭证边界。
 
-## Readiness
+## Current Acceptance Evidence
 
-本规范已经足够执行 P0 Benchmark。2026-08-28 已落地版本化 runner result 合同、严格 stdout 解析、
-Case Schema、live 过期与策略矛盾检查、独立 Truth Evaluator、Reader artifact adapter、deterministic
-word-F1、确定性 4 叉 crawl graph、Run Coordinator、macOS wall/CPU/RSS，以及 Undici、Crawlee、
-Scrapy、Colly 四个 HTTP runner。相关 29 个 focused tests 已覆盖 HTTP harness 与 Case truth contract。
-
-首轮受控 HTTP baseline 见 [crawler-architecture-landscape.md](./crawler-architecture-landscape.md)。首个
-`quotes-js-auto` live Browser Case 也已通过：HTTP shell 被明确判为 `INCOMPLETE_CONTENT`，随后 Browser
-得到 1,064 字符有效正文；同一 logical attempt 内记录 `http=1`、`browser=1`，响应字节分别为 5,808
-和 8,985，独立裁判全部断言通过。Browser 候选现在必须携带 readiness provenance；最终验证样本记录
-`waitedMs=327`、`reason=meaningful-content-stable`、可见正文 1,499 字符。另三次公网重复运行全部 valid，
-总耗时分别为 6.14s、7.62s、9.39s；总耗时包含 HTTP 探测、Browser 启动和公网导航，不能归因给
-327ms readiness。该小样本只能证明 Browser uplift 与证据链已接通，不能代表 Browser group。
-
-受控 Readiness Tournament 使用即时正文、900ms 延迟正文、Skeleton、持续变化正文、无限滚动五类
-真实 DOM 页面，对 fixed-750、adaptive、target 三策略各重复 5 次。75 次运行中：fixed-750 有效率
-40%、假成功率 60%；adaptive 有效率 60%、假成功率 20%；target 有效率 100%、假成功率 0%。对应
-valid latency median/p95 的 2026-08-30 实现验收复跑为 769/837ms、1,244/1,610ms、553/1,305ms。结果保存在 gitignored 的
-`benchmarks/reports/readiness-latest.json`，复现命令为 `pnpm bench:readiness -- --repeats 5`。
-
-该结果只决定 ReadinessPolicy 的受控架构优先级：目标/终态条件优先，正文稳定作为 Generic fallback，
-scroll/click 必须显式预算化；它不代表真实互联网类别分布，也不构成竞品排名。
-
-生产首版现已把 CSS 目标条件和有界 `scroll-to-end` 接入 `ReadPageOptions`、MCP 输入、Reader 与
-`PageFetcher` adapter 合同；显式 DOM completion 直接选择 Browser，策略进入 Cache key，结果返回
-policy、reason、匹配数和交互步数。Tournament 的 target 策略复用同一生产 readiness runtime。
-
-2026-08-29 的 Public URL v1 小型基线包含 6 个 Case：动态 Browser、静态列表、登录 gate、RFC 长文档、
-404 失败语义和 500 retry-waste。6/6 真值通过，5 个 eligible Case 中产出 3 个有效 Artifact，假成功为
-0；唯一 Browser 启动由 HTTP shell 升级后恢复，首个重试 Case 产生 1 次无效重试和 500ms 等待。单位
-有效 Artifact 的 2026-08-30 验收资源向量为 2.33 个 HTTP Provider attempt、36,701 主文档 bytes、1,445 Browser ms、0.33 个
-Browser Context、0.33 次 retry、167ms retry delay 和 5,840ms 端到端时间。该样本含两个故意失败 Case，60%
-Valid Result Rate 不能外推为产品 SLO；它只证明聚合和证据链可复现。
-
-Layer A gold truth、40-Case 完整故障配额、公开站点 selector/无限滚动 canary、Release 趋势、环境/配置指纹和
-闭源 Provider 对照仍未完成，因此不能声称完整 Benchmark 已完成，也不能声称 Diaoyan 已达到生产级
-可靠性或优于任何竞品。
-
-2026-08-30 的执行证据升级要求每个 Benchmark 候选携带 strict plan + ledger provenance。成功、普通
-失败、策略停止和重试失败均包含 requestId、内容寻址 Plan、planned/executed stages、逐次 Attempt 与
-可复算 projection；序列、Provider、Stage 或 usage 任一不一致都转为 `harness_error`，成本字段不再从
-缺失的错误 details 静默补 0。成本名同步收敛为 `httpProviderAttempts` 和 `documentBytesIn`，明确它们
-不是实际 HTTP 请求总数或包含子资源的网络总流量。最新 6-Case 公网复跑 6/6 truth passed、0 false
-success、0 harness error，provenance completeness 为 100%。
-
-同日加入 7 类走真实 `Reader -> HttpTransport -> 受控代理站` 的故障 Case：慢响应头、响应头后慢响应体、
-无 `Content-Length` 的分块超限、三跳重定向、预算内 `Retry-After`、超出 deadline 的 `Retry-After`
-和持续 500。矩阵验证显式错误码、请求次数、重试等待、最终 URL、False Success=0，以及 Plan/Ledger
-projection 可复算；复现命令为 `npm run bench:faults`。这 7 类尚未与 5 类 Readiness 场景注册为一个
-满足 Gate 配额的版本化 Controlled Corpus，距离 40 个故障 Case 和重复次数要求仍有明确缺口。
-
-把已注册证据保守计为 controlled 7×1、live 6×1、private 0，机器 Gate 返回 `experimental` 且
-`hardFailed=false`。升级 canary 至少还缺 33 个 controlled Case、每类 4 次重复、4 个 live Case 和
-每类 4 次重复；该缺口必须通过新增证据解决，不能降低阈值。
+- PR：46 个受控 Case×5，共 230 次；Truth 230/230，0 false success、0 harness error。
+- Nightly：46 个受控 Case + 10 个未过期公开 Canary，各 5 次，共 280 次；Truth 280/280，0 false
+  success、0 harness error。Clash/TUN Fake-IP 环境必须显式开启安全兼容变量，Harness 不自动放宽 SSRF。
+- Readiness：5 个真实 DOM 类别×3 策略×5；target 25/25 valid、0 false success。
+- Optimization：15 组受控 HTTP/Browser Shadow 中主路径有效 10、Browser 有效 15；Retry
+  Counterfactual 记录 15 次恢复和 10 次浪费；Extractor Tournament 复用同一 rawRef。
+- 每个报告携带 Case Set version/hash、Git SHA、Node/Chrome/OS、脱敏配置 Hash、repeat 和可复算
+  Plan/Ledger provenance；过期 Canary 在网络调用前成为 `harness_error`。
+- Release compare 合同已经实现，但仓库没有私有 30-Case baseline、授权 WCXB/CleanEval 副本或生产
+  rollout。机器 Gate 因此准确停在 `canary-ready`，不得标为 `release-candidate`、
+  `production-proven` 或竞品领先。

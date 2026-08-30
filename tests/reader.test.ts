@@ -97,6 +97,35 @@ describe("ReaderService", () => {
     });
   });
 
+  it("passes the authorized origin boundary to the browser adapter", async () => {
+    let receivedOptions: PageFetchOptions | undefined;
+    const browser: PageFetcher = {
+      async fetch(_url, options) {
+        receivedOptions = options;
+        return rawPage({ method: "browser" });
+      },
+    };
+    const reader = new ReaderService(
+      testConfig(),
+      new UrlPolicy(async () => publicResolver()),
+      new PageCache(":memory:"),
+      new StubFetcher(new Error("HTTP must not run for an authorized read")),
+      browser,
+    );
+    readers.push(reader);
+
+    await reader.readPage({
+      url: "https://example.com/article",
+      cacheMode: "live",
+      authProfile: "research",
+    });
+
+    expect(receivedOptions).toMatchObject({
+      authProfile: "research",
+      allowedOrigins: ["https://example.com"],
+    });
+  });
+
   it("rejects target readiness when browser execution is forbidden", async () => {
     const reader = readerWith(
       new StubFetcher(rawPage()),
@@ -130,7 +159,7 @@ describe("ReaderService", () => {
       cacheMode: "live",
     });
     expect(result.fetchMethod).toBe("browser");
-    expect(result.validation.status).toBe("usable");
+    expect(result.validation.outcome).toBe("valid");
     expect(result.evidence).toMatchObject({
       attempts: 2,
       fetchAttempts: { http: 1, browser: 1 },
@@ -221,6 +250,27 @@ describe("ReaderService", () => {
     expect(http.calls).toBe(2);
     expect(index.count()).toBe(0);
     index.close();
+  });
+
+  it("never reuses an authorized profile artifact from shared cache", async () => {
+    const browser = new StubFetcher(rawPage({
+      method: "browser",
+      fetchedAt: new Date().toISOString(),
+    }));
+    const reader = readerWith(new StubFetcher(new Error("HTTP must not run")), browser);
+
+    const first = await reader.readPage({
+      url: "https://example.com/private",
+      authProfile: "research",
+    });
+    const second = await reader.readPage({
+      url: "https://example.com/private",
+      authProfile: "research",
+    });
+
+    expect(first.cached).toBe(false);
+    expect(second.cached).toBe(false);
+    expect(browser.calls).toBe(2);
   });
 
   it("records live and cached reads in crawler statistics", async () => {

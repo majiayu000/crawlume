@@ -30,6 +30,7 @@ Options:
   --no-browser                               Forbid browser execution
   --cache-mode <prefer-cache|live|cache-only> Cache strategy (default: prefer-cache)
   --max-age-seconds <seconds>                Maximum cache age (default: 900)
+  --stale-while-revalidate-seconds <seconds> Serve bounded stale content while refreshing
   --auth-profile <name>                      Dedicated browser profile
   --max-pages <count>                        Site page limit (map: 50, crawl: 10)
   --max-depth <depth>                        Link depth limit (default: 2)
@@ -244,9 +245,10 @@ export function parseCli(argv: string[]): CliAction {
   }
 
   let url: string | null = null;
-  let browserAllowed = true;
-  let cacheMode: CacheMode = "prefer-cache";
-  let maxAgeSeconds = 900;
+  let browserAllowed: boolean | undefined;
+  let cacheMode: CacheMode | undefined;
+  let maxAgeSeconds: number | undefined;
+  let staleWhileRevalidateSeconds: number | undefined;
   let authProfile: string | undefined;
   let markdown = false;
   let maxPages = command === "map" ? 50 : 10;
@@ -289,6 +291,25 @@ export function parseCli(argv: string[]): CliAction {
         throw new ReadError(
           "INVALID_ARGUMENT",
           "--max-age-seconds must be a positive integer.",
+          { details: { value } },
+        );
+      }
+      index += 1;
+      continue;
+    }
+    if (argument === "--stale-while-revalidate-seconds") {
+      if (command === "map") {
+        throw new ReadError(
+          "INVALID_ARGUMENT",
+          "--stale-while-revalidate-seconds is not available for map.",
+        );
+      }
+      const value = nextValue(argv, index, argument);
+      staleWhileRevalidateSeconds = Number(value);
+      if (!Number.isSafeInteger(staleWhileRevalidateSeconds) || staleWhileRevalidateSeconds < 0) {
+        throw new ReadError(
+          "INVALID_ARGUMENT",
+          "--stale-while-revalidate-seconds must be a non-negative integer.",
           { details: { value } },
         );
       }
@@ -362,11 +383,10 @@ export function parseCli(argv: string[]): CliAction {
   if (url === null) {
     throw new ReadError("INVALID_ARGUMENT", `${command} requires a URL.`);
   }
-  if (authProfile !== undefined && !browserAllowed) {
-    throw new ReadError("INVALID_ARGUMENT", "--auth-profile requires browser access.");
-  }
-
-  const common = { url, browserAllowed };
+  const common = {
+    url,
+    ...(browserAllowed === undefined ? {} : { browserAllowed }),
+  };
   if (command === "map") {
     return {
       kind: "map",
@@ -381,7 +401,14 @@ export function parseCli(argv: string[]): CliAction {
     };
   }
 
-  const options: ReadPageOptions = { ...common, cacheMode, maxAgeSeconds };
+  const options: ReadPageOptions = {
+    ...common,
+    ...(cacheMode === undefined ? {} : { cacheMode }),
+    ...(maxAgeSeconds === undefined ? {} : { maxAgeSeconds }),
+    ...(staleWhileRevalidateSeconds === undefined
+      ? {}
+      : { staleWhileRevalidateSeconds }),
+  };
   if (authProfile !== undefined) {
     options.authProfile = authProfile;
   }

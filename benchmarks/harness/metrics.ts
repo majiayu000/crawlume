@@ -17,7 +17,7 @@ export type BenchmarkExecutionCost = {
 
 export type BenchmarkRunRecord = {
   benchmarkCase: BenchmarkCase;
-  candidate: BenchmarkCandidate;
+  candidate: BenchmarkCandidate | null;
   evaluation: BenchmarkEvaluation;
   cost: BenchmarkExecutionCost;
 };
@@ -95,7 +95,7 @@ function rate(numerator: number, denominator: number): number | null {
   return denominator === 0 ? null : numerator / denominator;
 }
 
-function emptyCost(): BenchmarkExecutionCost {
+export function emptyBenchmarkCost(): BenchmarkExecutionCost {
   return {
     httpProviderAttempts: 0,
     documentBytesIn: 0,
@@ -180,16 +180,19 @@ function classify(record: BenchmarkRunRecord): ClassifiedRecord {
   }
   assertCost(record.cost);
   const measured = record.evaluation.outcome !== "harness_error";
+  if (measured && record.candidate === null) {
+    throw new Error("measured benchmark runs require a candidate");
+  }
   const expectedOutcome = terminalExpectedOutcome(record.benchmarkCase);
   const eligible = measured && expectedOutcome !== "policy_stop" && expectedOutcome !== "unsupported";
-  const validArtifact = eligible && record.evaluation.passed && record.candidate.outcome === "ok";
+  const validArtifact = eligible && record.evaluation.passed && record.candidate?.outcome === "ok";
   let outcome: keyof BenchmarkOutcomeCounts;
   if (!measured) outcome = "harnessError";
   else if (validArtifact) outcome = "valid";
   else if (record.evaluation.outcome === "uncertain") outcome = "uncertain";
-  else if (record.candidate.outcome === "ok") outcome = "invalid";
-  else if (record.candidate.outcome === "policy_stop") outcome = "policyStop";
-  else outcome = record.candidate.outcome;
+  else if (record.candidate?.outcome === "ok") outcome = "invalid";
+  else if (record.candidate?.outcome === "policy_stop") outcome = "policyStop";
+  else outcome = record.candidate?.outcome ?? "harnessError";
   return { ...record, eligible, measured, outcome, validArtifact };
 }
 
@@ -204,7 +207,7 @@ function categorySummary(category: string, records: ClassifiedRecord[]): Benchma
   const measured = selected.filter((record) => record.measured);
   const eligible = selected.filter((record) => record.eligible);
   const validArtifacts = eligible.filter((record) => record.validArtifact).length;
-  const returnedOk = measured.filter((record) => record.candidate.outcome === "ok").length;
+  const returnedOk = measured.filter((record) => record.candidate?.outcome === "ok").length;
   const falseSuccesses = measured.filter((record) => record.evaluation.falseSuccess).length;
   return {
     category,
@@ -228,19 +231,19 @@ export function aggregateBenchmarkRuns(
   const measured = records.filter((record) => record.measured);
   const eligible = records.filter((record) => record.eligible);
   const valid = eligible.filter((record) => record.validArtifact);
-  const returnedOk = measured.filter((record) => record.candidate.outcome === "ok");
+  const returnedOk = measured.filter((record) => record.candidate?.outcome === "ok");
   const falseSuccesses = measured.filter((record) => record.evaluation.falseSuccess).length;
   const truthPassedRuns = measured.filter((record) => record.evaluation.passed).length;
   const browserRuns = eligible.filter((record) => record.cost.browserContextStarts > 0);
   const browserRecovered = browserRuns.filter((record) =>
-    record.validArtifact && record.candidate.outcome === "ok" &&
+    record.validArtifact && record.candidate?.outcome === "ok" &&
     record.candidate.artifact !== undefined &&
     record.candidate.artifact.evidence.fetchAttempts.http > 0 &&
     record.candidate.artifact.evidence.fetchAttempts.browser > 0
   );
   const retried = eligible.filter((record) => record.cost.retryAttempts > 0);
   const retryRecovered = retried.filter((record) => record.validArtifact);
-  const totalCost = emptyCost();
+  const totalCost = emptyBenchmarkCost();
   for (const record of measured) addCost(totalCost, record.cost);
   const outcomes: BenchmarkOutcomeCounts = {
     valid: 0,

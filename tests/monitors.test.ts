@@ -30,7 +30,7 @@ function artifact(contentHash: string): PageReadArtifact {
     contentMarkdown: "Complete article content.",
     contentHash,
     completeness: "complete",
-    validation: { status: "usable", warnings: [] },
+    validation: { outcome: "valid", validatorVersion: "generic-content-v1", checks: [], terminalError: null },
     discoveredLinks: [],
     evidence: {
       httpStatus: 200,
@@ -38,6 +38,8 @@ function artifact(contentHash: string): PageReadArtifact {
       responseBytes: 123,
       contentCharacters: 400,
       extractionMethod: "readability",
+      extractorVersion: "readability-v1",
+      validatorVersion: "generic-content-v1",
       requestId: "request-test",
       accessPlan: {
         planId: `plan_${"a".repeat(64)}`,

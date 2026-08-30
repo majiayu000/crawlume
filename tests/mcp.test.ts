@@ -29,13 +29,15 @@ function result(): ReadPageResult {
     contentMarkdown: "Complete article content.",
     contentHash: "abc123",
     completeness: "complete",
-    validation: { status: "usable", warnings: [] },
+    validation: { outcome: "valid", validatorVersion: "generic-content-v1", checks: [], terminalError: null },
     evidence: {
       httpStatus: 200,
       contentType: "text/html",
       responseBytes: 123,
       contentCharacters: 400,
       extractionMethod: "readability",
+      extractorVersion: "readability-v1",
+      validatorVersion: "generic-content-v1",
       requestId: "request-test",
       accessPlan: {
         planId: `plan_${"a".repeat(64)}`,
@@ -113,6 +115,12 @@ describe("MCP server", () => {
       const { contentMarkdown: _contentMarkdown, ...inspection } = result();
       return inspection;
     });
+    const waitForPages = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-000000000001",
+      pages: [],
+      nextSequence: 0,
+      done: false,
+    }));
     const app = {
       reader: { readPage, inspectPage },
       site: {
@@ -160,6 +168,7 @@ describe("MCP server", () => {
           nextSequence: 0,
           done: false,
         })),
+        waitForPages,
       },
       profiles: { list: () => ["work"] },
       metrics: {
@@ -234,12 +243,17 @@ describe("MCP server", () => {
     expect(read.isError).not.toBe(true);
     expect(read.structuredContent).toMatchObject({ status: "ok", completeness: "complete" });
     expect(readPage).toHaveBeenCalledOnce();
+    expect(readPage).toHaveBeenLastCalledWith({
+      url: "https://example.com/article",
+      browserAllowed: false,
+    });
 
     const targetedRead = await client.callTool({
       name: "read_page",
       arguments: {
         url: "https://example.com/feed",
         browserAllowed: true,
+        staleWhileRevalidateSeconds: 120,
         browserReadiness: {
           target: { selector: "[data-terminal='true']", state: "visible", minCount: 1 },
           interaction: { type: "scroll-to-end", maxSteps: 8, stepDelayMs: 50 },
@@ -254,6 +268,7 @@ describe("MCP server", () => {
         interaction: { type: "scroll-to-end", maxSteps: 8, stepDelayMs: 50 },
         timeoutMs: 5_000,
       },
+      staleWhileRevalidateSeconds: 120,
     }));
 
     const profiles = await client.callTool({ name: "list_auth_profiles", arguments: {} });
@@ -310,6 +325,25 @@ describe("MCP server", () => {
       arguments: { jobId: "00000000-0000-4000-8000-000000000001", limit: 10 },
     });
     expect(pages.structuredContent).toMatchObject({ nextSequence: 0, done: false });
+
+    const waitedPages = await client.callTool({
+      name: "get_crawl_pages",
+      arguments: {
+        jobId: "00000000-0000-4000-8000-000000000001",
+        afterSequence: 0,
+        limit: 10,
+        waitMs: 1_000,
+      },
+    });
+    expect(waitedPages.structuredContent).toMatchObject({ nextSequence: 0, done: false });
+    expect(waitForPages).toHaveBeenCalledOnce();
+    expect(waitForPages).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000001",
+      0,
+      10,
+      1_000,
+      expect.any(AbortSignal),
+    );
 
     const cancelled = await client.callTool({
       name: "cancel_crawl",

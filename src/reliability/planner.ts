@@ -153,6 +153,18 @@ function normalizeIntent(intent: ReadIntent): ReadIntent {
   if (typeof intent.freshness.allowStaleWhileRevalidate !== "boolean") {
     invalid("freshness.allowStaleWhileRevalidate must be boolean.", "freshness-swr");
   }
+  const staleWhileRevalidateSeconds = intent.freshness.staleWhileRevalidateSeconds ?? 0;
+  requireSafeInteger(
+    staleWhileRevalidateSeconds,
+    "freshness.staleWhileRevalidateSeconds",
+    0,
+  );
+  if (intent.freshness.allowStaleWhileRevalidate !== (staleWhileRevalidateSeconds > 0)) {
+    invalid(
+      "freshness stale-while-revalidate flag and window must agree.",
+      "freshness-swr",
+    );
+  }
   const profileId = intent.authorization.profileId;
   if (profileId !== null && profileId.trim().length === 0) {
     invalid("authorization.profileId must be non-empty when provided.", "profile-id");
@@ -175,6 +187,7 @@ function normalizeIntent(intent: ReadIntent): ReadIntent {
     freshness: {
       maxAgeSeconds: intent.freshness.maxAgeSeconds,
       allowStaleWhileRevalidate: intent.freshness.allowStaleWhileRevalidate,
+      ...(staleWhileRevalidateSeconds === 0 ? {} : { staleWhileRevalidateSeconds }),
     },
     authorization: { profileId, allowedOrigins },
     completion: normalizeCompletion(intent.completion),
@@ -248,7 +261,7 @@ function plannedStage(
   const retryableErrorCodes = provider === "http"
     ? ["RATE_LIMITED", "UPSTREAM_ERROR", "FETCH_TIMEOUT"] as const
     : provider === "browser"
-      ? ["UPSTREAM_ERROR", "FETCH_TIMEOUT", "BROWSER_POOL_EXHAUSTED"] as const
+      ? ["UPSTREAM_ERROR", "FETCH_TIMEOUT", "BROWSER_POOL_EXHAUSTED", "BROWSER_UNAVAILABLE"] as const
       : [];
   return {
     id,
@@ -269,6 +282,7 @@ export function planAccess(rawIntent: ReadIntent, rawFacts: PlanningFacts): Acce
     url: intent.url,
     operation: intent.operation,
     authorizationProfileId: intent.authorization.profileId,
+    allowedOrigins: intent.authorization.allowedOrigins,
     completion: intent.completion,
   };
 
@@ -342,9 +356,8 @@ export function planAccess(rawIntent: ReadIntent, rawFacts: PlanningFacts): Acce
         "BROWSER_AFTER_INCOMPLETE_HTTP",
         input,
         {
-          type: "after-failure",
+          type: "after-invalid",
           stageId: "http-read",
-          errorCodes: ["SHELL_ONLY", "INCOMPLETE_CONTENT"],
         },
         intent.budget,
         intent.budget.maxAttempts - 1,

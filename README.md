@@ -8,8 +8,9 @@ user-authorized browser profile.
 It does not impersonate AI crawlers, solve CAPTCHAs, or bypass login, payment, robots, or site access controls.
 
 Architecture, reliability, benchmark, product, and implementation documents are indexed in
-[`docs/README.md`](docs/README.md). Target architecture documents describe planned work; the current
-implemented contract remains [`docs/spec.md`](docs/spec.md).
+[`docs/README.md`](docs/README.md). The approved local modular Retrieval Runtime is implemented; its
+public contract is [`docs/spec.md`](docs/spec.md), while conditional cluster, managed-provider, and
+search-engine extensions remain separate future decisions.
 
 ## Requirements
 
@@ -41,7 +42,7 @@ Build the project, then add the server to an MCP client:
 ```toml
 [mcp_servers.diaoyan]
 command = "node"
-args = ["/Users/lifcc/Desktop/code/diaoyan/dist/server.js"]
+args = ["/absolute/path/to/diaoyan/dist/server.js"]
 env = { DIAOYAN_ALLOW_DNS_FAKE_IP = "1" }
 ```
 
@@ -57,7 +58,8 @@ Available tools:
 - `crawl_site`: read a bounded set of same-site pages with per-page evidence and failures.
 - `start_crawl`: persist and start a bounded asynchronous crawl job.
 - `get_crawl`: retrieve durable job progress, cumulative usage, budget, result, or failure.
-- `get_crawl_pages`: read immutable page publications with a monotonic cursor.
+- `get_crawl_pages`: read immutable page publications with a monotonic cursor, optionally waiting up
+  to 30 seconds for the next publication without changing replay semantics.
 - `pause_crawl` / `resume_crawl`: stop new page claims and continue from the SQLite frontier.
 - `cancel_crawl`: abort active work and publish explicit stopped results for queued pages.
 - `get_crawler_stats`: return local success, failure, cache, method, byte, retry, and duration aggregates.
@@ -84,13 +86,13 @@ persistent contexts.
 Browser reads use conservative body stability by default. A caller that knows a page's terminal DOM
 condition can provide `browserReadiness` to `read_page`, `inspect_page`, `crawl_site`, or
 `start_crawl`. The policy requires a CSS target and may declare bounded `scroll-to-end` interaction;
-setting it in `auto` mode routes directly to the browser so an HTTP result cannot bypass the stated
-DOM condition. Exhausted time or interaction budgets fail with `FETCH_TIMEOUT`.
+setting it routes directly to the browser so an HTTP result cannot bypass the stated DOM condition.
+Set `browserAllowed: false` to forbid browser execution. Exhausted time or interaction budgets fail
+with `FETCH_TIMEOUT`.
 
 ```json
 {
   "url": "https://example.com/infinite-feed",
-  "mode": "auto",
   "browserReadiness": {
     "target": { "selector": "[data-terminal='true']", "state": "visible" },
     "interaction": { "type": "scroll-to-end", "maxSteps": 20, "stepDelayMs": 100 },
@@ -99,11 +101,12 @@ DOM condition. Exhausted time or interaction budgets fail with `FETCH_TIMEOUT`.
 }
 ```
 
-Successful reads include a zero-external-call validation result:
+Successful reads include a zero-external-call, versioned validation result:
 
-- `usable`: no low-cost warning signal was found.
-- `uncertain`: content is returnable but unusually short or required fallback document extraction.
-- Rejected content remains a structured tool error and is never converted into a low score.
+- `valid`: all required generic checks passed.
+- `uncertain`: content is returnable, but at least one required dimension cannot be proved.
+- `invalid`: never returns as a successful page; the planner may escalate once, then exposes a typed
+  terminal error if no valid or uncertain candidate exists.
 
 This validation does not use an LLM, embeddings, an extra request, or another browser pass.
 
@@ -122,7 +125,8 @@ Use the same reader directly without an MCP client:
 ```bash
 pnpm cli read https://httpbin.org/html
 pnpm cli read https://httpbin.org/html --markdown
-pnpm cli read https://example.com/app --mode browser --cache-mode live
+pnpm cli read https://example.com/app --cache-mode live
+pnpm cli read https://example.com/static --no-browser
 pnpm cli map https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 20 --max-depth 2
 pnpm cli crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 5 --max-depth 1
 DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli search MiniMax H3 推理优化 --language zh-CN
@@ -172,10 +176,26 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 ```json
 {
   "url": "https://example.com/account/article",
-  "mode": "browser",
-  "authProfile": "research"
+  "authProfile": "research",
+  "browserAllowed": true
 }
 ```
+
+## Reliability verification
+
+The unified benchmark always uses the public Reader contract and writes gitignored, fingerprinted
+reports. PR mode runs 46 controlled cases five times; Nightly adds 10 expiring public canaries.
+Release comparison requires a baseline with the exact same versioned case set and repeat keys.
+
+```bash
+pnpm bench -- --mode pr
+DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly
+pnpm bench:optimize
+```
+
+The Fake-IP prefix is only required on resolvers that map public hostnames to `198.18.0.0/15`.
+Current repository evidence supports `canary-ready`; it does not claim private-release,
+production-rollout, or competitor superiority evidence.
 
 ## Configuration
 

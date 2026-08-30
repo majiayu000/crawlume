@@ -26,6 +26,7 @@ export const errorCodes = [
   "PROFILE_NOT_FOUND",
   "CACHE_MISS",
   "BUDGET_EXHAUSTED",
+  "PROVIDER_UNAVAILABLE",
   "SEARCH_PROVIDER_NOT_CONFIGURED",
   "SEARCH_PROVIDER_ERROR",
   "JOB_NOT_FOUND",
@@ -43,6 +44,7 @@ export class ReadError extends Error {
   readonly retryable: boolean;
   readonly details: ReadErrorDetails;
   readonly execution: (AccessPlanEvidence & { requestId: string }) | null;
+  readonly traceRef: string | null;
 
   constructor(
     code: ReadErrorCode,
@@ -51,6 +53,7 @@ export class ReadError extends Error {
       retryable?: boolean;
       details?: ReadErrorDetails;
       execution?: AccessPlanEvidence & { requestId: string };
+      traceRef?: string;
       cause?: unknown;
     } = {},
   ) {
@@ -60,6 +63,7 @@ export class ReadError extends Error {
     this.retryable = options.retryable ?? false;
     this.details = options.details ?? {};
     this.execution = options.execution ?? null;
+    this.traceRef = options.traceRef ?? null;
   }
 
   toJSON(): {
@@ -69,6 +73,7 @@ export class ReadError extends Error {
     retryable: boolean;
     details: ReadErrorDetails;
     execution: (AccessPlanEvidence & { requestId: string }) | null;
+    traceRef: string | null;
   } {
     return {
       status: "error",
@@ -77,6 +82,7 @@ export class ReadError extends Error {
       retryable: this.retryable,
       details: this.details,
       execution: this.execution,
+      traceRef: this.traceRef,
     };
   }
 }

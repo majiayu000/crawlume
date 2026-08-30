@@ -60,17 +60,14 @@ describe("deterministic access planner", () => {
         id: "browser-read",
         provider: "browser",
         reasonCode: "BROWSER_AFTER_INCOMPLETE_HTTP",
-        runWhen: {
-          type: "after-failure",
-          stageId: "http-read",
-          errorCodes: ["SHELL_ONLY", "INCOMPLETE_CONTENT"],
-        },
+        runWhen: { type: "after-invalid", stageId: "http-read" },
       },
     ]);
     expect(plan.stages[2]?.input).toEqual({
       url: "https://example.com/article",
       operation: "read",
       authorizationProfileId: null,
+      allowedOrigins: ["https://example.com"],
       completion: { type: "content" },
     });
   });
@@ -140,7 +137,10 @@ describe("deterministic access planner", () => {
     expect(plan.stages.map(({ provider, reasonCode }) => ({ provider, reasonCode }))).toEqual([
       { provider: "browser", reasonCode: "BROWSER_REQUIRED_BY_AUTHORIZATION" },
     ]);
-    expect(plan.stages[0]?.input.authorizationProfileId).toBe("research-profile");
+    expect(plan.stages[0]?.input).toMatchObject({
+      authorizationProfileId: "research-profile",
+      allowedOrigins: ["https://example.com"],
+    });
   });
 
   it.each([
@@ -195,7 +195,7 @@ describe("deterministic access planner", () => {
 
     expect(http?.retryPolicy.maxAttempts).toBe(3);
     expect(browser?.retryPolicy.maxAttempts).toBe(2);
-    expect(browser?.retryPolicy.retryableErrorCodes).not.toContain("BROWSER_UNAVAILABLE");
+    expect(browser?.retryPolicy.retryableErrorCodes).toContain("BROWSER_UNAVAILABLE");
   });
 
   it("allocates the full network attempt budget to a required browser primary", () => {

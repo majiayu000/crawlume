@@ -114,6 +114,37 @@ describe("BrowserPool", () => {
     await second.release();
   });
 
+  it("recycles a connected browser after its bounded context lifetime", async () => {
+    const browsers = [fakeBrowser(), fakeBrowser()];
+    const launcher = vi.fn(async () => browsers.shift() as Browser);
+    const pool = new BrowserPool(config({ browserPoolSize: 1 }), launcher);
+    pools.push(pool);
+
+    for (let context = 0; context < 100; context += 1) {
+      const lease = await pool.acquire(null);
+      await lease.release();
+    }
+    const replacement = await pool.acquire(null);
+
+    expect(launcher).toHaveBeenCalledTimes(2);
+    await replacement.release();
+  });
+
+  it("retires a browser lease reported unhealthy before the next acquisition", async () => {
+    const browsers = [fakeBrowser(), fakeBrowser()];
+    const launcher = vi.fn(async () => browsers.shift() as Browser);
+    const pool = new BrowserPool(config({ browserPoolSize: 1 }), launcher);
+    pools.push(pool);
+
+    const unhealthy = await pool.acquire(null);
+    await unhealthy.release(false);
+    const replacement = await pool.acquire(null);
+
+    expect(launcher).toHaveBeenCalledTimes(2);
+    expect(replacement.browser).not.toBe(unhealthy.browser);
+    await replacement.release();
+  });
+
   it("does not retain capacity after a browser launch failure", async () => {
     const browser = fakeBrowser();
     const launcher = vi.fn()

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
@@ -7,13 +7,12 @@ import { normalizeError, ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
 import { AttemptLedger } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
-import { planAccess } from "./reliability/planner.js";
-import type { ExecutionBudget, InspectPageResult, PageReadArtifact, PageFetcher, ReadIntent, ReadPageOptions, ReadPageResult } from "./types.js";
-import {
-  normalizeBrowserReadinessPolicy,
-  type NormalizedBrowserReadinessPolicy,
-} from "./runtime/readiness.js";
-import { StageExecutor } from "./runtime/executor.js";
+import { normalizeReadRequest } from "./reliability/read-intent.js";
+import type { InspectPageResult, PageReadArtifact, PageFetcher, ReadPageOptions, ReadPageResult } from "./types.js";
+import type { NormalizedBrowserReadinessPolicy } from "./runtime/readiness.js";
+import { StageExecutor, type StageExecutionResult } from "./runtime/executor.js";
+import { createBuiltinProviderRegistry, type ProviderRegistry } from "./runtime/providers.js";
+import { RuntimeResourceGovernor } from "./runtime/runtime-resource-governor.js";
 import { UrlPolicy } from "./security/url-policy.js";
 import type { RslAccessAudit } from "./rsl-audit.js";
 
@@ -51,21 +50,32 @@ function withoutLinks(result: PageReadArtifact): ReadPageResult {
   return page;
 }
 
-type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
-
-function defaultExecutionBudget(config: AppConfig, browserAllowed: boolean): ExecutionBudget {
-  const maxAttempts = config.crawlMaxAttempts;
-  return {
-    deadlineMs: config.requestTimeoutMs + (browserAllowed ? config.browserTimeoutMs : 0),
-    maxAttempts,
-    maxDocumentBytes: config.maxResponseBytes * maxAttempts,
-    maxBrowserMs: browserAllowed ? config.browserTimeoutMs : 0,
-    maxBrowserContexts: browserAllowed ? 1 : 0,
-    maxOptionalModelTokens: 0,
-  };
+function failureTerminalState(error: ReadError):
+  "invalid" | "failed" | "policy_stop" | "budget_exhausted" | "cancelled" {
+  if (error.code === "BUDGET_EXHAUSTED") return "budget_exhausted";
+  if (error.code === "CRAWL_CANCELLED") return "cancelled";
+  if (
+    error.code === "SHELL_ONLY" || error.code === "INCOMPLETE_CONTENT" ||
+    error.code === "UNSUPPORTED_CONTENT_TYPE"
+  ) return "invalid";
+  if (
+    error.code === "ROBOTS_DISALLOWED" || error.code === "ROBOTS_UNAVAILABLE" ||
+    error.code.startsWith("RSL_") || error.code === "AUTH_REQUIRED" ||
+    error.code === "PAYMENT_REQUIRED" || error.code === "ACCESS_DENIED" ||
+    error.code === "LOGIN_WALL_DETECTED" || error.code === "HUMAN_VERIFICATION_REQUIRED"
+  ) {
+    return "policy_stop";
+  }
+  return "failed";
 }
 
+type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
+
 export class ReaderService {
+  private readonly backgroundRevalidations = new Map<string, Promise<void>>();
+  private readonly backgroundFailures: unknown[] = [];
+  private readonly providers: ProviderRegistry;
+
   constructor(
     private readonly config: AppConfig,
     private readonly urlPolicy: UrlPolicy,
@@ -78,7 +88,10 @@ export class ReaderService {
     private readonly rslAudit: RslAccessAudit | null = null,
     private readonly rslApprovalContextHash: () => string = () => "",
     private readonly attemptLedger: AttemptLedger | null = null,
-  ) {}
+    private readonly resources = new RuntimeResourceGovernor(config),
+  ) {
+    this.providers = createBuiltinProviderRegistry(cache, httpFetcher, browserFetcher, resources);
+  }
 
   async readPage(options: ReadPageOptions): Promise<ReadPageResult> {
     return withoutLinks(await this.readPageArtifact(options));
@@ -106,8 +119,28 @@ export class ReaderService {
       result = await this.executePageArtifact(options, operation);
     } catch (error) {
       const normalized = normalizeError(error);
+      if (normalized.execution !== null) {
+        this.attemptLedger?.commitTerminal({
+          requestId: normalized.execution.requestId,
+          planId: normalized.execution.planId,
+          state: failureTerminalState(normalized),
+          artifactKey: null,
+          contentHash: null,
+          validatorVersion: null,
+          error: {
+            code: normalized.code,
+            message: normalized.message,
+            retryable: normalized.retryable,
+            details: normalized.details,
+          },
+        });
+      }
       this.rslAudit?.recordFailure(options.url, normalized);
-      this.metrics?.recordFailure(normalized, Date.now() - startedAt);
+      this.metrics?.recordFailure(
+        normalized,
+        Date.now() - startedAt,
+        failureTerminalState(normalized),
+      );
       throw error;
     }
     this.rslAudit?.recordSuccess(result);
@@ -119,49 +152,20 @@ export class ReaderService {
     options: ReadExecutionOptions,
     operation: "read" | "map" | "crawl",
   ): Promise<PageReadArtifact> {
-    const cacheMode = options.cacheMode ?? "prefer-cache";
-    const maxAgeSeconds = options.maxAgeSeconds ?? this.config.defaultCacheSeconds;
-    if (!Number.isSafeInteger(maxAgeSeconds) || maxAgeSeconds <= 0) {
-      throw new ReadError("INVALID_ARGUMENT", "maxAgeSeconds must be a positive integer.");
-    }
-    const browserAllowed = options.browserAllowed ?? true;
-    if (!browserAllowed && options.authProfile !== undefined) {
-      throw new ReadError("INVALID_ARGUMENT", "authProfile requires browser access.");
-    }
-    if (!browserAllowed && options.browserReadiness !== undefined) {
-      throw new ReadError("INVALID_ARGUMENT", "browserReadiness requires browser access.");
-    }
-    const browserReadiness = options.browserReadiness === undefined
-      ? undefined
-      : normalizeBrowserReadinessPolicy(options.browserReadiness);
-
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
-    const requestId = options.requestId ?? randomUUID();
-    if (requestId.trim().length === 0) {
-      throw new ReadError("INVALID_ARGUMENT", "requestId must be non-empty when provided.");
-    }
-    const authProfile = options.authProfile ?? null;
-    const budget = options.budget ?? defaultExecutionBudget(this.config, browserAllowed);
-    const plan = planAccess({
-      url: url.toString(),
-      operation,
-      output: { format: "markdown" },
-      freshness: { maxAgeSeconds, allowStaleWhileRevalidate: false },
-      authorization: {
-        profileId: authProfile,
-        allowedOrigins: [url.origin],
-      },
-      completion: browserReadiness === undefined
-        ? operation === "map"
-          ? { type: "discovery" }
-          : { type: "content" }
-        : { type: "dom", readiness: browserReadiness },
+    const {
+      requestId,
+      cacheMode,
+      maxAgeSeconds,
+      staleWhileRevalidateSeconds,
+      authProfile,
+      browserReadiness,
       budget,
-    }, {
-      cachePolicy: cacheMode,
-      providers: { cache: true, http: true, browser: browserAllowed },
-    });
+      intent,
+      plan,
+    } = normalizeReadRequest(this.config, url, options, operation);
+    const approvalContextHash = this.rslApprovalContextHash();
     const key = createHash("sha256")
       .update(cacheKey(
         url.toString(),
@@ -170,25 +174,81 @@ export class ReaderService {
         browserReadiness,
         this.config,
       ))
-      .update(this.rslApprovalContextHash())
+      .update(approvalContextHash)
       .digest("hex");
-    const { artifact, trace, totalRetryDelayMs } = await new StageExecutor(
-      this.cache,
-      this.httpFetcher,
-      this.browserFetcher,
-      this.crawlPolicy,
-      this.attemptLedger,
-    ).execute({
-      url,
-      cacheKey: key,
-      maxAgeSeconds,
-      authProfile,
-      ...(browserReadiness === undefined ? {} : { browserReadiness }),
-      requestId,
-      plan,
-      budget,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
+    const terminal = this.attemptLedger?.getTerminal(requestId, plan.id) ?? null;
+    if (terminal !== null) {
+      if (terminal.error !== null) {
+        throw new ReadError(terminal.error.code, terminal.error.message, {
+          retryable: terminal.error.retryable,
+          details: terminal.error.details,
+        });
+      }
+      if (terminal.artifactKey === null) {
+        throw new ReadError("INTERNAL_ERROR", "Completed request terminal has no artifact ref.");
+      }
+      const replayed = this.cache.getArtifact(terminal.artifactKey);
+      if (replayed === null) {
+        throw new ReadError("INTERNAL_ERROR", "Committed request artifact is unavailable.", {
+          details: { requestId, artifactKey: terminal.artifactKey },
+        });
+      }
+      return {
+        ...replayed,
+        cached: true,
+        evidence: { ...replayed.evidence, cacheStatus: "replayed" },
+      };
+    }
+    const stale = cacheMode === "prefer-cache" && staleWhileRevalidateSeconds > 0
+      ? this.cache.getStale(key, maxAgeSeconds, staleWhileRevalidateSeconds)
+      : null;
+    let execution: StageExecutionResult;
+    if (stale !== null) {
+      this.scheduleBackgroundRevalidation(key, options, operation);
+      execution = {
+        artifact: {
+          ...stale,
+          cached: true,
+          evidence: { ...stale.evidence, cacheStatus: "stale" },
+        },
+        trace: {
+          fetchAttempts: { http: 0, browser: 0 },
+          responseBytesByMethod: { http: 0, browser: 0 },
+          fetchDurationMsByMethod: { http: 0, browser: 0 },
+          extractionDurationMs: 0,
+          validationDurationMs: 0,
+          executedStages: ["cache-read"],
+          pendingRetryDelayMs: 0,
+        },
+        totalRetryDelayMs: 0,
+        artifactKey: this.cache.lookup(key)?.artifactKey ?? null,
+        publication: null,
+      };
+    } else {
+      execution = await new StageExecutor(
+        this.providers,
+        this.crawlPolicy,
+        this.attemptLedger,
+      ).execute({
+        url,
+        cacheKey: key,
+        maxAgeSeconds,
+        authProfile,
+        ...(browserReadiness === undefined ? {} : { browserReadiness }),
+        requestId,
+        intent,
+        plan,
+        budget,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+    }
+    const {
+      artifact,
+      artifactKey: executionArtifactKey,
+      trace,
+      totalRetryDelayMs,
+      publication,
+    } = execution;
     const result: PageReadArtifact = {
       ...artifact,
       evidence: {
@@ -217,9 +277,31 @@ export class ReaderService {
       },
     };
 
-    if (operation !== "map" && (result.evidence.rsl?.licenseTokensApplied ?? 0) === 0) {
-      this.cache.put(key, result);
-      this.localIndex?.put(result);
+    let artifactKey = executionArtifactKey;
+    if (operation !== "map" && publication !== null) {
+      artifactKey = this.cache.put(key, result, {
+        intent,
+        approvalContextHash,
+        rawRef: publication.rawRef,
+        extractorVersion: publication.extractorVersion,
+      }, {
+        ...(publication.etag === undefined ? {} : { etag: publication.etag }),
+        ...(publication.lastModified === undefined
+          ? {}
+          : { lastModified: publication.lastModified }),
+      });
+      if (artifactKey !== null) this.localIndex?.put(result);
+    }
+    if (operation !== "map" && artifactKey !== null) {
+      this.attemptLedger?.commitTerminal({
+        requestId,
+        planId: plan.id,
+        state: result.completeness === "complete" ? "completed" : "completed_uncertain",
+        artifactKey,
+        contentHash: result.contentHash,
+        validatorVersion: result.validation.validatorVersion,
+        error: null,
+      });
     }
     return result;
   }
@@ -228,7 +310,63 @@ export class ReaderService {
     return withoutContent(await this.readPage(options));
   }
 
-  close(): void {
-    this.cache.close();
+  async drainBackgroundRevalidations(): Promise<void> {
+    while (this.backgroundRevalidations.size > 0) {
+      await Promise.all([...this.backgroundRevalidations.values()]);
+    }
+    if (this.backgroundFailures.length > 0) {
+      throw new AggregateError(
+        this.backgroundFailures.splice(0),
+        "One or more stale cache revalidations failed.",
+      );
+    }
+  }
+
+  close(): void | Promise<void> {
+    if (this.backgroundRevalidations.size === 0) {
+      if (this.backgroundFailures.length > 0) {
+        throw new AggregateError(
+          this.backgroundFailures.splice(0),
+          "One or more stale cache revalidations failed.",
+        );
+      }
+      this.cache.close();
+      return;
+    }
+    return this.closeAfterBackgroundRevalidation();
+  }
+
+  private scheduleBackgroundRevalidation(
+    key: string,
+    options: ReadExecutionOptions,
+    operation: "read" | "map" | "crawl",
+  ): void {
+    if (this.backgroundRevalidations.has(key)) return;
+    const {
+      signal: _signal,
+      requestId: _requestId,
+      staleWhileRevalidateSeconds: _staleWhileRevalidateSeconds,
+      ...refreshOptions
+    } = options;
+    const revalidation = this.executeRecordedPageArtifact(
+      { ...refreshOptions, cacheMode: "live" },
+      operation,
+    ).then(
+      () => undefined,
+      (error: unknown) => {
+        this.backgroundFailures.push(error);
+      },
+    ).finally(() => {
+      this.backgroundRevalidations.delete(key);
+    });
+    this.backgroundRevalidations.set(key, revalidation);
+  }
+
+  private async closeAfterBackgroundRevalidation(): Promise<void> {
+    try {
+      await this.drainBackgroundRevalidations();
+    } finally {
+      this.cache.close();
+    }
   }
 }

@@ -226,7 +226,7 @@ function indexedPage(): PageReadArtifact {
     contentMarkdown: "MiniMax H3 inference optimization guide.",
     contentHash: "hash",
     completeness: "complete",
-    validation: { status: "usable", warnings: [] },
+    validation: { outcome: "valid", validatorVersion: "generic-content-v1", checks: [], terminalError: null },
     discoveredLinks: [],
     evidence: {
       httpStatus: 200,
@@ -234,6 +234,8 @@ function indexedPage(): PageReadArtifact {
       responseBytes: 100,
       contentCharacters: 40,
       extractionMethod: "readability",
+      extractorVersion: "readability-v1",
+      validatorVersion: "generic-content-v1",
       requestId: "request-test",
       accessPlan: {
         planId: `plan_${"a".repeat(64)}`,

@@ -13,6 +13,7 @@
     "authProfile": null,
     "maxAttempts": 2,
     "maxDurationMs": 15000,
+    "maxDocumentBytes": 2000000,
     "maxBrowserMs": 10000
   },
   "truth": {

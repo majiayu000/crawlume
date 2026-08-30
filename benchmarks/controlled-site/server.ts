@@ -8,6 +8,7 @@ import { fetch } from "undici";
 import type { RunnerResult } from "../harness/contract.js";
 import {
   benchmarkOutcomeForErrorCode,
+  collectBenchmarkEnvironmentFingerprint,
   executeReaderBenchmarkCase,
   loadBenchmarkCaseSet,
   runBenchmarkCorpus,
@@ -15,6 +16,7 @@ import {
 } from "../harness/corpus.js";
 import { runReadinessTournament } from "../readiness/tournament.js";
 import { listen, positiveInteger } from "../harness/runtime.js";
+import { parseBenchmarkModeOptions, runBenchmarkSuite } from "../harness/suite.js";
 
 export type ControlledSite = {
   origin: string;
@@ -303,6 +305,26 @@ export { benchmarkOutcomeForErrorCode };
 
 async function runCli(): Promise<void> {
   const runner = cliOption("runner");
+  if (runner === "benchmark-suite") {
+    const arguments_ = process.argv.slice(2);
+    const runnerIndex = arguments_.indexOf("--runner");
+    if (runnerIndex !== -1) arguments_.splice(runnerIndex, 2);
+    const result = await runBenchmarkSuite(parseBenchmarkModeOptions(arguments_));
+    process.stdout.write(`${JSON.stringify({
+      mode: result.mode,
+      passed: result.passed,
+      reportPath: result.reportPath,
+      caseSetVersion: result.report.caseSetVersion,
+      caseSetHash: result.report.caseSetHash,
+      repeats: result.report.repeats,
+      cases: new Set(result.report.runs.map((run) => run.benchmarkCase.id)).size,
+      summary: result.report.summary,
+      gate: result.gate,
+      comparison: result.comparison,
+    }, null, 2)}\n`);
+    if (!result.passed) process.exitCode = 2;
+    return;
+  }
   if (runner === "readiness-tournament") {
     const repeats = Number.parseInt(cliOption("repeats") ?? "5", 10);
     const report = await runReadinessTournament(repeats);
@@ -322,8 +344,13 @@ async function runCli(): Promise<void> {
   if (runner === "reader-corpus") {
     const root = resolve(".");
     const casesDirectory = resolve(cliOption("cases") ?? resolve(root, "benchmarks/cases"));
-    const caseSet = await loadBenchmarkCaseSet(casesDirectory);
-    const report = await runBenchmarkCorpus(caseSet, executeReaderBenchmarkCase);
+    const caseSetVersion = cliOption("case-set-version") ?? "public-v1";
+    const repeats = Number.parseInt(cliOption("repeats") ?? "5", 10);
+    const caseSet = await loadBenchmarkCaseSet(casesDirectory, caseSetVersion);
+    const report = await runBenchmarkCorpus(caseSet, executeReaderBenchmarkCase, {
+      repeats,
+      fingerprint: await collectBenchmarkEnvironmentFingerprint(),
+    });
     const reportsDirectory = resolve(root, "benchmarks/reports");
     await mkdir(reportsDirectory, { recursive: true });
     await Promise.all([
@@ -359,7 +386,7 @@ async function runCli(): Promise<void> {
       : null;
   if (result === null) {
     throw new Error(
-      "--runner must be readiness-tournament, reader-case, reader-corpus, node-undici, or node-crawlee",
+      "--runner must be benchmark-suite, readiness-tournament, reader-case, reader-corpus, node-undici, or node-crawlee",
     );
   }
   process.stdout.write(`${JSON.stringify(result)}\n`);

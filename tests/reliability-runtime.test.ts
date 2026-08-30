@@ -110,6 +110,29 @@ describe("planned reader runtime", () => {
     expect(browser.calls).toBe(0);
   });
 
+  it("keeps validator-invalid terminal state distinct from provider failure", async () => {
+    const shell = "<html><body>Loading...</body></html>";
+    const http = sequenceFetcher([rawPage({
+      body: shell,
+      responseBytes: Buffer.byteLength(shell),
+    })]);
+    const ledger = new AttemptLedger(":memory:");
+
+    await expect(runtimeReader(
+      http,
+      sequenceFetcher([new Error("browser must not run")]),
+      ledger,
+    ).readPage({
+      url: "https://example.com/shell",
+      requestId: "request-invalid",
+      cacheMode: "live",
+      browserAllowed: false,
+      budget: { ...budget, maxBrowserMs: 0, maxBrowserContexts: 0 },
+    })).rejects.toMatchObject({ code: "SHELL_ONLY" });
+
+    expect(ledger.project("request-invalid")?.terminal?.state).toBe("invalid");
+  });
+
   it("escalates an HTTP shell to browser without repeating the completed HTTP attempt", async () => {
     const shell = "<html><body>Loading...</body></html>";
     const http = sequenceFetcher([rawPage({ body: shell, responseBytes: Buffer.byteLength(shell) })]);
@@ -128,11 +151,58 @@ describe("planned reader runtime", () => {
     expect(ledger.list(result.evidence.requestId).map(({ provider, outcome, errorCode }) => ({
       provider, outcome, errorCode,
     }))).toEqual([
-      { provider: "http", outcome: "failed", errorCode: "SHELL_ONLY" },
+      { provider: "http", outcome: "succeeded", errorCode: null },
       { provider: "browser", outcome: "succeeded", errorCode: null },
     ]);
     expect(http.calls).toBe(1);
     expect(browser.calls).toBe(1);
+  });
+
+  it("returns an uncertain candidate without claiming complete content", async () => {
+    const body = "Useful but brief evidence. ".repeat(13);
+    const http = sequenceFetcher([rawPage({
+      body,
+      contentType: "text/plain",
+      responseBytes: Buffer.byteLength(body),
+    })]);
+    const browser = sequenceFetcher([new Error("uncertain content must not trigger hidden fallback")]);
+    const ledger = new AttemptLedger(":memory:");
+
+    const result = await runtimeReader(http, browser, ledger).readPage({
+      url: "https://example.com/brief",
+      cacheMode: "live",
+      browserAllowed: true,
+      budget,
+    });
+
+    expect(result.completeness).toBe("uncertain");
+    expect(result.validation).toMatchObject({
+      outcome: "uncertain",
+      validatorVersion: "generic-content-v1",
+    });
+    expect(result.evidence.accessPlan.executedStages).toEqual(["http-read"]);
+    expect(browser.calls).toBe(0);
+  });
+
+  it("validates multiple extractors from one HTTP fetch", async () => {
+    const body = `<html><head><title>Multi candidate</title><script type="application/ld+json">${JSON.stringify({
+      "@type": "Article",
+      headline: "Structured candidate",
+      articleBody: "Structured evidence ".repeat(40),
+    })}</script></head><body><article>${"Visible evidence ".repeat(40)}</article></body></html>`;
+    const http = sequenceFetcher([rawPage({ body, responseBytes: Buffer.byteLength(body) })]);
+    const browser = sequenceFetcher([new Error("browser must not run")]);
+    const ledger = new AttemptLedger(":memory:");
+
+    const result = await runtimeReader(http, browser, ledger).readPage({
+      url: "https://example.com/multi",
+      cacheMode: "live",
+      browserAllowed: false,
+      budget: { ...budget, maxBrowserMs: 0, maxBrowserContexts: 0 },
+    });
+
+    expect(result.evidence.extractionMethod).toBe("json-ld");
+    expect(http.calls).toBe(1);
   });
 
   it("never starts browser after an access denial", async () => {
@@ -155,6 +225,7 @@ describe("planned reader runtime", () => {
     ]);
     expect(http.calls).toBe(1);
     expect(browser.calls).toBe(0);
+    expect(ledger.project("request-denied")?.terminal?.state).toBe("policy_stop");
   });
 
   it("retries only the HTTP stage when browser is forbidden", async () => {
@@ -206,7 +277,7 @@ describe("planned reader runtime", () => {
     expect(ledger.list("request-byte-budget")).toEqual([
       expect.objectContaining({
         provider: "http",
-        outcome: "failed",
+        outcome: "stopped",
         errorCode: "BUDGET_EXHAUSTED",
         usage: expect.objectContaining({ documentBytesIn: 2_000 }),
       }),
@@ -237,7 +308,7 @@ describe("planned reader runtime", () => {
     expect(http.calls).toBe(1);
     expect(browser.calls).toBe(0);
     expect(ledger.list("request-deadline-budget")).toEqual([
-      expect.objectContaining({ provider: "http", outcome: "failed", errorCode: "BUDGET_EXHAUSTED" }),
+      expect.objectContaining({ provider: "http", outcome: "stopped", errorCode: "BUDGET_EXHAUSTED" }),
     ]);
   });
 
@@ -292,10 +363,65 @@ describe("planned reader runtime", () => {
     expect(ledger.list("request-browser-time-budget")).toEqual([
       expect.objectContaining({
         provider: "browser",
-        outcome: "failed",
+        outcome: "stopped",
         errorCode: "BUDGET_EXHAUSTED",
         usage: expect.objectContaining({ browserContextStarts: 1 }),
       }),
+    ]);
+  });
+
+  it("persists a browser failure trace reference on the matching attempt", async () => {
+    const traceRef = "browser-trace:00000000-0000-4000-8000-000000000000";
+    const browser = sequenceFetcher([
+      new ReadError("FETCH_TIMEOUT", "timed out", { traceRef }),
+    ]);
+    const ledger = new AttemptLedger(":memory:");
+
+    await expect(runtimeReader(
+      sequenceFetcher([new Error("http must not run")]),
+      browser,
+      ledger,
+    ).readPage({
+      url: "https://example.com/app",
+      requestId: "request-browser-trace",
+      cacheMode: "live",
+      browserAllowed: true,
+      browserReadiness: { target: { selector: "main" } },
+      budget: { ...budget, maxAttempts: 1 },
+    })).rejects.toMatchObject({ code: "FETCH_TIMEOUT", traceRef });
+
+    expect(ledger.list("request-browser-trace")).toEqual([
+      expect.objectContaining({ provider: "browser", traceRef }),
+    ]);
+  });
+
+  it("retries a disconnected browser stage and preserves the failed attempt trace", async () => {
+    const traceRef = "browser-trace:00000000-0000-4000-8000-000000000001";
+    const browser = sequenceFetcher([
+      new ReadError("BROWSER_UNAVAILABLE", "disconnected", { retryable: true, traceRef }),
+      rawPage({ method: "browser" }),
+    ]);
+    const ledger = new AttemptLedger(":memory:");
+
+    const result = await runtimeReader(
+      sequenceFetcher([new Error("http must not run")]),
+      browser,
+      ledger,
+      { crawlRetryBaseMs: 0 },
+    ).readPage({
+      url: "https://example.com/app",
+      requestId: "request-browser-recovery",
+      cacheMode: "live",
+      browserAllowed: true,
+      browserReadiness: { target: { selector: "main" } },
+      budget: { ...budget, maxAttempts: 2, maxBrowserContexts: 2 },
+    });
+
+    expect(result.fetchMethod).toBe("browser");
+    expect(browser.calls).toBe(2);
+    expect(ledger.list("request-browser-recovery")).toEqual([
+      expect.objectContaining({ outcome: "failed", traceRef }),
+      expect.objectContaining({ outcome: "succeeded", traceRef: null }),
     ]);
   });
 });

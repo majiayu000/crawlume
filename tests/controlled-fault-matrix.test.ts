@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   buildControlledFaultBenchmark,
   buildControlledFaultMatrix,
+  controlledFaultScenarios,
   controlledFaultEnvironment,
   createControlledFaultSite,
   type ControlledFaultScenario,
@@ -75,6 +76,7 @@ function expectCompleteProvenance(candidate: BenchmarkCandidate): void {
 
 async function execute(scenario: ControlledFaultScenario) {
   site.reset();
+  site.select(scenario);
   const fixture = buildControlledFaultBenchmark(site, scenario);
   for (const [name, value] of Object.entries(
     controlledFaultEnvironment(site, dataDirectory, fixture),
@@ -108,10 +110,26 @@ describe.sequential("controlled Reader fault matrix", () => {
   it("builds a unique controlled-layer corpus entry for every fault scenario", () => {
     const matrix = buildControlledFaultMatrix(site);
 
-    expect(matrix).toHaveLength(7);
-    expect(new Set(matrix.map(({ benchmarkCase }) => benchmarkCase.id)).size).toBe(7);
+    expect(matrix.length).toBeGreaterThanOrEqual(40);
+    expect(matrix).toHaveLength(controlledFaultScenarios.length);
+    expect(new Set(matrix.map(({ benchmarkCase }) => benchmarkCase.id)).size)
+      .toBe(controlledFaultScenarios.length);
     expect(matrix.every(({ benchmarkCase }) => benchmarkCase.layer === "controlled")).toBe(true);
   });
+
+  it.each(controlledFaultScenarios.slice(7))(
+    "executes %s through the production Reader contract",
+    async (scenario) => {
+      const { execution } = await execute(scenario);
+
+      expect(execution.evaluation).toMatchObject({
+        outcome: "valid",
+        passed: true,
+        falseSuccess: false,
+      });
+    },
+    15_000,
+  );
 
   it.each([
     ["slow-header", "FETCH_TIMEOUT"],

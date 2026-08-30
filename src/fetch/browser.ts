@@ -1,5 +1,10 @@
 import { chromium, type BrowserContext, type LaunchOptions, type Page } from "playwright-core";
 
+import {
+  BrowserFailureTraceStore,
+  type BrowserDomNodeTrace,
+  type BrowserTracePhase,
+} from "../browser-trace.js";
 import type { AppConfig } from "../config.js";
 import { agentIdentityEvidence } from "../identity.js";
 import {
@@ -110,6 +115,7 @@ function browserError(error: unknown, redactCause = false): ReadError {
       ? new ReadError(error.code, error.message, {
           retryable: error.retryable,
           details: error.details,
+          ...(error.traceRef === null ? {} : { traceRef: error.traceRef }),
         })
       : error;
   }
@@ -125,9 +131,46 @@ function browserError(error: unknown, redactCause = false): ReadError {
       ...(redactCause ? {} : { cause: error }),
     });
   }
+  if (/target.*closed|browser.*closed|disconnected|crash/iu.test(message)) {
+    return new ReadError("BROWSER_UNAVAILABLE", "The local Chrome browser disconnected.", {
+      retryable: true,
+      ...(redactCause ? {} : { cause: error }),
+    });
+  }
   return new ReadError("BROWSER_UNAVAILABLE", "The browser could not load the page.", {
     ...(redactCause ? {} : { cause: error }),
   });
+}
+
+function incrementCounter(counters: Record<string, number>, key: string): void {
+  counters[key] = Math.min(100_000, (counters[key] ?? 0) + 1);
+}
+
+function resourceTypeBucket(value: string): string {
+  return [
+    "document", "stylesheet", "image", "media", "font", "script", "xhr", "fetch", "websocket",
+  ].includes(value) ? value : "other";
+}
+
+function statusBucket(status: number): string {
+  if (status >= 200 && status < 300) return "2xx";
+  if (status >= 300 && status < 400) return "3xx";
+  if (status >= 400 && status < 500) return "4xx";
+  if (status >= 500 && status < 600) return "5xx";
+  return "other";
+}
+
+function consoleBucket(value: string): string {
+  return ["debug", "log", "info", "warning", "error"].includes(value) ? value : "other";
+}
+
+async function structuralDomSnapshot(page: Page): Promise<BrowserDomNodeTrace[]> {
+  return page.locator("body, body *").evaluateAll((elements, maximumNodes) =>
+    elements.slice(0, maximumNodes).map((element) => ({
+      tag: element.tagName.toLowerCase(),
+      childElements: element.children.length,
+      textCharacters: element.textContent?.length ?? 0,
+    })), 256);
 }
 
 export class BrowserPageFetcher implements PageFetcher {
@@ -144,10 +187,14 @@ export class BrowserPageFetcher implements PageFetcher {
       config,
       async (proxy) => chromium.launch(browserLaunchOptions(config, true, proxy)),
     ),
+    private readonly traceStore = new BrowserFailureTraceStore(config.dataDir),
   ) {}
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     const { authProfile, signal, browserReadiness } = options;
+    const allowedOrigins = authProfile === undefined
+      ? null
+      : new Set(options.allowedOrigins ?? [url.origin]);
     const maxResponseBytes = Math.min(
       options.maxResponseBytes ?? this.config.maxResponseBytes,
       this.config.maxResponseBytes,
@@ -158,11 +205,20 @@ export class BrowserPageFetcher implements PageFetcher {
       : normalizeBrowserReadinessPolicy(browserReadiness);
     let context: BrowserContext | null = null;
     let lease: BrowserLease | null = null;
+    let leaseHealthy = true;
+    let page: Page | null = null;
     let profilePath: string | null = null;
     let capAuthorizationUsed = false;
     let onAbort: (() => void) | null = null;
     const proxy = this.proxyPool.acquire(authProfile);
     let robotsRsl = this.rsl.emptyEvidence();
+    const traceStartedAt = Date.now();
+    let tracePhase: BrowserTracePhase = "policy";
+    let observedEvents = 0;
+    let failedRequests = 0;
+    const resourceTypes: Record<string, number> = {};
+    const statusClasses: Record<string, number> = {};
+    const consoleCounts: Record<string, number> = {};
 
     if (authProfile !== undefined) {
       profilePath = this.profiles.require(authProfile);
@@ -183,6 +239,7 @@ export class BrowserPageFetcher implements PageFetcher {
         await this.robots.licenseUrls(url),
       )).evidence;
 
+      tracePhase = "context";
       if (profilePath !== null) {
         context = await chromium.launchPersistentContext(profilePath, {
           ...browserLaunchOptions(this.config, true, proxy),
@@ -205,7 +262,21 @@ export class BrowserPageFetcher implements PageFetcher {
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      const page = context.pages()[0] ?? (await context.newPage());
+      const activePage = context.pages()[0] ?? (await context.newPage());
+      page = activePage;
+      activePage.on("request", (request) => {
+        observedEvents = Math.min(100_000, observedEvents + 1);
+        incrementCounter(resourceTypes, resourceTypeBucket(request.resourceType()));
+      });
+      activePage.on("requestfailed", () => {
+        failedRequests = Math.min(100_000, failedRequests + 1);
+      });
+      activePage.on("response", (networkResponse) => {
+        incrementCounter(statusClasses, statusBucket(networkResponse.status()));
+      });
+      activePage.on("console", (message) => {
+        incrementCounter(consoleCounts, consoleBucket(message.type()));
+      });
       let blockedNavigation: ReadError | null = null;
       const presentedAuthorizations = new Map<string, string>();
       await context.route("**/*", async (route) => {
@@ -218,7 +289,20 @@ export class BrowserPageFetcher implements PageFetcher {
         try {
           const parsed = this.urlPolicy.parse(requestUrl);
           await this.urlPolicy.assertPublic(parsed);
-          if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+          const isMainNavigation = request.isNavigationRequest() && request.frame() === activePage.mainFrame();
+          let authorization: string | null = null;
+          if (isMainNavigation) {
+            if (allowedOrigins !== null && !allowedOrigins.has(parsed.origin)) {
+              throw new ReadError(
+                "ACCESS_DENIED",
+                "The authorized browser profile cannot navigate outside its allowed origins.",
+                {
+                  details: {
+                    origin: parsed.origin,
+                  },
+                },
+              );
+            }
             await this.robots.assertAllowed(parsed);
             const decision = await this.rsl.authorizeRobots(
               parsed,
@@ -230,15 +314,57 @@ export class BrowserPageFetcher implements PageFetcher {
             if (decision.authorization !== null) {
               capAuthorizationUsed = true;
               presentedAuthorizations.set(requestKey(parsed), decision.authorization);
-              await route.continue({
-                headers: { ...request.headers(), authorization: decision.authorization },
-              });
-              return;
+              authorization = decision.authorization;
             }
+          }
+          if (allowedOrigins !== null && isMainNavigation) {
+            let intercepted;
+            try {
+              intercepted = await route.fetch({
+                maxRedirects: 0,
+                timeout: timeoutMs,
+                ...(signal === undefined ? {} : { signal }),
+                ...(authorization === null
+                  ? {}
+                  : { headers: { ...request.headers(), authorization } }),
+              });
+            } catch (error) {
+              throw new ReadError("UPSTREAM_ERROR", "The authorized browser request failed.", {
+                retryable: true,
+                cause: error,
+              });
+            }
+            const location = intercepted.headers()["location"];
+            if (
+              location !== undefined &&
+              [301, 302, 303, 307, 308].includes(intercepted.status())
+            ) {
+              const redirect = this.urlPolicy.parse(new URL(location, parsed).toString());
+              await this.urlPolicy.assertPublic(redirect);
+              if (!allowedOrigins.has(redirect.origin)) {
+                throw new ReadError(
+                  "ACCESS_DENIED",
+                  "The authorized browser profile cannot follow a redirect outside its allowed origins.",
+                  {
+                    details: {
+                      origin: redirect.origin,
+                    },
+                  },
+                );
+              }
+            }
+            await route.fulfill({ response: intercepted });
+            return;
+          }
+          if (authorization !== null) {
+            await route.continue({
+              headers: { ...request.headers(), authorization },
+            });
+            return;
           }
           await route.continue();
         } catch (error) {
-          if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+          if (request.isNavigationRequest() && request.frame() === activePage.mainFrame()) {
             blockedNavigation =
               error instanceof ReadError
                 ? error
@@ -250,6 +376,7 @@ export class BrowserPageFetcher implements PageFetcher {
 
       const navigationStartedAt = Date.now();
       let response;
+      tracePhase = "navigation";
       try {
         response = await page.goto(url.toString(), {
           waitUntil: "domcontentloaded",
@@ -278,6 +405,7 @@ export class BrowserPageFetcher implements PageFetcher {
         readinessBudgetMs,
         readinessPolicy?.timeoutMs ?? readinessBudgetMs,
       );
+      tracePhase = "readiness";
       const runtime = pageReadinessRuntime(page);
       const readiness = readinessPolicy === undefined
         ? await waitForBrowserReadiness(runtime, {
@@ -289,6 +417,7 @@ export class BrowserPageFetcher implements PageFetcher {
             ...(signal === undefined ? {} : { signal }),
           });
 
+      tracePhase = "response";
       const finalUrl = page.url();
       const finalParsed = this.urlPolicy.parse(finalUrl);
       await this.urlPolicy.assertPublic(finalParsed);
@@ -387,11 +516,42 @@ export class BrowserPageFetcher implements PageFetcher {
         rsl,
       };
     } catch (error) {
-      throw browserError(error, capAuthorizationUsed);
+      const failure = browserError(error, capAuthorizationUsed);
+      leaseHealthy = failure.code !== "BROWSER_UNAVAILABLE";
+      const authorized = authProfile !== undefined || capAuthorizationUsed;
+      let dom: BrowserDomNodeTrace[] | null = null;
+      let domCapture: "captured" | "omitted_authorized" | "unavailable" = authorized
+        ? "omitted_authorized"
+        : "unavailable";
+      if (!authorized && page !== null) {
+        try {
+          dom = await structuralDomSnapshot(page);
+          domCapture = "captured";
+        } catch {
+          domCapture = "unavailable";
+        }
+      }
+      const traceRef = this.traceStore.record({
+        authorized,
+        phase: tracePhase,
+        errorCode: failure.code,
+        elapsedMs: Date.now() - traceStartedAt,
+        dom,
+        domCapture,
+        network: { observedEvents, failedRequests, resourceTypes, statusClasses },
+        console: consoleCounts,
+      });
+      throw new ReadError(failure.code, failure.message, {
+        retryable: failure.retryable,
+        details: failure.details,
+        ...(failure.execution === null ? {} : { execution: failure.execution }),
+        traceRef,
+        cause: failure,
+      });
     } finally {
       if (onAbort !== null) signal?.removeEventListener("abort", onAbort);
       await context?.close().catch(() => undefined);
-      await lease?.release();
+      await lease?.release(leaseHealthy);
       if (authProfile !== undefined) {
         this.activeProfiles.delete(authProfile);
       }

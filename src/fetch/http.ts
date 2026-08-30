@@ -16,11 +16,14 @@ export type TransportResponse = {
   status: number;
   contentType: string;
   body: string;
+  bodyBytes?: Uint8Array;
   responseBytes: number;
   retryAfterMs: number | null;
   proxyUsed: boolean;
   agentIdentity: ReturnType<AgentIdentity["evidence"]>;
   linkHeader: string | null;
+  etag?: string;
+  lastModified?: string;
 };
 
 export type FormResponse = {
@@ -82,20 +85,27 @@ type ReadableBody = {
 async function readLimitedBody(
   body: ReadableBody | null,
   maxBytes: number,
-): Promise<{ text: string; bytes: number }> {
+): Promise<{ text: string; bytes: number; data: Uint8Array }> {
   if (body === null) {
-    return { text: "", bytes: 0 };
+    return { text: "", bytes: 0, data: new Uint8Array() };
   }
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let bytes = 0;
   let text = "";
+  const chunks: Uint8Array[] = [];
   try {
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) {
         text += decoder.decode();
-        return { text, bytes };
+        const data = new Uint8Array(bytes);
+        let offset = 0;
+        for (const value of chunks) {
+          data.set(value, offset);
+          offset += value.byteLength;
+        }
+        return { text, bytes, data };
       }
       if (!(chunk.value instanceof Uint8Array)) {
         throw new ReadError("UPSTREAM_ERROR", "The response stream returned an invalid chunk.");
@@ -107,6 +117,7 @@ async function readLimitedBody(
           details: { maxResponseBytes: maxBytes },
         });
       }
+      chunks.push(chunk.value.slice());
       text += decoder.decode(chunk.value, { stream: true });
     }
   } finally {
@@ -149,7 +160,12 @@ export class HttpTransport {
 
   async fetch(
     initialUrl: URL,
-    options: { maxBytes?: number; signal?: AbortSignal; beforeRequest?: BeforeRequest } = {},
+    options: {
+      maxBytes?: number;
+      signal?: AbortSignal;
+      beforeRequest?: BeforeRequest;
+      revalidate?: PageFetchOptions["revalidate"];
+    } = {},
   ): Promise<TransportResponse> {
     let current = initialUrl;
     const maxBytes = Math.min(options.maxBytes ?? this.config.maxResponseBytes, this.config.maxResponseBytes);
@@ -166,6 +182,13 @@ export class HttpTransport {
           "accept": "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
           "accept-language": "en-US,en;q=0.8",
           ...(access === undefined ? {} : { "authorization": access.authorization }),
+          ...(options.revalidate?.url === current.toString() && options.revalidate.etag !== undefined
+            ? { "if-none-match": options.revalidate.etag }
+            : {}),
+          ...(options.revalidate?.url === current.toString() &&
+          options.revalidate.lastModified !== undefined
+            ? { "if-modified-since": options.revalidate.lastModified }
+            : {}),
           "user-agent": this.config.userAgent,
         });
         const timeoutSignal = AbortSignal.timeout(this.config.requestTimeoutMs);
@@ -181,7 +204,7 @@ export class HttpTransport {
         throw transportFetchError(error, current, access === undefined);
       }
 
-      if (response.status >= 300 && response.status < 400) {
+      if (response.status !== 304 && response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         await response.body?.cancel();
         if (location === null) {
@@ -216,11 +239,18 @@ export class HttpTransport {
         status: response.status,
         contentType: response.headers.get("content-type") ?? "",
         body: body.text,
+        bodyBytes: body.data,
         responseBytes: body.bytes,
         retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
         proxyUsed: proxy !== null,
         agentIdentity: this.identity.evidence(),
         linkHeader: response.headers.get("link"),
+        ...(response.headers.get("etag") === null
+          ? {}
+          : { etag: response.headers.get("etag") as string }),
+        ...(response.headers.get("last-modified") === null
+          ? {}
+          : { lastModified: response.headers.get("last-modified") as string }),
       };
     }
 
@@ -322,6 +352,7 @@ export class HttpPageFetcher implements PageFetcher {
           ? {}
           : { maxBytes: options.maxResponseBytes }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.revalidate === undefined ? {} : { revalidate: options.revalidate }),
         beforeRequest: async (nextUrl) => {
           await this.robots.assertAllowed(nextUrl);
           const decision = await this.rsl.authorizeRobots(
@@ -392,6 +423,7 @@ export class HttpPageFetcher implements PageFetcher {
       }
       return {
         body: response.body,
+        ...(response.bodyBytes === undefined ? {} : { bodyBytes: response.bodyBytes }),
         fetchedAt: new Date().toISOString(),
         method: "http",
         httpStatus: response.status,
@@ -401,6 +433,9 @@ export class HttpPageFetcher implements PageFetcher {
         proxyUsed: response.proxyUsed,
         agentIdentity: response.agentIdentity,
         rsl,
+        ...(response.etag === undefined ? {} : { etag: response.etag }),
+        ...(response.lastModified === undefined ? {} : { lastModified: response.lastModified }),
+        ...(response.status === 304 ? { notModified: true } : {}),
       };
     }
     throw new ReadError("RSL_LICENSE_REQUIRED", "The CAP authorization attempt was exhausted.");

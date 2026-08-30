@@ -93,6 +93,7 @@ describe("AttemptLedger", () => {
       lastSequence: 2,
       lastOutcome: "succeeded",
       lastStageId: "browser-1",
+      terminal: null,
       usage: {
         documentBytesIn: 3_000,
         networkBytesOut: 300,
@@ -118,6 +119,31 @@ describe("AttemptLedger", () => {
     expect(reopened.list("request-1")).toHaveLength(1);
     expect(reopened.append(attempt({ stageId: "validate-1", provider: "adapter" })))
       .toMatchObject({ sequence: 2 });
+  });
+
+  it("commits one idempotent terminal projection and rejects split truth", () => {
+    const ledger = new AttemptLedger(":memory:");
+    ledgers.push(ledger);
+    ledger.append(attempt());
+    const input = {
+      requestId: "request-1",
+      planId: "plan-1",
+      state: "completed" as const,
+      artifactKey: `artifact:${"a".repeat(64)}`,
+      contentHash: "content-hash",
+      validatorVersion: "generic-content-v1",
+      error: null,
+    };
+
+    const first = ledger.commitTerminal(input);
+    expect(ledger.commitTerminal(input)).toEqual(first);
+    expect(ledger.getTerminal("request-1", "plan-1")).toEqual(first);
+    expect(ledger.project("request-1")?.terminal).toEqual(first);
+    expect(() => ledger.commitTerminal({
+      ...input,
+      artifactKey: `artifact:${"b".repeat(64)}`,
+    })).toThrow("different terminal outcome");
+    expect(() => ledger.getTerminal("request-1", "plan-2")).toThrow("different access plan");
   });
 
   it("rejects malformed time, usage, and outcome evidence clearly", () => {

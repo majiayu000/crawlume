@@ -3,15 +3,12 @@ import { describe, expect, it } from "vitest";
 import { parseCli } from "../src/cli/main.js";
 
 describe("diaoyan CLI", () => {
-  it("parses a read command with machine-friendly defaults", () => {
+  it("leaves reader semantic defaults to the shared ReadIntent boundary", () => {
     expect(parseCli(["read", "https://example.com/article"])).toEqual({
       kind: "read",
       markdown: false,
       options: {
         url: "https://example.com/article",
-        browserAllowed: true,
-        cacheMode: "prefer-cache",
-        maxAgeSeconds: 900,
       },
     });
   });
@@ -24,6 +21,8 @@ describe("diaoyan CLI", () => {
         "live",
         "--max-age-seconds",
         "60",
+        "--stale-while-revalidate-seconds",
+        "120",
         "--auth-profile",
         "research",
         "--markdown",
@@ -34,9 +33,9 @@ describe("diaoyan CLI", () => {
       markdown: true,
       options: {
         url: "https://example.com/article",
-        browserAllowed: true,
         cacheMode: "live",
         maxAgeSeconds: 60,
+        staleWhileRevalidateSeconds: 120,
         authProfile: "research",
       },
     });
@@ -58,7 +57,6 @@ describe("diaoyan CLI", () => {
       kind: "map",
       options: {
         url: "https://example.com/docs",
-        browserAllowed: true,
         maxPages: 12,
         maxDepth: 3,
         includeSubdomains: true,
@@ -72,9 +70,6 @@ describe("diaoyan CLI", () => {
       kind: "crawl",
       options: {
         url: "https://example.com/docs",
-        browserAllowed: true,
-        cacheMode: "prefer-cache",
-        maxAgeSeconds: 900,
         maxPages: 10,
         maxDepth: 2,
         includeSubdomains: false,
@@ -136,8 +131,8 @@ describe("diaoyan CLI", () => {
   it.each([
     [["read"], "read requires a URL"],
     [["write", "https://example.com"], "Supported commands"],
-    [["read", "--no-browser", "--auth-profile", "research", "https://example.com"], "requires browser access"],
     [["read", "--max-age-seconds", "1.5", "https://example.com"], "positive integer"],
+    [["read", "--stale-while-revalidate-seconds", "-1", "https://example.com"], "non-negative integer"],
     [["read", "--unknown", "https://example.com"], "Unknown command-line option"],
     [["read", "https://one.example", "https://two.example"], "exactly one URL"],
     [["map", "--max-pages", "501", "https://example.com"], "between 1 and 500"],

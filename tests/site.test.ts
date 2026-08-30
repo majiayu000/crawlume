@@ -186,7 +186,7 @@ describe("SiteService", () => {
     expect(ledger.list(rootRequestId).map(({ provider, outcome, errorCode }) => ({
       provider, outcome, errorCode,
     }))).toEqual([
-      { provider: "http", outcome: "failed", errorCode: "SHELL_ONLY" },
+      { provider: "http", outcome: "succeeded", errorCode: null },
       { provider: "browser", outcome: "succeeded", errorCode: null },
     ]);
   });

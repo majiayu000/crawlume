@@ -54,6 +54,7 @@ function withAttemptEvidence(
 ): ReadError {
   return new ReadError(error.code, error.message, {
     retryable: error.retryable,
+    ...(error.traceRef === null ? {} : { traceRef: error.traceRef }),
     details: {
       ...error.details,
       attempts,

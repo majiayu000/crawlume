@@ -1,35 +1,59 @@
-import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import { PageCache } from "../cache.js";
 import { CrawlRequestPolicy } from "../crawl-policy.js";
-import { extractPage } from "../extract.js";
+import { defaultExtractorRegistry } from "../extract.js";
 import { normalizeError, ReadError } from "../errors.js";
 import { AttemptLedger } from "../jobs.js";
 import type {
   AccessPlan,
+  AccessProviderId,
   BrowserReadinessPolicy,
   ExecutionBudget,
+  ExtractedPage,
   PageReadArtifact,
-  PageFetcher,
   PlannedStage,
+  RawPage,
+  ReadIntent,
   ResourceUsage,
+  ValidationResult,
 } from "../types.js";
-import { validateContent } from "../validation.js";
+import { defaultValidatorRegistry } from "../validation.js";
+import { ProviderRegistry, type ProviderStageResult } from "./providers.js";
 
 export type FetchTrace = {
   fetchAttempts: Record<"http" | "browser", number>;
   responseBytesByMethod: Record<"http" | "browser", number>;
   fetchDurationMsByMethod: Record<"http" | "browser", number>;
+  extractionDurationMs: number;
+  validationDurationMs: number;
   executedStages: string[];
   pendingRetryDelayMs: number;
 };
 
 export type StageExecutionResult = {
   artifact: PageReadArtifact;
+  artifactKey: string | null;
   trace: FetchTrace;
   totalRetryDelayMs: number;
+  publication: {
+    rawRef: string;
+    extractorVersion: string;
+    etag?: string;
+    lastModified?: string;
+  } | null;
 };
+
+type ExecutedStageArtifact = {
+  artifact: PageReadArtifact;
+  artifactKey: string | null;
+  publication: StageExecutionResult["publication"];
+};
+
+function traceMethod(provider: AccessProviderId): "http" | "browser" | null {
+  if (provider === "browser") return "browser";
+  if (provider === "http" || provider === "feed" || provider === "pdf") return "http";
+  return null;
+}
 
 export type StageExecutionInput = {
   url: URL;
@@ -38,6 +62,7 @@ export type StageExecutionInput = {
   authProfile: string | null;
   browserReadiness?: BrowserReadinessPolicy;
   requestId: string;
+  intent: ReadIntent;
   plan: AccessPlan;
   budget: ExecutionBudget;
   signal?: AbortSignal;
@@ -59,6 +84,8 @@ function emptyFetchTrace(): FetchTrace {
     fetchAttempts: { http: 0, browser: 0 },
     responseBytesByMethod: { http: 0, browser: 0 },
     fetchDurationMsByMethod: { http: 0, browser: 0 },
+    extractionDurationMs: 0,
+    validationDurationMs: 0,
     executedStages: [],
     pendingRetryDelayMs: 0,
   };
@@ -97,6 +124,7 @@ function errorWithFetchTrace(
   const networkStages = trace.executedStages.filter((stageId) => stageId !== "cache-read").length;
   return new ReadError(normalized.code, normalized.message, {
     retryable: normalized.retryable,
+    ...(normalized.traceRef === null ? {} : { traceRef: normalized.traceRef }),
     details: {
       ...normalized.details,
       requestId,
@@ -110,6 +138,8 @@ function errorWithFetchTrace(
       browserResponseBytes: trace.responseBytesByMethod.browser,
       httpFetchDurationMs: trace.fetchDurationMsByMethod.http,
       browserFetchDurationMs: trace.fetchDurationMsByMethod.browser,
+      extractionDurationMs: trace.extractionDurationMs,
+      validationDurationMs: trace.validationDurationMs,
     },
     execution: {
       requestId,
@@ -128,9 +158,7 @@ function errorWithFetchTrace(
 
 export class StageExecutor {
   constructor(
-    private readonly cache: PageCache,
-    private readonly httpFetcher: PageFetcher,
-    private readonly browserFetcher: PageFetcher,
+    private readonly providers: ProviderRegistry,
     private readonly crawlPolicy: CrawlRequestPolicy | null,
     private readonly attemptLedger: AttemptLedger | null,
   ) {}
@@ -147,23 +175,23 @@ export class StageExecutor {
     const startedAtMs = performance.now();
     let totalRetryDelayMs = 0;
     let artifact: PageReadArtifact | null = null;
+    let artifactKey: string | null = null;
+    let publication: StageExecutionResult["publication"] = null;
     try {
       for (const stage of input.plan.stages) {
         if (!stageAllowed(stage, failures)) continue;
         if (!trace.executedStages.includes(stage.id)) trace.executedStages.push(stage.id);
-        if (stage.provider === "cache") {
-          const cached = this.executeCache(stage, input);
-          if (cached instanceof ReadError) {
-            failures.set(stage.id, cached);
-            continue;
-          }
-          artifact = cached;
-          break;
-        }
-        const method = stage.provider === "http" ? "http" : "browser";
-        const operation = async (): Promise<PageReadArtifact> => {
+        const method = traceMethod(stage.provider);
+        const operation = async (): Promise<ExecutedStageArtifact> => {
           this.assertPreflightBudget(input, stage, trace, startedAtMs, method);
-          return this.fetchAndExtract(input, stage, trace, signal, deadlineController, method);
+          return this.executeProviderStage(
+            input,
+            stage,
+            trace,
+            signal,
+            deadlineController,
+            method,
+          );
         };
         try {
           const outcome = this.crawlPolicy === null
@@ -190,7 +218,9 @@ export class StageExecutor {
                 },
               );
           totalRetryDelayMs += outcome.totalRetryDelayMs;
-          artifact = outcome.value;
+          artifact = outcome.value.artifact;
+          artifactKey = outcome.value.artifactKey;
+          publication = outcome.value.publication;
           break;
         } catch (error) {
           const normalized = this.normalizeCancellation(error, input, deadlineController);
@@ -211,48 +241,7 @@ export class StageExecutor {
       );
       throw errorWithFetchTrace(terminal, trace, input.requestId, input.plan);
     }
-    return { artifact, trace, totalRetryDelayMs };
-  }
-
-  private executeCache(stage: PlannedStage, input: StageExecutionInput): PageReadArtifact | ReadError {
-    const startedAt = new Date().toISOString();
-    const cached = this.cache.get(input.cacheKey, input.maxAgeSeconds);
-    const completedAt = new Date().toISOString();
-    if (cached !== null) {
-      this.attemptLedger?.append({
-        requestId: input.requestId,
-        planId: input.plan.id,
-        stageId: stage.id,
-        provider: "cache",
-        providerVersion: "page-cache-v1",
-        outcome: "succeeded",
-        rawRef: null,
-        traceRef: null,
-        errorCode: null,
-        usage: emptyUsage(),
-        startedAt,
-        completedAt,
-      });
-      return { ...cached, cached: true };
-    }
-    const miss = new ReadError("CACHE_MISS", "No sufficiently fresh cached page is available.", {
-      details: { url: input.url.toString(), maxAgeSeconds: input.maxAgeSeconds },
-    });
-    this.attemptLedger?.append({
-      requestId: input.requestId,
-      planId: input.plan.id,
-      stageId: stage.id,
-      provider: "cache",
-      providerVersion: "page-cache-v1",
-      outcome: "failed",
-      rawRef: null,
-      traceRef: null,
-      errorCode: miss.code,
-      usage: emptyUsage(),
-      startedAt,
-      completedAt,
-    });
-    return miss;
+    return { artifact, artifactKey, trace, totalRetryDelayMs, publication };
   }
 
   private assertPreflightBudget(
@@ -260,7 +249,7 @@ export class StageExecutor {
     stage: PlannedStage,
     trace: FetchTrace,
     startedAtMs: number,
-    method: "http" | "browser",
+    method: "http" | "browser" | null,
   ): void {
     const elapsed = performance.now() - startedAtMs;
     let error: ReadError | null = null;
@@ -268,7 +257,7 @@ export class StageExecutor {
     const networkBytes = trace.responseBytesByMethod.http + trace.responseBytesByMethod.browser;
     if (elapsed >= input.budget.deadlineMs) {
       error = budgetError("deadlineMs", input.budget.deadlineMs, Math.ceil(elapsed));
-    } else if (attempts >= input.budget.maxAttempts) {
+    } else if (method !== null && attempts >= input.budget.maxAttempts) {
       error = budgetError("maxAttempts", input.budget.maxAttempts, attempts);
     } else if (networkBytes >= input.budget.maxDocumentBytes) {
       error = budgetError("maxDocumentBytes", input.budget.maxDocumentBytes, networkBytes);
@@ -294,8 +283,8 @@ export class StageExecutor {
       requestId: input.requestId,
       planId: input.plan.id,
       stageId: stage.id,
-      provider: method,
-      providerVersion: `reader-${method}-v1`,
+      provider: stage.provider,
+      providerVersion: "executor-budget-v1",
       outcome: "stopped",
       rawRef: null,
       traceRef: null,
@@ -307,89 +296,170 @@ export class StageExecutor {
     throw error;
   }
 
-  private async fetchAndExtract(
+  private async executeProviderStage(
     input: StageExecutionInput,
     stage: PlannedStage,
     trace: FetchTrace,
     signal: AbortSignal,
     deadlineController: AbortController,
-    method: "http" | "browser",
-  ): Promise<PageReadArtifact> {
-    const fetcher = method === "http" ? this.httpFetcher : this.browserFetcher;
-    trace.fetchAttempts[method] += 1;
+    method: "http" | "browser" | null,
+  ): Promise<ExecutedStageArtifact> {
+    if (method !== null) trace.fetchAttempts[method] += 1;
     const retryDelayMilliseconds = trace.pendingRetryDelayMs;
     trace.pendingRetryDelayMs = 0;
-    const startedAt = new Date().toISOString();
-    const startedAtMs = performance.now();
     const remainingBytes = input.budget.maxDocumentBytes -
       trace.responseBytesByMethod.http - trace.responseBytesByMethod.browser;
-    let page: Awaited<ReturnType<PageFetcher["fetch"]>> | undefined;
-    try {
-      page = await fetcher.fetch(input.url, {
-        ...(method === "browser" && input.authProfile !== null
-          ? { authProfile: input.authProfile }
-          : {}),
-        signal,
-        ...(method === "browser" && input.browserReadiness !== undefined
-          ? { browserReadiness: input.browserReadiness }
-          : {}),
-        maxResponseBytes: remainingBytes,
-        timeoutMs: method === "browser"
-          ? Math.max(1, Math.floor(input.budget.maxBrowserMs - trace.fetchDurationMsByMethod.browser))
-          : Math.max(1, input.budget.deadlineMs),
-      });
-      trace.responseBytesByMethod[method] += page.responseBytes;
-      const durationMs = Math.max(0, performance.now() - startedAtMs);
+    const result = await this.providers.execute({
+      stage,
+      url: input.url,
+      cacheKey: input.cacheKey,
+      maxAgeSeconds: input.maxAgeSeconds,
+      authProfile: input.authProfile,
+      ...(input.browserReadiness === undefined
+        ? {}
+        : { browserReadiness: input.browserReadiness }),
+      intent: input.intent,
+      maxResponseBytes: remainingBytes,
+      timeoutMs: method === "browser"
+        ? Math.max(1, Math.floor(input.budget.maxBrowserMs - trace.fetchDurationMsByMethod.browser))
+        : Math.max(1, input.budget.deadlineMs),
+    }, signal);
+    const durationMs = Math.max(0, Date.parse(result.completedAt) - Date.parse(result.startedAt));
+    if (method !== null) {
+      trace.responseBytesByMethod[method] += result.usage.documentBytesIn;
       trace.fetchDurationMsByMethod[method] += durationMs;
-      this.assertPostflightBudget(input, trace, method, durationMs);
-      const extracted = extractPage(page, {
-        allowIncompleteDocument: stage.input.completion.type === "discovery",
-      });
-      const artifact = this.artifact(input, page, extracted, trace);
-      this.appendProviderAttempt(input, stage, method, page, null, durationMs, retryDelayMilliseconds);
-      return artifact;
-    } catch (error) {
-      const durationMs = Math.max(0, performance.now() - startedAtMs);
-      if (page === undefined) trace.fetchDurationMsByMethod[method] += durationMs;
-      const normalized = this.normalizeCancellation(error, input, deadlineController);
-      const limitIsBudget = normalized.code === "RESPONSE_TOO_LARGE" &&
-        normalized.details.maxResponseBytes === remainingBytes;
-      const finalError = limitIsBudget
-        ? budgetError(
-            "maxDocumentBytes",
-            input.budget.maxDocumentBytes,
-            typeof normalized.details.responseBytes === "number"
-              ? normalized.details.responseBytes
-              : typeof normalized.details.contentLength === "number"
-                ? normalized.details.contentLength
-                : input.budget.maxDocumentBytes + 1,
-          )
-        : method === "browser" &&
-          trace.fetchDurationMsByMethod.browser > input.budget.maxBrowserMs
-        ? budgetError(
-            "maxBrowserMs",
-            input.budget.maxBrowserMs,
-            Math.ceil(trace.fetchDurationMsByMethod.browser),
-          )
-        : normalized;
-      this.appendProviderAttempt(
-        input,
-        stage,
-        method,
-        page,
-        finalError,
-        durationMs,
-        retryDelayMilliseconds,
-      );
-      throw finalError;
     }
+    let finalError = result.error === null
+      ? result.outcome === "succeeded"
+        ? null
+        : new ReadError("INTERNAL_ERROR", "A failed provider result must include an error.")
+        : new ReadError(result.error.code, result.error.message, {
+          retryable: result.error.retryable,
+          details: result.error.details,
+          ...(result.traceRef === null ? {} : { traceRef: result.traceRef }),
+        });
+    if (finalError !== null) {
+      finalError = this.normalizeCancellation(finalError, input, deadlineController);
+      if (
+        finalError.code === "RESPONSE_TOO_LARGE" &&
+        finalError.details.maxResponseBytes === remainingBytes
+      ) {
+        finalError = budgetError(
+          "maxDocumentBytes",
+          input.budget.maxDocumentBytes,
+          typeof finalError.details.responseBytes === "number"
+            ? finalError.details.responseBytes
+            : typeof finalError.details.contentLength === "number"
+              ? finalError.details.contentLength
+              : input.budget.maxDocumentBytes + 1,
+        );
+      }
+    }
+    try {
+      if (method !== null) this.assertPostflightBudget(input, trace, method);
+    } catch (error) {
+      finalError = normalizeError(error);
+    }
+    this.appendProviderAttempt(input, stage, result, finalError, retryDelayMilliseconds);
+    if (finalError !== null) throw finalError;
+    if (result.candidate === null) {
+      throw new ReadError("INTERNAL_ERROR", "A successful provider result requires a candidate.");
+    }
+    if (result.candidate.kind === "artifact") {
+      return {
+        artifact: result.candidate.artifact,
+        artifactKey: result.candidateArtifactRef,
+        publication: null,
+      };
+    }
+    const page = result.candidate.page;
+    const selected = await this.extractAndValidate(input, page, trace);
+    if (result.rawRef === null) {
+      throw new ReadError("INTERNAL_ERROR", "A raw provider candidate requires rawRef.");
+    }
+    return {
+      artifact: this.artifact(
+        input,
+        page,
+        selected.extracted,
+        selected.extractorVersion,
+        selected.validation,
+        trace,
+      ),
+      artifactKey: null,
+      publication: {
+        rawRef: result.rawRef,
+        extractorVersion: selected.extractorVersion,
+        ...(page.etag === undefined ? {} : { etag: page.etag }),
+        ...(page.lastModified === undefined ? {} : { lastModified: page.lastModified }),
+      },
+    };
+  }
+
+  private async extractAndValidate(
+    input: StageExecutionInput,
+    page: RawPage,
+    trace: FetchTrace,
+  ): Promise<{ extracted: ExtractedPage; extractorVersion: string; validation: ValidationResult }> {
+    const extractionStartedAt = performance.now();
+    const extraction = await defaultExtractorRegistry.extract(page);
+    trace.extractionDurationMs += Math.max(0, performance.now() - extractionStartedAt);
+    type SelectedCandidate = {
+      extracted: ExtractedPage;
+      extractorVersion: string;
+      validation: ValidationResult;
+    };
+    let selected: SelectedCandidate | null = null;
+    let uncertain: SelectedCandidate | null = null;
+    let invalid: SelectedCandidate | null = null;
+    for (const candidate of extraction.candidates) {
+      const validationStartedAt = performance.now();
+      const validation = defaultValidatorRegistry.validate({
+        intent: input.intent,
+        page,
+        candidate: candidate.artifact,
+      });
+      trace.validationDurationMs += Math.max(0, performance.now() - validationStartedAt);
+      if (validation.outcome === "valid") {
+        selected = {
+          extracted: candidate.artifact,
+          extractorVersion: candidate.extractorVersion,
+          validation,
+        };
+        break;
+      }
+      if (validation.outcome === "uncertain" && uncertain === null) {
+        uncertain = {
+          extracted: candidate.artifact,
+          extractorVersion: candidate.extractorVersion,
+          validation,
+        };
+      } else if (validation.outcome === "invalid" && invalid === null) {
+        invalid = {
+          extracted: candidate.artifact,
+          extractorVersion: candidate.extractorVersion,
+          validation,
+        };
+      }
+    }
+    selected ??= uncertain;
+    if (selected !== null) return selected;
+    const terminal = invalid?.validation.terminalError;
+    if (invalid === null || terminal === null || terminal === undefined) {
+      throw new ReadError("INTERNAL_ERROR", "Invalid validation requires a terminal error.");
+    }
+    throw new ReadError(terminal.code, terminal.message, {
+      details: {
+        extractorVersion: invalid.extractorVersion,
+        validatorVersion: invalid.validation.validatorVersion,
+      },
+    });
   }
 
   private assertPostflightBudget(
     input: StageExecutionInput,
     trace: FetchTrace,
     method: "http" | "browser",
-    durationMs: number,
   ): void {
     const bytes = trace.responseBytesByMethod.http + trace.responseBytesByMethod.browser;
     if (bytes > input.budget.maxDocumentBytes) {
@@ -402,7 +472,6 @@ export class StageExecutor {
         Math.ceil(trace.fetchDurationMsByMethod.browser),
       );
     }
-    void durationMs;
   }
 
   private normalizeCancellation(
@@ -422,40 +491,33 @@ export class StageExecutor {
   private appendProviderAttempt(
     input: StageExecutionInput,
     stage: PlannedStage,
-    method: "http" | "browser",
-    page: Awaited<ReturnType<PageFetcher["fetch"]>> | undefined,
+    result: ProviderStageResult,
     error: ReadError | null,
-    durationMs: number,
     retryDelayMilliseconds: number,
   ): void {
+    const outcome = error?.code === "BUDGET_EXHAUSTED" ? "stopped" : result.outcome;
     this.attemptLedger?.append({
       requestId: input.requestId,
       planId: input.plan.id,
       stageId: stage.id,
-      provider: method,
-      providerVersion: `reader-${method}-v1`,
-      outcome: error === null ? "succeeded" : "failed",
-      rawRef: page === undefined
-        ? null
-        : `sha256:${createHash("sha256").update(page.body).digest("hex")}`,
-      traceRef: null,
+      provider: stage.provider,
+      providerVersion: result.providerVersion,
+      outcome,
+      rawRef: result.rawRef,
+      traceRef: result.traceRef,
       errorCode: error?.code ?? null,
-      usage: {
-        ...emptyUsage(),
-        documentBytesIn: page?.responseBytes ?? 0,
-        browserMilliseconds: method === "browser" ? durationMs : 0,
-        browserContextStarts: method === "browser" ? 1 : 0,
-        retryDelayMilliseconds,
-      },
-      startedAt: new Date(Date.now() - durationMs).toISOString(),
-      completedAt: new Date().toISOString(),
+      usage: { ...result.usage, retryDelayMilliseconds },
+      startedAt: result.startedAt,
+      completedAt: result.completedAt,
     });
   }
 
   private artifact(
     input: StageExecutionInput,
-    page: Awaited<ReturnType<PageFetcher["fetch"]>>,
-    extracted: ReturnType<typeof extractPage>,
+    page: RawPage,
+    extracted: ExtractedPage,
+    extractorVersion: string,
+    validation: ValidationResult,
     trace: FetchTrace,
   ): PageReadArtifact {
     return {
@@ -471,8 +533,8 @@ export class StageExecutor {
       publishedTime: extracted.publishedTime,
       contentMarkdown: extracted.markdown,
       contentHash: extracted.contentHash,
-      completeness: "complete",
-      validation: validateContent(extracted),
+      completeness: validation.outcome === "valid" ? "complete" : "uncertain",
+      validation,
       discoveredLinks: extracted.links,
       evidence: {
         httpStatus: page.httpStatus,
@@ -480,6 +542,13 @@ export class StageExecutor {
         responseBytes: page.responseBytes,
         contentCharacters: extracted.contentCharacters,
         extractionMethod: extracted.extractionMethod,
+        extractorVersion,
+        validatorVersion: validation.validatorVersion,
+        phaseDurationsMs: {
+          extraction: trace.extractionDurationMs,
+          validation: trace.validationDurationMs,
+        },
+        cacheStatus: "live",
         requestId: input.requestId,
         accessPlan: {
           planId: input.plan.id,

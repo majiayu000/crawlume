@@ -33,6 +33,7 @@ function benchmarkCase(
       authProfile: null,
       maxAttempts: 3,
       maxDurationMs: 10_000,
+      maxDocumentBytes: 100_000,
       maxBrowserMs: 3_000,
     },
     truth: {
@@ -118,6 +119,7 @@ function provenance(
       lastOutcome: attempts.at(-1)!.outcome,
       lastStageId: attempts.at(-1)!.stageId,
       usage,
+      terminal: null,
     },
   };
 }

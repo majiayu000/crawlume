@@ -1,138 +1,230 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { dirname, join, sep } from "node:path";
 
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
 import TurndownService from "turndown";
 
-import { ReadError } from "./errors.js";
-import type { ExtractedPage, RawPage } from "./types.js";
+import { defaultSiteAdapterRegistry, type SiteAdapterRegistry } from "./adapters.js";
+import { normalizeError, ReadError, type ReadErrorCode } from "./errors.js";
+import type { ExtractedPage, ExtractionMethod, RawPage } from "./types.js";
 
-const minimumContentCharacters = 240;
 const removableSelectors = [
-  "script",
-  "style",
-  "noscript",
-  "template",
-  "iframe",
-  "object",
-  "embed",
-  "form",
-  "dialog",
-  "canvas",
+  "script", "style", "noscript", "template", "iframe", "object", "embed", "form",
+  "dialog", "canvas",
 ].join(",");
-
 const fallbackRemovableSelectors = [
-  removableSelectors,
-  "nav",
-  "header",
-  "footer",
-  "aside",
-  "[role='navigation']",
+  removableSelectors, "nav", "header", "footer", "aside", "[role='navigation']",
   "[aria-hidden='true']",
 ].join(",");
+const pdfjsDirectory = dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json"));
+const standardFontDataUrl = join(pdfjsDirectory, "standard_fonts") + sep;
+
+export type ExtractionCandidate = {
+  extractorId: string;
+  extractorVersion: string;
+  artifact: ExtractedPage;
+};
+
+export type ExtractionAttempt = {
+  extractorId: string;
+  extractorVersion: string;
+  outcome: "candidate" | "not-applicable" | "failed";
+  errorCode: ReadErrorCode | null;
+};
+
+export type ExtractionBatch = {
+  candidates: ExtractionCandidate[];
+  attempts: ExtractionAttempt[];
+};
+
+export type CandidateExtractor = {
+  id: string;
+  version: string;
+  supports(page: RawPage): boolean;
+  extract(page: RawPage): ExtractedPage | null | Promise<ExtractedPage | null>;
+};
+
+function mediaType(page: RawPage): string {
+  return page.contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
 
 function normalizedText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+  return value.replace(/\s+/gu, " ").trim();
 }
 
 function cleanMarkdown(value: string): string {
   return value
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{4,}/g, "\n\n\n")
+    .replace(/\r\n/gu, "\n")
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{4,}/gu, "\n\n\n")
     .trim();
 }
 
-function contentHash(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+function artifact(
+  page: RawPage,
+  method: ExtractionMethod,
+  markdown: string,
+  options: {
+    title?: string;
+    byline?: string | null;
+    publishedTime?: string | null;
+    links?: string[];
+  } = {},
+): ExtractedPage {
+  const cleaned = cleanMarkdown(markdown);
+  return {
+    title: normalizedText(options.title ?? "") || page.finalUrl,
+    byline: options.byline ?? null,
+    publishedTime: options.publishedTime ?? null,
+    markdown: cleaned,
+    contentCharacters: cleaned.length,
+    contentHash: createHash("sha256").update(cleaned).digest("hex"),
+    extractionMethod: method,
+    links: [...new Set(options.links ?? [])],
+  };
 }
 
-export function extractLinks(body: string, baseUrl: string): string[] {
-  const document = new JSDOM(body, { url: baseUrl }).window.document;
+type HtmlExtractionState = {
+  document: Document;
+  links: string[];
+  articleCandidate?: ExtractedPage | null;
+};
+
+const htmlExtractionStates = new WeakMap<RawPage, HtmlExtractionState>();
+
+function documentLinks(document: Document): string[] {
   const links = new Set<string>();
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     const rawHref = anchor.getAttribute("href") ?? "";
-    if (!URL.canParse(rawHref, document.baseURI)) {
-      continue;
-    }
+    if (!URL.canParse(rawHref, document.baseURI)) continue;
     const href = new URL(rawHref, document.baseURI);
-    if (href.protocol !== "http:" && href.protocol !== "https:") {
-      continue;
-    }
+    if (href.protocol !== "http:" && href.protocol !== "https:") continue;
     href.hash = "";
     links.add(href.toString());
   }
   return [...links];
 }
 
-function errorDetails(page: RawPage, title: string, contentCharacters: number) {
-  return {
-    url: page.finalUrl,
-    httpStatus: page.httpStatus,
-    title,
-    contentCharacters,
-    browserRecommended: page.method === "http",
-  };
+function htmlExtractionState(page: RawPage): HtmlExtractionState {
+  const existing = htmlExtractionStates.get(page);
+  if (existing !== undefined) return existing;
+  const document = new JSDOM(page.body, { url: page.finalUrl }).window.document;
+  const state = { document, links: documentLinks(document) };
+  htmlExtractionStates.set(page, state);
+  return state;
 }
 
-function assertNotGatePage(document: Document, page: RawPage): void {
-  const title = normalizedText(document.title);
-  const bodyText = normalizedText(document.body?.textContent ?? "").slice(0, 8_000);
-  const combined = `${title}\n${bodyText}`.toLowerCase();
+export class ExtractorRegistry {
+  constructor(
+    private readonly extractors: readonly CandidateExtractor[],
+    private readonly siteAdapters: SiteAdapterRegistry = defaultSiteAdapterRegistry,
+  ) {}
 
-  const challengeSignals = [
-    "are you a robot",
-    "verify you are human",
-    "checking your browser",
-    "attention required! | cloudflare",
-    "security verification",
-    "captcha",
-    "unusual traffic",
-  ];
-  if (challengeSignals.some((signal) => combined.includes(signal))) {
-    throw new ReadError(
-      "HUMAN_VERIFICATION_REQUIRED",
-      "The site returned a human-verification or bot-challenge page.",
-      { details: errorDetails(page, title, bodyText.length) },
-    );
+  async extract(page: RawPage): Promise<ExtractionBatch> {
+    return this.extractCandidates(page, false);
   }
 
-  const passwordForm = document.querySelector("form input[type='password' i]");
-  if (
-    passwordForm !== null ||
-    /\b(log in|sign in)\b.*\b(sign up|join)\b/i.test(title) ||
-    /^(log in|sign in)$/i.test(title)
-  ) {
-    throw new ReadError("LOGIN_WALL_DETECTED", "The site returned a login wall.", {
-      details: errorDetails(page, title, bodyText.length),
-    });
+  async extractForTournament(page: RawPage): Promise<ExtractionBatch> {
+    return this.extractCandidates(page, true);
   }
 
-  const paywallNode = document.querySelector(
-    "[class*='paywall' i], [id*='paywall' i], [data-testid*='paywall' i], [class*='metered' i]",
-  );
-  const paywallPhrase =
-    /subscribe to (continue|read)|subscription required|you have reached your (article|story) limit|members only/i;
-  if (paywallNode !== null && paywallPhrase.test(bodyText)) {
-    throw new ReadError("PAYMENT_REQUIRED", "The site returned a subscription wall.", {
-      details: errorDetails(page, title, bodyText.length),
-    });
+  private async extractCandidates(
+    page: RawPage,
+    includeDocumentFallback: boolean,
+  ): Promise<ExtractionBatch> {
+    const candidates: ExtractionCandidate[] = [];
+    const attempts: ExtractionAttempt[] = [];
+    let matched = 0;
+    let firstFailure: ReadError | null = null;
+    const siteAdapter = this.siteAdapters.resolve(page.finalUrl);
+    if (siteAdapter !== null) {
+      const extractorId = `adapter:${siteAdapter.manifest.id}`;
+      const extractorVersion = `${extractorId}@${siteAdapter.manifest.version}`;
+      matched += 1;
+      try {
+        const result = await this.siteAdapters.extract(page.finalUrl, page);
+        attempts.push({
+          extractorId,
+          extractorVersion,
+          outcome: result === null ? "not-applicable" : "candidate",
+          errorCode: null,
+        });
+        if (result !== null) {
+          candidates.push({ extractorId, extractorVersion, artifact: result.artifact });
+        }
+      } catch (error) {
+        const normalized = normalizeError(error);
+        firstFailure = normalized;
+        attempts.push({
+          extractorId,
+          extractorVersion,
+          outcome: "failed",
+          errorCode: normalized.code,
+        });
+      }
+    }
+    for (const extractor of this.extractors) {
+      const tournamentDocument = includeDocumentFallback && extractor.id === "document" &&
+        htmlMediaTypes.has(mediaType(page));
+      if (!extractor.supports(page) && !tournamentDocument) continue;
+      matched += 1;
+      try {
+        const extracted = await extractor.extract(page);
+        attempts.push({
+          extractorId: extractor.id,
+          extractorVersion: extractor.version,
+          outcome: extracted === null ? "not-applicable" : "candidate",
+          errorCode: null,
+        });
+        if (extracted !== null) {
+          candidates.push({
+            extractorId: extractor.id,
+            extractorVersion: extractor.version,
+            artifact: extracted,
+          });
+        }
+      } catch (error) {
+        const normalized = normalizeError(error);
+        firstFailure ??= normalized;
+        attempts.push({
+          extractorId: extractor.id,
+          extractorVersion: extractor.version,
+          outcome: "failed",
+          errorCode: normalized.code,
+        });
+      }
+    }
+    if (matched === 0) {
+      throw new ReadError("UNSUPPORTED_CONTENT_TYPE", "No extractor supports the response media type.", {
+        details: { contentType: page.contentType, url: page.finalUrl },
+      });
+    }
+    if (candidates.length === 0) {
+      throw firstFailure ?? new ReadError(
+        "INCOMPLETE_CONTENT",
+        "The matching extractors produced no candidate artifact.",
+        { details: { contentType: page.contentType, url: page.finalUrl } },
+      );
+    }
+    return { candidates, attempts };
   }
+}
+
+export function extractLinks(body: string, baseUrl: string): string[] {
+  const document = new JSDOM(body, { url: baseUrl }).window.document;
+  return documentLinks(document);
 }
 
 function sanitizeDocument(document: Document, baseUrl: string, fallback: boolean): void {
-  document.querySelectorAll(fallback ? fallbackRemovableSelectors : removableSelectors).forEach((node) => {
-    node.remove();
-  });
-
+  document.querySelectorAll(fallback ? fallbackRemovableSelectors : removableSelectors)
+    .forEach((node) => node.remove());
   for (const element of document.querySelectorAll<HTMLElement>("*")) {
     for (const attribute of Array.from(element.attributes)) {
-      if (attribute.name.toLowerCase().startsWith("on")) {
-        element.removeAttribute(attribute.name);
-      }
+      if (attribute.name.toLowerCase().startsWith("on")) element.removeAttribute(attribute.name);
     }
   }
-
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     try {
       const href = new URL(anchor.getAttribute("href") ?? "", baseUrl);
@@ -145,138 +237,245 @@ function sanitizeDocument(document: Document, baseUrl: string, fallback: boolean
       anchor.removeAttribute("href");
     }
   }
-
   for (const image of document.querySelectorAll<HTMLImageElement>("img[src]")) {
     try {
       const source = new URL(image.getAttribute("src") ?? "", baseUrl);
-      if (source.protocol === "http:" || source.protocol === "https:") {
-        image.src = source.toString();
-      } else {
-        image.removeAttribute("src");
-      }
+      if (source.protocol === "http:" || source.protocol === "https:") image.src = source.toString();
+      else image.removeAttribute("src");
     } catch {
       image.removeAttribute("src");
     }
   }
 }
 
-function htmlToMarkdown(html: string, baseUrl: string): string {
-  const contentDom = new JSDOM(html, { url: baseUrl });
-  sanitizeDocument(contentDom.window.document, baseUrl, false);
+function htmlToMarkdown(document: Document, baseUrl: string, fallback: boolean): string {
+  const clone = document.cloneNode(true) as Document;
+  sanitizeDocument(clone, baseUrl, fallback);
   const turndown = new TurndownService({
     bulletListMarker: "-",
     codeBlockStyle: "fenced",
     headingStyle: "atx",
   });
   turndown.remove(["button", "input", "select", "textarea"]);
-  return cleanMarkdown(turndown.turndown(contentDom.window.document.body));
+  return cleanMarkdown(turndown.turndown(clone.body));
 }
 
-function extractPlain(page: RawPage): ExtractedPage {
-  const markdown = cleanMarkdown(page.body);
-  if (markdown.length < minimumContentCharacters) {
-    throw new ReadError("INCOMPLETE_CONTENT", "The response did not contain enough readable content.", {
-      details: errorDetails(page, page.finalUrl, markdown.length),
+function jsonExtractor(page: RawPage): ExtractedPage {
+  let value: unknown;
+  try {
+    value = JSON.parse(page.body) as unknown;
+  } catch (cause) {
+    throw new ReadError("INCOMPLETE_CONTENT", "The response declared JSON but was malformed.", {
+      details: { url: page.finalUrl },
+      cause,
     });
   }
-  return {
-    title: page.finalUrl,
-    byline: null,
-    publishedTime: null,
-    markdown,
-    contentCharacters: markdown.length,
-    contentHash: contentHash(markdown),
-    extractionMethod: "plain",
-    links: [],
-  };
+  const title = value !== null && typeof value === "object" && "title" in value &&
+      typeof value.title === "string"
+    ? value.title
+    : page.finalUrl;
+  return artifact(page, "json", `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``, { title });
 }
 
-export function extractPage(
-  page: RawPage,
-  options: { allowIncompleteDocument?: boolean } = {},
-): ExtractedPage {
-  const contentType = page.contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  if (
-    contentType === "text/plain" ||
-    contentType === "application/json" ||
-    contentType.endsWith("+json")
-  ) {
-    return extractPlain(page);
+function jsonLdExtractor(page: RawPage): ExtractedPage | null {
+  const { document } = htmlExtractionState(page);
+  const values: unknown[] = [];
+  for (const script of document.querySelectorAll<HTMLScriptElement>("script[type='application/ld+json' i]")) {
+    try {
+      const parsed = JSON.parse(script.textContent ?? "") as unknown;
+      values.push(...(Array.isArray(parsed) ? parsed : [parsed]));
+    } catch {
+      continue;
+    }
   }
-  if (
-    contentType !== "" &&
-    contentType !== "text/html" &&
-    contentType !== "application/xhtml+xml"
-  ) {
-    throw new ReadError("UNSUPPORTED_CONTENT_TYPE", "The response is not a supported text page.", {
-      details: { contentType, url: page.finalUrl },
-    });
-  }
-
-  const dom = new JSDOM(page.body, { url: page.finalUrl });
-  const document = dom.window.document;
-  const links = extractLinks(page.body, page.finalUrl);
-  assertNotGatePage(document, page);
-
-  const title = normalizedText(document.title) || page.finalUrl;
-  const cloned = document.cloneNode(true) as Document;
-  sanitizeDocument(cloned, page.finalUrl, false);
-  const article = new Readability(cloned).parse();
-
-  let markdown = "";
-  let extractionMethod: "readability" | "document" = "readability";
-  if (article?.content !== null && article?.content !== undefined) {
-    markdown = htmlToMarkdown(article.content, page.finalUrl);
-  }
-
-  if (markdown.length < minimumContentCharacters) {
-    const fallback = document.cloneNode(true) as Document;
-    sanitizeDocument(fallback, page.finalUrl, true);
-    const turndown = new TurndownService({
-      bulletListMarker: "-",
-      codeBlockStyle: "fenced",
-      headingStyle: "atx",
-    });
-    turndown.remove(["button", "input", "select", "textarea"]);
-    markdown = cleanMarkdown(turndown.turndown(fallback.body));
-    extractionMethod = "document";
-  }
-
-  const bodyText = normalizedText(document.body?.textContent ?? "");
-  const looksLikeShell =
-    /enable javascript|javascript is disabled|loading(?:\.{3}|…)|something went wrong/i.test(bodyText) ||
-    (bodyText.length < minimumContentCharacters && document.querySelectorAll("script").length > 3);
-  if (looksLikeShell && markdown.length < 2_000) {
-    throw new ReadError("SHELL_ONLY", "The page returned an application shell without complete data.", {
-      details: errorDetails(page, title, markdown.length),
-    });
-  }
-  if (options.allowIncompleteDocument === true) {
-    return {
-      title: normalizedText(article?.title ?? "") || title,
-      byline: normalizedText(article?.byline ?? "") || null,
-      publishedTime: normalizedText(article?.publishedTime ?? "") || null,
-      markdown,
-      contentCharacters: markdown.length,
-      contentHash: contentHash(markdown),
-      extractionMethod,
-      links,
-    };
-  }
-  if (markdown.length < minimumContentCharacters) {
-    throw new ReadError("INCOMPLETE_CONTENT", "The page did not contain enough readable content.", {
-      details: errorDetails(page, title, markdown.length),
-    });
-  }
-
-  return {
-    title: normalizedText(article?.title ?? "") || title,
-    byline: normalizedText(article?.byline ?? "") || null,
-    publishedTime: normalizedText(article?.publishedTime ?? "") || null,
-    markdown,
-    contentCharacters: markdown.length,
-    contentHash: contentHash(markdown),
-    extractionMethod,
+  const expanded = values.flatMap((value) => {
+    if (value !== null && typeof value === "object" && "@graph" in value && Array.isArray(value["@graph"])) {
+      return value["@graph"] as unknown[];
+    }
+    return [value];
+  });
+  const articleValue = expanded.find((value) => {
+    if (value === null || typeof value !== "object" || !("@type" in value)) return false;
+    const types = Array.isArray(value["@type"]) ? value["@type"] : [value["@type"]];
+    return types.some((type) => typeof type === "string" && /article|report|news/iu.test(type));
+  });
+  if (articleValue === undefined || articleValue === null || typeof articleValue !== "object") return null;
+  const record = articleValue as Record<string, unknown>;
+  const title = typeof record.headline === "string"
+    ? record.headline
+    : typeof record.name === "string" ? record.name : page.finalUrl;
+  const body = typeof record.articleBody === "string"
+    ? record.articleBody
+    : typeof record.text === "string"
+      ? record.text
+      : typeof record.description === "string" ? record.description : "";
+  const authorValue = record.author;
+  const byline = typeof authorValue === "string"
+    ? authorValue
+    : authorValue !== null && typeof authorValue === "object" && "name" in authorValue &&
+        typeof authorValue.name === "string"
+      ? authorValue.name
+      : null;
+  const publishedTime = typeof record.datePublished === "string" ? record.datePublished : null;
+  const links = typeof record.url === "string" && URL.canParse(record.url, page.finalUrl)
+    ? [new URL(record.url, page.finalUrl).toString()]
+    : [];
+  return artifact(page, "json-ld", `# ${title}\n\n${body}`, {
+    title,
+    byline,
+    publishedTime,
     links,
-  };
+  });
 }
+
+function xmlDocument(page: RawPage): Document {
+  return new JSDOM(page.body, { contentType: "application/xml", url: page.finalUrl }).window.document;
+}
+
+function feedExtractor(page: RawPage, kind: "rss" | "atom"): ExtractedPage {
+  const document = xmlDocument(page);
+  const root = kind === "rss" ? document.querySelector("channel") : document.documentElement;
+  const title = normalizedText(root?.querySelector("title")?.textContent ?? "") || page.finalUrl;
+  const entries = [...document.querySelectorAll(kind === "rss" ? "item" : "entry")];
+  const links: string[] = [];
+  const sections = entries.map((entry) => {
+    const entryTitle = normalizedText(entry.querySelector("title")?.textContent ?? "Untitled entry");
+    const rawLink = kind === "rss"
+      ? entry.querySelector("link")?.textContent ?? ""
+      : entry.querySelector("link[href]")?.getAttribute("href") ?? "";
+    const link = URL.canParse(rawLink, page.finalUrl) ? new URL(rawLink, page.finalUrl).toString() : "";
+    if (link !== "") links.push(link);
+    const summary = normalizedText(
+      entry.querySelector(kind === "rss" ? "description" : "summary, content")?.textContent ?? "",
+    );
+    return `## ${entryTitle}\n\n${link === "" ? "" : `${link}\n\n`}${summary}`;
+  });
+  return artifact(page, kind, `# ${title}\n\n${sections.join("\n\n")}`, { title, links });
+}
+
+function sitemapExtractor(page: RawPage): ExtractedPage {
+  const document = xmlDocument(page);
+  const links = [...document.querySelectorAll("loc")]
+    .map((node) => normalizedText(node.textContent ?? ""))
+    .filter((value) => URL.canParse(value))
+    .map((value) => new URL(value).toString());
+  return artifact(page, "sitemap", links.map((link) => `- ${link}`).join("\n"), {
+    title: "Sitemap",
+    links,
+  });
+}
+
+async function pdfExtractor(page: RawPage): Promise<ExtractedPage> {
+  if (page.bodyBytes === undefined) {
+    throw new ReadError("INCOMPLETE_CONTENT", "PDF extraction requires the original response bytes.", {
+      details: { url: page.finalUrl },
+    });
+  }
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const loading = getDocument({ data: page.bodyBytes.slice(), standardFontDataUrl });
+  const document = await loading.promise;
+  try {
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      const pdfPage = await document.getPage(pageNumber);
+      const text = await pdfPage.getTextContent();
+      pages.push(text.items
+        .map((item) => "str" in item && typeof item.str === "string" ? item.str : "")
+        .join(" "));
+      pdfPage.cleanup();
+    }
+    return artifact(page, "pdf", pages.join("\n\n"));
+  } finally {
+    await loading.destroy();
+  }
+}
+
+function articleExtractor(page: RawPage): ExtractedPage | null {
+  const state = htmlExtractionState(page);
+  const { document } = state;
+  const clone = document.cloneNode(true) as Document;
+  sanitizeDocument(clone, page.finalUrl, false);
+  const article = new Readability(clone).parse();
+  if (article?.content === null || article?.content === undefined) {
+    state.articleCandidate = null;
+    return null;
+  }
+  const contentDocument = new JSDOM(article.content, { url: page.finalUrl }).window.document;
+  const candidate = artifact(page, "readability", htmlToMarkdown(contentDocument, page.finalUrl, false), {
+    title: normalizedText(article.title ?? "") || normalizedText(document.title),
+    byline: normalizedText(article.byline ?? "") || null,
+    publishedTime: normalizedText(article.publishedTime ?? "") || null,
+    links: state.links,
+  });
+  state.articleCandidate = candidate;
+  return candidate;
+}
+
+function documentExtractor(page: RawPage): ExtractedPage {
+  const { document, links } = htmlExtractionState(page);
+  return artifact(page, "document", htmlToMarkdown(document, page.finalUrl, true), {
+    title: normalizedText(document.title),
+    links,
+  });
+}
+
+function startsWithBytes(page: RawPage, signature: string): boolean {
+  if (page.bodyBytes === undefined || page.bodyBytes.byteLength < signature.length) return false;
+  return signature.split("").every((character, index) => page.bodyBytes?.[index] === character.charCodeAt(0));
+}
+
+const htmlMediaTypes = new Set(["", "text/html", "application/xhtml+xml"]);
+const extractors: CandidateExtractor[] = [
+  {
+    id: "json", version: "json-v1",
+    supports: (page) => mediaType(page) === "application/json" || mediaType(page).endsWith("+json"),
+    extract: jsonExtractor,
+  },
+  {
+    id: "json-ld", version: "json-ld-v1",
+    supports: (page) => htmlMediaTypes.has(mediaType(page)) &&
+      /<script[^>]+type=["']application\/ld\+json["']/iu.test(page.body),
+    extract: jsonLdExtractor,
+  },
+  {
+    id: "rss", version: "rss-v1",
+    supports: (page) => mediaType(page) === "application/rss+xml" || /<rss(?:\s|>)/iu.test(page.body),
+    extract: (page) => feedExtractor(page, "rss"),
+  },
+  {
+    id: "atom", version: "atom-v1",
+    supports: (page) => mediaType(page) === "application/atom+xml" || /<feed(?:\s|>)/iu.test(page.body),
+    extract: (page) => feedExtractor(page, "atom"),
+  },
+  {
+    id: "sitemap", version: "sitemap-v1",
+    supports: (page) => /<(?:urlset|sitemapindex)(?:\s|>)/iu.test(page.body),
+    extract: sitemapExtractor,
+  },
+  {
+    id: "pdf", version: "pdfjs-v1",
+    supports: (page) => mediaType(page) === "application/pdf" || startsWithBytes(page, "%PDF-"),
+    extract: pdfExtractor,
+  },
+  {
+    id: "article", version: "readability-v1",
+    supports: (page) => htmlMediaTypes.has(mediaType(page)),
+    extract: articleExtractor,
+  },
+  {
+    id: "document", version: "document-v1",
+    supports: (page) => {
+      if (!htmlMediaTypes.has(mediaType(page))) return false;
+      const candidate = htmlExtractionState(page).articleCandidate;
+      return candidate === undefined || candidate === null || candidate.contentCharacters < 240;
+    },
+    extract: documentExtractor,
+  },
+  {
+    id: "plain", version: "plain-v1",
+    supports: (page) => mediaType(page) === "text/plain",
+    extract: (page) => artifact(page, "plain", page.body),
+  },
+];
+
+export const defaultExtractorRegistry = new ExtractorRegistry(extractors);
