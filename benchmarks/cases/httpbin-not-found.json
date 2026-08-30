@@ -1,12 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "httpbin-not-found",
   "layer": "live",
   "category": "error-semantics",
   "input": {
     "url": "https://httpbin.org/status/404",
     "intent": "read",
-    "mode": "http",
     "freshnessSeconds": 0
   },
   "policy": {
@@ -18,7 +17,8 @@
   },
   "truth": {
     "required": [
-      { "type": "outcome_equals", "value": "failed" }
+      { "type": "outcome_equals", "value": "failed" },
+      { "type": "error_code_equals", "value": "ACCESS_DENIED" }
     ],
     "forbidden": []
   },

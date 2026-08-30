@@ -5,10 +5,10 @@ import type { DiaoyanApp } from "./app.js";
 import { normalizeError } from "./errors.js";
 import {
   cacheModes,
-  fetchModes,
   searchSources,
   searchTimeRanges,
   type CrawlSiteOptions,
+  type DurableCrawlOptions,
   type MapSiteOptions,
   type ReadPageOptions,
   type SearchWebOptions,
@@ -31,7 +31,7 @@ const browserReadinessInput = z.object({
 
 const readPageInput = z.object({
   url: z.url().describe("Public http or https URL to read."),
-  mode: z.enum(fetchModes).default("auto"),
+  browserAllowed: z.boolean().default(true),
   cacheMode: z.enum(cacheModes).default("prefer-cache"),
   maxAgeSeconds: z.int().positive().max(604_800).default(900),
   authProfile: z
@@ -40,7 +40,7 @@ const readPageInput = z.object({
     .optional()
     .describe("Dedicated browser profile created with diaoyan-auth."),
   browserReadiness: browserReadinessInput.optional().describe(
-    "Explicit browser terminal condition and optional bounded scrolling. Auto mode routes directly to browser when set.",
+    "Explicit browser terminal condition and optional bounded scrolling.",
   ),
 });
 
@@ -53,7 +53,7 @@ const siteScopeInput = {
 
 const mapSiteInput = z.object({
   url: z.url().describe("Public site URL to start mapping."),
-  mode: z.enum(fetchModes).default("auto"),
+  browserAllowed: z.boolean().default(true),
   authProfile: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).optional(),
   ...siteScopeInput,
   maxPages: siteScopeInput.maxPages.max(500).default(50),
@@ -62,6 +62,21 @@ const mapSiteInput = z.object({
 const crawlSiteInput = readPageInput.extend({
   ...siteScopeInput,
   maxPages: siteScopeInput.maxPages.max(50).default(10),
+});
+
+const crawlBudgetInput = z.object({
+  maxDurationMs: z.int().positive().max(86_400_000),
+  maxProviderAttempts: z.int().positive().max(1_000_000),
+  maxDocumentBytes: z.int().min(0).max(Number.MAX_SAFE_INTEGER),
+  maxBrowserMs: z.int().min(0).max(86_400_000),
+  maxBrowserContexts: z.int().min(0).max(100_000),
+}).strict();
+
+const durableCrawlInput = readPageInput.extend({
+  ...siteScopeInput,
+  maxPages: siteScopeInput.maxPages.max(10_000).default(10),
+  concurrency: z.int().min(1).max(32).default(4),
+  crawlBudget: crawlBudgetInput.optional(),
 });
 
 const searchWebInput = z.object({
@@ -78,6 +93,11 @@ const crawlJobInput = z.object({
   jobId: z.uuid().describe("Crawl job ID returned by start_crawl."),
 });
 
+const crawlPagesInput = crawlJobInput.extend({
+  afterSequence: z.int().min(0).default(0),
+  limit: z.int().min(1).max(1_000).default(100),
+});
+
 const crawlerStatsInput = z.object({
   days: z.int().min(1).max(90).default(7),
 });
@@ -88,7 +108,7 @@ const rslAuditInput = z.object({
 
 const pageMonitorInput = z.object({
   url: z.url().describe("Public http or https URL to monitor."),
-  mode: z.enum(fetchModes).default("auto"),
+  browserAllowed: z.boolean().default(true),
   authProfile: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).optional(),
   intervalSeconds: z.int().min(60).max(604_800),
 });
@@ -119,7 +139,7 @@ function errorResult(error: unknown): CallToolResult {
 function toReadOptions(args: z.infer<typeof readPageInput>): ReadPageOptions {
   const common = {
     url: args.url,
-    mode: args.mode,
+    browserAllowed: args.browserAllowed,
     cacheMode: args.cacheMode,
     maxAgeSeconds: args.maxAgeSeconds,
   };
@@ -135,7 +155,7 @@ function toReadOptions(args: z.infer<typeof readPageInput>): ReadPageOptions {
 function toMapOptions(args: z.infer<typeof mapSiteInput>): MapSiteOptions {
   return {
     url: args.url,
-    mode: args.mode,
+    browserAllowed: args.browserAllowed,
     maxPages: args.maxPages,
     maxDepth: args.maxDepth,
     includeSubdomains: args.includeSubdomains,
@@ -151,6 +171,20 @@ function toCrawlOptions(args: z.infer<typeof crawlSiteInput>): CrawlSiteOptions 
     maxDepth: args.maxDepth,
     includeSubdomains: args.includeSubdomains,
     ignoreQueryParameters: args.ignoreQueryParameters,
+  };
+}
+
+function toDurableCrawlOptions(
+  args: z.infer<typeof durableCrawlInput>,
+): DurableCrawlOptions {
+  return {
+    ...toReadOptions(args),
+    maxPages: args.maxPages,
+    maxDepth: args.maxDepth,
+    includeSubdomains: args.includeSubdomains,
+    ignoreQueryParameters: args.ignoreQueryParameters,
+    concurrency: args.concurrency,
+    ...(args.crawlBudget === undefined ? {} : { crawlBudget: args.crawlBudget }),
   };
 }
 
@@ -172,7 +206,7 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
-        "crawl_site for synchronous bounded reading, start_crawl/get_crawl/cancel_crawl for durable asynchronous crawling, " +
+        "crawl_site for synchronous bounded reading, and start/get/pause/resume/cancel/get-pages controls for durable crawling, " +
         "inspect_page for diagnostics, get_crawler_stats for local operational metrics, " +
         "get_rsl_audit for bounded license and access audit records, " +
         "and start_monitor/get_monitor/list_monitors/cancel_monitor for durable page-change monitoring. " +
@@ -282,13 +316,13 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     {
       title: "Start crawl job",
       description:
-        "Persist a bounded crawl job and return immediately. Use get_crawl to retrieve status and results.",
-      inputSchema: crawlSiteInput,
+        "Persist a page-frontier crawl and return immediately. Supports bounded concurrency, cumulative budgets, and restart recovery.",
+      inputSchema: durableCrawlInput,
       annotations: { idempotentHint: false, openWorldHint: true },
     },
     async (args): Promise<CallToolResult> => {
       try {
-        return successResult({ ...app.jobs.start(toCrawlOptions(args)) });
+        return successResult({ ...app.jobs.start(toDurableCrawlOptions(args)) });
       } catch (error) {
         return errorResult(error);
       }
@@ -331,6 +365,57 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
   );
 
   server.registerTool(
+    "pause_crawl",
+    {
+      title: "Pause crawl job",
+      description: "Stop claiming new pages while allowing already leased pages to settle.",
+      inputSchema: crawlJobInput,
+      annotations: { idempotentHint: true },
+    },
+    async ({ jobId }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.jobs.pause(jobId) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "resume_crawl",
+    {
+      title: "Resume crawl job",
+      description: "Resume page claims for a paused durable crawl.",
+      inputSchema: crawlJobInput,
+      annotations: { idempotentHint: true },
+    },
+    async ({ jobId }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.jobs.resume(jobId) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_crawl_pages",
+    {
+      title: "Get crawl page publications",
+      description: "Read a stable, cursor-paginated batch of committed page outcomes.",
+      inputSchema: crawlPagesInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ jobId, afterSequence, limit }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.jobs.pages(jobId, afterSequence, limit) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "start_monitor",
     {
       title: "Start page monitor",
@@ -339,11 +424,11 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
       inputSchema: pageMonitorInput,
       annotations: { idempotentHint: false, openWorldHint: true },
     },
-    async ({ url, mode, authProfile, intervalSeconds }): Promise<CallToolResult> => {
+    async ({ url, browserAllowed, authProfile, intervalSeconds }): Promise<CallToolResult> => {
       try {
         const input = authProfile === undefined
-          ? { url, mode }
-          : { url, mode, authProfile };
+          ? { url, browserAllowed }
+          : { url, browserAllowed, authProfile };
         return successResult({ ...(await app.monitors.start(input, intervalSeconds)) });
       } catch (error) {
         return errorResult(error);

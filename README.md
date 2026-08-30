@@ -56,8 +56,10 @@ Available tools:
 - `map_site`: discover a bounded set of same-site links.
 - `crawl_site`: read a bounded set of same-site pages with per-page evidence and failures.
 - `start_crawl`: persist and start a bounded asynchronous crawl job.
-- `get_crawl`: retrieve durable job status, result, or failure.
-- `cancel_crawl`: cancel a queued job or request cancellation of a running job.
+- `get_crawl`: retrieve durable job progress, cumulative usage, budget, result, or failure.
+- `get_crawl_pages`: read immutable page publications with a monotonic cursor.
+- `pause_crawl` / `resume_crawl`: stop new page claims and continue from the SQLite frontier.
+- `cancel_crawl`: abort active work and publish explicit stopped results for queued pages.
 - `get_crawler_stats`: return local success, failure, cache, method, byte, retry, and duration aggregates.
 - `start_monitor`: persist a single-page live monitor and establish its first content-hash baseline.
 - `get_monitor`: return schedule, counters, hashes, and the last run or structured failure.
@@ -139,14 +141,17 @@ you explicitly want successful public `read` and `crawl` results added to SQLite
 optional feature enabled, `--source auto` returns local matches first and asks SearXNG to fill the
 remaining slots; `--source local` stays offline. Pages read with `--auth-profile` are never indexed.
 
-`map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
+Synchronous `map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
 for deduplication unless `--keep-query` is supplied. Child-page failures are returned in a
 `failures` array; a failed starting page fails the whole call.
 
 For a long-running MCP server, use `start_crawl` when the Agent should not hold one tool call open.
-It returns a UUID immediately; poll `get_crawl` at a task-appropriate interval and use
-`cancel_crawl` when the result is no longer needed. Jobs and results survive process restarts in
-`cache.sqlite`. Normal CLI commands deliberately do not run or recover the background queue, so a
+It returns a UUID immediately and accepts `concurrency` from 1 to 32, a crawl-wide hard budget, and
+up to 10,000 pages. Poll `get_crawl` for status and cumulative usage, and consume page results with
+`get_crawl_pages`; cursors are stable across retries and restarts. `pause_crawl`, `resume_crawl`, and
+`cancel_crawl` operate on the persisted page frontier. Jobs, origin cooldowns, leases, resource
+reservations, and publications survive process restarts in `cache.sqlite`; committed pages are not
+re-fetched after recovery. Normal CLI commands deliberately do not run the background queue, so a
 single data directory should have one active MCP service process.
 
 For continuing change detection, call `start_monitor` with one public URL and an interval from 60
@@ -195,6 +200,8 @@ Log in manually in the opened Chrome window and press Enter in the terminal. The
 | `DIAOYAN_CRAWL_RETRY_BASE_MS` | `500` | Exponential retry delay base |
 | `DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS` | `30000` | Maximum permitted retry or Retry-After wait |
 | `DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS` | `250` | Minimum interval between attempts to one hostname |
+| `DIAOYAN_CRAWL_WORKER_CONCURRENCY` | `8` | Global page-worker capacity across durable Crawl jobs |
+| `DIAOYAN_CRAWL_LEASE_MS` | `5000` | Durable page lease duration; active workers heartbeat before expiry |
 | `DIAOYAN_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
 | `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
 | `DIAOYAN_BROWSER_POOL_SIZE` | `2` | Maximum anonymous browser instances per process |

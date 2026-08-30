@@ -6,8 +6,8 @@ import type {
 } from "./contract.js";
 
 export type BenchmarkExecutionCost = {
-  httpRequests: number;
-  networkBytesIn: number;
+  httpProviderAttempts: number;
+  documentBytesIn: number;
   browserMilliseconds: number;
   browserContextStarts: number;
   retryAttempts: number;
@@ -85,10 +85,8 @@ type ClassifiedRecord = BenchmarkRunRecord & {
   validArtifact: boolean;
 };
 
-type FailureCostDetails = Record<string, boolean | number | string | null>;
-
 const countCostFields = new Set<keyof BenchmarkExecutionCost>([
-  "httpRequests",
+  "httpProviderAttempts",
   "browserContextStarts",
   "retryAttempts",
 ]);
@@ -99,8 +97,8 @@ function rate(numerator: number, denominator: number): number | null {
 
 function emptyCost(): BenchmarkExecutionCost {
   return {
-    httpRequests: 0,
-    networkBytesIn: 0,
+    httpProviderAttempts: 0,
+    documentBytesIn: 0,
     browserMilliseconds: 0,
     browserContextStarts: 0,
     retryAttempts: 0,
@@ -123,53 +121,33 @@ function assertCost(cost: BenchmarkExecutionCost): void {
   }
 }
 
-function detailNumber(
-  details: FailureCostDetails,
-  field: string,
-): number {
-  const value = details[field];
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-}
-
 export function executionCostForBenchmarkRun(
   candidate: BenchmarkCandidate,
   totalDurationMilliseconds: number,
-  failureDetails: FailureCostDetails = {},
 ): BenchmarkExecutionCost {
   if (candidate.outcome === "ok" && candidate.artifact === undefined) {
     throw new Error("ok benchmark candidates require an artifact");
   }
-  const artifact = candidate.artifact;
-  const cost = candidate.outcome === "ok" && artifact !== undefined
-    ? {
-        httpRequests: artifact.evidence.fetchAttempts.http,
-        networkBytesIn:
-          artifact.evidence.responseBytesByMethod.http +
-          artifact.evidence.responseBytesByMethod.browser,
-        browserMilliseconds: artifact.evidence.fetchDurationMsByMethod.browser,
-        browserContextStarts: artifact.evidence.fetchAttempts.browser,
-        retryAttempts: Math.max(0, artifact.evidence.attempts - 1),
-        retryDelayMilliseconds: artifact.evidence.totalRetryDelayMs,
-        totalDurationMilliseconds,
-      }
-    : {
-        httpRequests: detailNumber(failureDetails, "httpFetchAttempts"),
-        networkBytesIn:
-          detailNumber(failureDetails, "httpResponseBytes") +
-          detailNumber(failureDetails, "browserResponseBytes"),
-        browserMilliseconds: detailNumber(failureDetails, "browserFetchDurationMs"),
-        browserContextStarts: detailNumber(failureDetails, "browserFetchAttempts"),
-        retryAttempts: Math.max(0, detailNumber(failureDetails, "attempts") - 1),
-        retryDelayMilliseconds: detailNumber(failureDetails, "totalRetryDelayMs"),
-        totalDurationMilliseconds,
-      };
+  const attempts = candidate.provenance.attempts.filter(({ outcome, provider }) =>
+    provider !== "cache" && outcome !== "stopped"
+  );
+  const attemptedStages = new Set(attempts.map(({ stageId }) => stageId));
+  const cost = {
+    httpProviderAttempts: attempts.filter(({ provider }) => provider === "http").length,
+    documentBytesIn: candidate.provenance.projection.usage.documentBytesIn,
+    browserMilliseconds: candidate.provenance.projection.usage.browserMilliseconds,
+    browserContextStarts: candidate.provenance.projection.usage.browserContextStarts,
+    retryAttempts: Math.max(0, attempts.length - attemptedStages.size),
+    retryDelayMilliseconds: candidate.provenance.projection.usage.retryDelayMilliseconds,
+    totalDurationMilliseconds,
+  };
   assertCost(cost);
   return cost;
 }
 
 function addCost(total: BenchmarkExecutionCost, cost: BenchmarkExecutionCost): void {
-  total.httpRequests += cost.httpRequests;
-  total.networkBytesIn += cost.networkBytesIn;
+  total.httpProviderAttempts += cost.httpProviderAttempts;
+  total.documentBytesIn += cost.documentBytesIn;
   total.browserMilliseconds += cost.browserMilliseconds;
   total.browserContextStarts += cost.browserContextStarts;
   total.retryAttempts += cost.retryAttempts;
@@ -179,8 +157,8 @@ function addCost(total: BenchmarkExecutionCost, cost: BenchmarkExecutionCost): v
 
 function divideCost(cost: BenchmarkExecutionCost, divisor: number): BenchmarkExecutionCost {
   return {
-    httpRequests: cost.httpRequests / divisor,
-    networkBytesIn: cost.networkBytesIn / divisor,
+    httpProviderAttempts: cost.httpProviderAttempts / divisor,
+    documentBytesIn: cost.documentBytesIn / divisor,
     browserMilliseconds: cost.browserMilliseconds / divisor,
     browserContextStarts: cost.browserContextStarts / divisor,
     retryAttempts: cost.retryAttempts / divisor,

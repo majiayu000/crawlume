@@ -1,6 +1,14 @@
 import { z } from "zod";
 
-import type { BrowserReadinessEvidence, PageReadArtifact } from "../../src/types.js";
+import { errorCodes } from "../../src/errors.js";
+import type {
+  AccessPlanEvidence,
+  AttemptProjection,
+  AttemptRecord,
+  BrowserReadinessEvidence,
+  PageReadArtifact,
+  ResourceUsage,
+} from "../../src/types.js";
 
 export const benchmarkProtocolVersion = 1 as const;
 
@@ -119,6 +127,7 @@ const httpUrl = z.url().refine((value) => {
 }, "input URL must use HTTP or HTTPS");
 const requiredAssertionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("outcome_equals"), value: z.enum(candidateOutcomes) }).strict(),
+  z.object({ type: z.literal("error_code_equals"), value: z.string().min(1) }).strict(),
   z.object({ type: z.literal("title_equals"), value: z.string().min(1) }).strict(),
   z.object({ type: z.literal("final_url_equals"), value: httpUrl }).strict(),
   z.object({ type: z.literal("contains_text"), value: z.string().min(1) }).strict(),
@@ -138,14 +147,13 @@ const forbiddenAssertionSchema = z.object({
 }).strict();
 
 export const benchmarkCaseSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
   layer: z.enum(["fixture", "controlled", "live"]),
   category: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
   input: z.object({
     url: httpUrl,
     intent: z.enum(["read", "crawl"]),
-    mode: z.enum(["auto", "http", "browser"]),
     freshnessSeconds: z.int().nonnegative(),
   }).strict(),
   policy: z.object({
@@ -167,9 +175,6 @@ export const benchmarkCaseSchema = z.object({
   };
   if (value.layer === "live" && value.expiresAt === null) {
     issue(["expiresAt"], "live cases require expiresAt");
-  }
-  if (value.input.mode === "browser" && !value.policy.browserAllowed) {
-    issue(["policy", "browserAllowed"], "browser mode requires browserAllowed");
   }
   if (value.policy.authProfile !== null && !value.policy.browserAllowed) {
     issue(["policy", "authProfile"], "authProfile requires browserAllowed");
@@ -206,6 +211,7 @@ export type BenchmarkArtifact = {
     contentType: string;
     responseBytes: number;
     attempts: number;
+    retryAttempts: number;
     totalRetryDelayMs: number;
     fetchAttempts: Record<"http" | "browser", number>;
     responseBytesByMethod: Record<"http" | "browser", number>;
@@ -216,9 +222,106 @@ export type BenchmarkArtifact = {
 
 export type BenchmarkCandidate = {
   outcome: CandidateOutcome;
+  provenance: BenchmarkExecutionProvenance;
   artifact?: BenchmarkArtifact | undefined;
   errorCode?: string | undefined;
 };
+
+export type BenchmarkExecutionProvenance = {
+  schemaVersion: 1;
+  requestId: string;
+  plan: Omit<AccessPlanEvidence, "executedStages">;
+  executedStages: string[];
+  attempts: Array<Pick<
+    AttemptRecord,
+    "sequence" | "stageId" | "provider" | "providerVersion" | "outcome" | "errorCode" |
+    "usage" | "startedAt" | "completedAt"
+  >>;
+  projection: Omit<AttemptProjection, "requestId">;
+};
+
+const usageSchema = z.object({
+  documentBytesIn: z.int().nonnegative(),
+  networkBytesOut: z.int().nonnegative(),
+  browserMilliseconds: z.number().nonnegative(),
+  browserContextStarts: z.int().nonnegative(),
+  retryDelayMilliseconds: z.number().nonnegative(),
+  optionalModelTokens: z.int().nonnegative(),
+}).strict();
+
+const provenanceSchema = z.object({
+  schemaVersion: z.literal(1),
+  requestId: z.string().min(1),
+  plan: z.object({
+    planId: z.string().regex(/^plan_[a-f0-9]{64}$/u),
+    plannerVersion: z.string().min(1),
+    plannedStages: z.array(z.object({
+      stageId: z.string().min(1),
+      provider: z.enum(["cache", "http", "browser", "feed", "pdf", "adapter"]),
+      reasonCode: z.enum([
+        "CACHE_ONLY", "CACHE_PREFERRED", "HTTP_PRIMARY", "BROWSER_PRIMARY_HTTP_UNAVAILABLE",
+        "BROWSER_REQUIRED_BY_AUTHORIZATION", "BROWSER_REQUIRED_BY_COMPLETION",
+        "BROWSER_AFTER_INCOMPLETE_HTTP",
+      ]),
+    }).strict()).min(1),
+  }).strict(),
+  executedStages: z.array(z.string().min(1)).min(1),
+  attempts: z.array(z.object({
+    sequence: z.int().positive(),
+    stageId: z.string().min(1),
+    provider: z.enum(["cache", "http", "browser", "feed", "pdf", "adapter"]),
+    providerVersion: z.string().min(1),
+    outcome: z.enum(["succeeded", "failed", "stopped", "cancelled"]),
+    errorCode: z.enum(errorCodes).nullable(),
+    usage: usageSchema,
+    startedAt: z.iso.datetime({ offset: true }),
+    completedAt: z.iso.datetime({ offset: true }),
+  }).strict()).min(1),
+  projection: z.object({
+    attempts: z.int().positive(),
+    lastSequence: z.int().positive(),
+    lastOutcome: z.enum(["succeeded", "failed", "stopped", "cancelled"]),
+    lastStageId: z.string().min(1),
+    usage: usageSchema,
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  const planned = new Map(value.plan.plannedStages.map((stage) => [stage.stageId, stage]));
+  if (planned.size !== value.plan.plannedStages.length) {
+    context.addIssue({ code: "custom", path: ["plan", "plannedStages"], message: "stage ids must be unique" });
+  }
+  const plannedOrder = value.plan.plannedStages.map(({ stageId }) => stageId);
+  let previousIndex = -1;
+  for (const [index, stageId] of value.executedStages.entries()) {
+    const plannedIndex = plannedOrder.indexOf(stageId);
+    if (plannedIndex <= previousIndex) {
+      context.addIssue({ code: "custom", path: ["executedStages", index], message: "must be an ordered planned-stage subsequence" });
+    }
+    previousIndex = plannedIndex;
+  }
+  const usage = Object.fromEntries(Object.keys(value.projection.usage).map((field) => [field, 0])) as ResourceUsage;
+  const firstStages: string[] = [];
+  for (const [index, attempt] of value.attempts.entries()) {
+    const stage = planned.get(attempt.stageId);
+    if (attempt.sequence !== index + 1 || stage?.provider !== attempt.provider) {
+      context.addIssue({ code: "custom", path: ["attempts", index], message: "attempt sequence/provider does not match plan" });
+    }
+    if (firstStages.at(-1) !== attempt.stageId) firstStages.push(attempt.stageId);
+    for (const field of Object.keys(usage) as Array<keyof ResourceUsage>) usage[field] += attempt.usage[field];
+  }
+  if (JSON.stringify(firstStages) !== JSON.stringify(value.executedStages)) {
+    context.addIssue({ code: "custom", path: ["executedStages"], message: "executed stages do not match ledger" });
+  }
+  const last = value.attempts.at(-1)!;
+  if (
+    value.projection.attempts !== value.attempts.length ||
+    value.projection.lastSequence !== last.sequence ||
+    value.projection.lastOutcome !== last.outcome ||
+    value.projection.lastStageId !== last.stageId ||
+    JSON.stringify(value.projection.usage) !== JSON.stringify(usage)
+  ) {
+    context.addIssue({ code: "custom", path: ["projection"], message: "projection does not match attempts" });
+  }
+});
 
 const benchmarkArtifactSchema = z.object({
   sourceUrl: httpUrl,
@@ -235,6 +338,7 @@ const benchmarkArtifactSchema = z.object({
     contentType: z.string().min(1),
     responseBytes: z.int().nonnegative(),
     attempts: z.int().positive(),
+    retryAttempts: z.int().nonnegative(),
     totalRetryDelayMs: z.int().nonnegative(),
     fetchAttempts: z.object({
       http: z.int().nonnegative(),
@@ -266,11 +370,13 @@ const benchmarkArtifactSchema = z.object({
 const benchmarkCandidateSchema = z.discriminatedUnion("outcome", [
   z.object({
     outcome: z.literal("ok"),
+    provenance: provenanceSchema,
     artifact: benchmarkArtifactSchema,
     errorCode: z.never().optional(),
   }).strict(),
   z.object({
     outcome: z.enum(["failed", "policy_stop", "unsupported"]),
+    provenance: provenanceSchema,
     artifact: z.never().optional(),
     errorCode: z.string().min(1).optional(),
   }).strict(),
@@ -287,15 +393,64 @@ const benchmarkCandidateSchema = z.discriminatedUnion("outcome", [
   }
 });
 
-export function candidateFromPageArtifact(artifact: PageReadArtifact): BenchmarkCandidate {
-  const attempts = artifact.evidence.attempts;
+export function executionProvenanceFromLedger(
+  requestId: string,
+  accessPlan: AccessPlanEvidence,
+  attempts: AttemptRecord[],
+  projection: AttemptProjection | null,
+): BenchmarkExecutionProvenance {
+  if (projection === null || projection.requestId !== requestId || attempts.length === 0) {
+    throw new Error("benchmark execution requires a complete ledger projection");
+  }
+  for (const attempt of attempts) {
+    if (attempt.requestId !== requestId || attempt.planId !== accessPlan.planId) {
+      throw new Error("benchmark ledger identity does not match execution plan");
+    }
+  }
+  return provenanceSchema.parse({
+    schemaVersion: 1,
+    requestId,
+    plan: {
+      planId: accessPlan.planId,
+      plannerVersion: accessPlan.plannerVersion,
+      plannedStages: accessPlan.plannedStages,
+    },
+    executedStages: accessPlan.executedStages,
+    attempts: attempts.map((attempt) => ({
+      sequence: attempt.sequence,
+      stageId: attempt.stageId,
+      provider: attempt.provider,
+      providerVersion: attempt.providerVersion,
+      outcome: attempt.outcome,
+      errorCode: attempt.errorCode,
+      usage: attempt.usage,
+      startedAt: attempt.startedAt,
+      completedAt: attempt.completedAt,
+    })),
+    projection: {
+      attempts: projection.attempts,
+      lastSequence: projection.lastSequence,
+      lastOutcome: projection.lastOutcome,
+      lastStageId: projection.lastStageId,
+      usage: projection.usage,
+    },
+  });
+}
+
+export function candidateFromPageArtifact(
+  artifact: PageReadArtifact,
+  attempts: AttemptRecord[],
+  projection: AttemptProjection | null,
+): BenchmarkCandidate {
+  const evidenceAttempts = artifact.evidence.attempts;
+  const retryAttempts = artifact.evidence.retryAttempts;
   const totalRetryDelayMs = artifact.evidence.totalRetryDelayMs;
   const fetchAttempts = artifact.evidence.fetchAttempts;
   const responseBytesByMethod = artifact.evidence.responseBytesByMethod;
   const fetchDurationMsByMethod = artifact.evidence.fetchDurationMsByMethod;
   const browserReadiness = artifact.evidence.browserReadiness;
   if (
-    attempts === undefined || totalRetryDelayMs === undefined ||
+    evidenceAttempts === undefined || retryAttempts === undefined || totalRetryDelayMs === undefined ||
     fetchAttempts === undefined || responseBytesByMethod === undefined ||
     fetchDurationMsByMethod === undefined
   ) {
@@ -303,6 +458,12 @@ export function candidateFromPageArtifact(artifact: PageReadArtifact): Benchmark
   }
   return {
     outcome: "ok",
+    provenance: executionProvenanceFromLedger(
+      artifact.evidence.requestId,
+      artifact.evidence.accessPlan,
+      attempts,
+      projection,
+    ),
     artifact: {
       sourceUrl: artifact.sourceUrl,
       finalUrl: artifact.finalUrl,
@@ -317,7 +478,8 @@ export function candidateFromPageArtifact(artifact: PageReadArtifact): Benchmark
         httpStatus: artifact.evidence.httpStatus,
         contentType: artifact.evidence.contentType,
         responseBytes: artifact.evidence.responseBytes,
-        attempts,
+        attempts: evidenceAttempts,
+        retryAttempts,
         totalRetryDelayMs,
         fetchAttempts,
         responseBytesByMethod,
@@ -404,6 +566,15 @@ function evaluateRequired(
   if (assertion.type === "outcome_equals") {
     return assertionResult(
       assertion, "required", candidate.outcome === assertion.value, assertion.value, candidate.outcome,
+    );
+  }
+  if (assertion.type === "error_code_equals") {
+    return assertionResult(
+      assertion,
+      "required",
+      candidate.errorCode === assertion.value,
+      assertion.value,
+      candidate.errorCode ?? null,
     );
   }
   const artifact = candidate.artifact;

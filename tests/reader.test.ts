@@ -85,7 +85,6 @@ describe("ReaderService", () => {
 
     const result = await reader.readPage({
       url: "https://example.com/article",
-      mode: "auto",
       cacheMode: "live",
       browserReadiness,
     });
@@ -98,7 +97,7 @@ describe("ReaderService", () => {
     });
   });
 
-  it("rejects target readiness with explicit HTTP mode", async () => {
+  it("rejects target readiness when browser execution is forbidden", async () => {
     const reader = readerWith(
       new StubFetcher(rawPage()),
       new StubFetcher(rawPage({ method: "browser" })),
@@ -106,7 +105,7 @@ describe("ReaderService", () => {
 
     await expect(reader.readPage({
       url: "https://example.com/article",
-      mode: "http",
+      browserAllowed: false,
       browserReadiness: { target: { selector: "main" } },
     })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
   });
@@ -128,13 +127,12 @@ describe("ReaderService", () => {
     }));
     const result = await readerWith(http, browser).readPage({
       url: "https://example.com/article",
-      mode: "auto",
       cacheMode: "live",
     });
     expect(result.fetchMethod).toBe("browser");
     expect(result.validation.status).toBe("usable");
     expect(result.evidence).toMatchObject({
-      attempts: 1,
+      attempts: 2,
       fetchAttempts: { http: 1, browser: 1 },
       responseBytesByMethod: {
         http: Buffer.byteLength(shellBody),
@@ -161,7 +159,6 @@ describe("ReaderService", () => {
     await expect(
       readerWith(http, browser).readPage({
         url: "https://example.com/article",
-        mode: "auto",
         cacheMode: "live",
       }),
     ).rejects.toMatchObject({ code: "ACCESS_DENIED" });
@@ -176,7 +173,7 @@ describe("ReaderService", () => {
 
     await expect(reader.readPage({
       url: "https://example.com/denied",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     })).rejects.toMatchObject({
       code: "ACCESS_DENIED",
@@ -195,8 +192,8 @@ describe("ReaderService", () => {
     const http = new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() }));
     const browser = new StubFetcher(new Error("unused"));
     const reader = readerWith(http, browser);
-    const first = await reader.readPage({ url: "https://example.com/article", mode: "http" });
-    const second = await reader.readPage({ url: "https://example.com/article", mode: "http" });
+    const first = await reader.readPage({ url: "https://example.com/article", browserAllowed: false });
+    const second = await reader.readPage({ url: "https://example.com/article", browserAllowed: false });
     expect(first.cached).toBe(false);
     expect(second.cached).toBe(true);
     expect(http.calls).toBe(1);
@@ -218,8 +215,8 @@ describe("ReaderService", () => {
     }));
     const reader = readerWith(http, new StubFetcher(new Error("unused")), index);
 
-    await reader.readPage({ url: "https://example.com/licensed", mode: "http" });
-    await reader.readPage({ url: "https://example.com/licensed", mode: "http" });
+    await reader.readPage({ url: "https://example.com/licensed", browserAllowed: false });
+    await reader.readPage({ url: "https://example.com/licensed", browserAllowed: false });
 
     expect(http.calls).toBe(2);
     expect(index.count()).toBe(0);
@@ -232,8 +229,8 @@ describe("ReaderService", () => {
     const http = new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() }));
     const reader = readerWith(http, new StubFetcher(new Error("unused")), null, null, metrics);
 
-    await reader.readPage({ url: "https://example.com/article", mode: "http" });
-    await reader.readPage({ url: "https://example.com/article", mode: "http" });
+    await reader.readPage({ url: "https://example.com/article", browserAllowed: false });
+    await reader.readPage({ url: "https://example.com/article", browserAllowed: false });
 
     expect(metrics.getStats(1)).toMatchObject({
       totals: { requests: 2, successes: 2, failures: 0, cacheHits: 1 },
@@ -255,7 +252,7 @@ describe("ReaderService", () => {
 
     await expect(reader.readPage({
       url: "https://example.com/denied",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     })).rejects.toMatchObject({ code: "ACCESS_DENIED" });
 
@@ -285,12 +282,12 @@ describe("ReaderService", () => {
     try {
       await reader.readPage({
         url: "https://example.com/article",
-        mode: "http",
+        browserAllowed: false,
         cacheMode: "live",
       });
       await reader.readPage({
         url: "https://example.com/private",
-        mode: "browser",
+        browserAllowed: true,
         authProfile: "research",
         cacheMode: "live",
       });
@@ -333,7 +330,7 @@ describe("ReaderService", () => {
 
     const page = await reader.readPage({
       url: "https://example.com/article",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     });
 
@@ -355,7 +352,7 @@ describe("ReaderService", () => {
       new StubFetcher(new Error("unused")),
     ).readPage({
       url: "https://example.com/article",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     });
 
@@ -375,7 +372,7 @@ describe("ReaderService", () => {
       new StubFetcher(new Error("unused")),
     ).readPage({
       url: "https://example.com/article",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     });
 
@@ -397,7 +394,7 @@ describe("ReaderService", () => {
       new StubFetcher(new Error("unused")),
     ).readPage({
       url: "https://example.com/article",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     });
 
@@ -416,7 +413,7 @@ describe("ReaderService", () => {
       audit,
     ).readPage({
       url: "https://example.com/success",
-      mode: "http",
+      browserAllowed: false,
       cacheMode: "live",
     });
     await expect(
@@ -429,7 +426,7 @@ describe("ReaderService", () => {
         audit,
       ).readPage({
         url: "https://example.com/failure",
-        mode: "http",
+        browserAllowed: false,
         cacheMode: "live",
       }),
     ).rejects.toMatchObject({ code: "ACCESS_DENIED" });

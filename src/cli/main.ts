@@ -9,9 +9,7 @@ import { loadConfig } from "../config.js";
 import { normalizeError, ReadError } from "../errors.js";
 import {
   cacheModes,
-  fetchModes,
   type CacheMode,
-  type FetchMode,
   type ReadPageOptions,
   type SearchSource,
   type SearchTimeRange,
@@ -29,7 +27,7 @@ const usage = `Usage:
   diaoyan rsl-audit [--limit <1-1000>]
 
 Options:
-  --mode <auto|http|browser>                 Fetch strategy (default: auto)
+  --no-browser                               Forbid browser execution
   --cache-mode <prefer-cache|live|cache-only> Cache strategy (default: prefer-cache)
   --max-age-seconds <seconds>                Maximum cache age (default: 900)
   --auth-profile <name>                      Dedicated browser profile
@@ -246,7 +244,7 @@ export function parseCli(argv: string[]): CliAction {
   }
 
   let url: string | null = null;
-  let mode: FetchMode = "auto";
+  let browserAllowed = true;
   let cacheMode: CacheMode = "prefer-cache";
   let maxAgeSeconds = 900;
   let authProfile: string | undefined;
@@ -268,10 +266,8 @@ export function parseCli(argv: string[]): CliAction {
       markdown = true;
       continue;
     }
-    if (argument === "--mode") {
-      const value = nextValue(argv, index, argument);
-      mode = parseChoice(value, fetchModes, argument);
-      index += 1;
+    if (argument === "--no-browser") {
+      browserAllowed = false;
       continue;
     }
     if (argument === "--cache-mode") {
@@ -366,8 +362,11 @@ export function parseCli(argv: string[]): CliAction {
   if (url === null) {
     throw new ReadError("INVALID_ARGUMENT", `${command} requires a URL.`);
   }
+  if (authProfile !== undefined && !browserAllowed) {
+    throw new ReadError("INVALID_ARGUMENT", "--auth-profile requires browser access.");
+  }
 
-  const common = { url, mode };
+  const common = { url, browserAllowed };
   if (command === "map") {
     return {
       kind: "map",

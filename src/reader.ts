@@ -1,32 +1,25 @@
-import { createHash } from "node:crypto";
-import { performance } from "node:perf_hooks";
+import { createHash, randomUUID } from "node:crypto";
 
 import { PageCache } from "./cache.js";
 import type { AppConfig } from "./config.js";
 import { CrawlRequestPolicy } from "./crawl-policy.js";
-import { extractPage } from "./extract.js";
 import { normalizeError, ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
+import { AttemptLedger } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
-import type {
-  BrowserReadinessPolicy,
-  InspectPageResult,
-  PageReadArtifact,
-  PageFetcher,
-  ReadPageOptions,
-  ReadPageResult,
-} from "./types.js";
+import { planAccess } from "./reliability/planner.js";
+import type { ExecutionBudget, InspectPageResult, PageReadArtifact, PageFetcher, ReadIntent, ReadPageOptions, ReadPageResult } from "./types.js";
 import {
   normalizeBrowserReadinessPolicy,
   type NormalizedBrowserReadinessPolicy,
 } from "./runtime/readiness.js";
+import { StageExecutor } from "./runtime/executor.js";
 import { UrlPolicy } from "./security/url-policy.js";
-import { validateContent } from "./validation.js";
 import type { RslAccessAudit } from "./rsl-audit.js";
 
 function cacheKey(
   url: string,
-  mode: string,
+  artifactKind: "content" | "discovery",
   authProfile: string | null,
   browserReadiness: NormalizedBrowserReadinessPolicy | undefined,
   config: AppConfig,
@@ -34,9 +27,9 @@ function cacheKey(
   return createHash("sha256")
     .update(
       JSON.stringify({
-        schema: 5,
+        schema: 6,
         url,
-        mode,
+        artifactKind,
         authProfile,
         browserReadiness: browserReadiness ?? null,
         userAgent: config.userAgent,
@@ -59,35 +52,17 @@ function withoutLinks(result: PageReadArtifact): ReadPageResult {
 }
 
 type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
-type FetchTrace = {
-  fetchAttempts: Record<"http" | "browser", number>;
-  responseBytesByMethod: Record<"http" | "browser", number>;
-  fetchDurationMsByMethod: Record<"http" | "browser", number>;
-};
 
-function emptyFetchTrace(): FetchTrace {
+function defaultExecutionBudget(config: AppConfig, browserAllowed: boolean): ExecutionBudget {
+  const maxAttempts = config.crawlMaxAttempts;
   return {
-    fetchAttempts: { http: 0, browser: 0 },
-    responseBytesByMethod: { http: 0, browser: 0 },
-    fetchDurationMsByMethod: { http: 0, browser: 0 },
+    deadlineMs: config.requestTimeoutMs + (browserAllowed ? config.browserTimeoutMs : 0),
+    maxAttempts,
+    maxDocumentBytes: config.maxResponseBytes * maxAttempts,
+    maxBrowserMs: browserAllowed ? config.browserTimeoutMs : 0,
+    maxBrowserContexts: browserAllowed ? 1 : 0,
+    maxOptionalModelTokens: 0,
   };
-}
-
-function errorWithFetchTrace(error: unknown, trace: FetchTrace): ReadError {
-  const normalized = normalizeError(error);
-  return new ReadError(normalized.code, normalized.message, {
-    retryable: normalized.retryable,
-    details: {
-      ...normalized.details,
-      httpFetchAttempts: trace.fetchAttempts.http,
-      browserFetchAttempts: trace.fetchAttempts.browser,
-      httpResponseBytes: trace.responseBytesByMethod.http,
-      browserResponseBytes: trace.responseBytesByMethod.browser,
-      httpFetchDurationMs: trace.fetchDurationMsByMethod.http,
-      browserFetchDurationMs: trace.fetchDurationMsByMethod.browser,
-    },
-    cause: normalized,
-  });
 }
 
 export class ReaderService {
@@ -102,6 +77,7 @@ export class ReaderService {
     private readonly metrics: CrawlerMetrics | null = null,
     private readonly rslAudit: RslAccessAudit | null = null,
     private readonly rslApprovalContextHash: () => string = () => "",
+    private readonly attemptLedger: AttemptLedger | null = null,
   ) {}
 
   async readPage(options: ReadPageOptions): Promise<ReadPageResult> {
@@ -109,10 +85,25 @@ export class ReaderService {
   }
 
   async readPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
+    return this.executeRecordedPageArtifact(options, "read");
+  }
+
+  async discoverPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
+    return this.executeRecordedPageArtifact(options, "map");
+  }
+
+  async crawlPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
+    return this.executeRecordedPageArtifact(options, "crawl");
+  }
+
+  private async executeRecordedPageArtifact(
+    options: ReadExecutionOptions,
+    operation: "read" | "map" | "crawl",
+  ): Promise<PageReadArtifact> {
     const startedAt = Date.now();
     let result: PageReadArtifact;
     try {
-      result = await this.executeReadPageArtifact(options);
+      result = await this.executePageArtifact(options, operation);
     } catch (error) {
       const normalized = normalizeError(error);
       this.rslAudit?.recordFailure(options.url, normalized);
@@ -124,22 +115,21 @@ export class ReaderService {
     return result;
   }
 
-  private async executeReadPageArtifact(options: ReadExecutionOptions): Promise<PageReadArtifact> {
-    const mode = options.mode ?? "auto";
+  private async executePageArtifact(
+    options: ReadExecutionOptions,
+    operation: "read" | "map" | "crawl",
+  ): Promise<PageReadArtifact> {
     const cacheMode = options.cacheMode ?? "prefer-cache";
     const maxAgeSeconds = options.maxAgeSeconds ?? this.config.defaultCacheSeconds;
     if (!Number.isSafeInteger(maxAgeSeconds) || maxAgeSeconds <= 0) {
       throw new ReadError("INVALID_ARGUMENT", "maxAgeSeconds must be a positive integer.");
     }
-    if (options.authProfile !== undefined && mode === "http") {
-      throw new ReadError("INVALID_ARGUMENT", "authProfile requires auto or browser mode.", {
-        details: { mode },
-      });
+    const browserAllowed = options.browserAllowed ?? true;
+    if (!browserAllowed && options.authProfile !== undefined) {
+      throw new ReadError("INVALID_ARGUMENT", "authProfile requires browser access.");
     }
-    if (options.browserReadiness !== undefined && mode === "http") {
-      throw new ReadError("INVALID_ARGUMENT", "browserReadiness requires auto or browser mode.", {
-        details: { mode },
-      });
+    if (!browserAllowed && options.browserReadiness !== undefined) {
+      throw new ReadError("INVALID_ARGUMENT", "browserReadiness requires browser access.");
     }
     const browserReadiness = options.browserReadiness === undefined
       ? undefined
@@ -147,53 +137,87 @@ export class ReaderService {
 
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
+    const requestId = options.requestId ?? randomUUID();
+    if (requestId.trim().length === 0) {
+      throw new ReadError("INVALID_ARGUMENT", "requestId must be non-empty when provided.");
+    }
     const authProfile = options.authProfile ?? null;
+    const budget = options.budget ?? defaultExecutionBudget(this.config, browserAllowed);
+    const plan = planAccess({
+      url: url.toString(),
+      operation,
+      output: { format: "markdown" },
+      freshness: { maxAgeSeconds, allowStaleWhileRevalidate: false },
+      authorization: {
+        profileId: authProfile,
+        allowedOrigins: [url.origin],
+      },
+      completion: browserReadiness === undefined
+        ? operation === "map"
+          ? { type: "discovery" }
+          : { type: "content" }
+        : { type: "dom", readiness: browserReadiness },
+      budget,
+    }, {
+      cachePolicy: cacheMode,
+      providers: { cache: true, http: true, browser: browserAllowed },
+    });
     const key = createHash("sha256")
-      .update(cacheKey(url.toString(), mode, authProfile, browserReadiness, this.config))
+      .update(cacheKey(
+        url.toString(),
+        operation === "map" ? "discovery" : "content",
+        authProfile,
+        browserReadiness,
+        this.config,
+      ))
       .update(this.rslApprovalContextHash())
       .digest("hex");
-
-    if (cacheMode !== "live") {
-      const cached = this.cache.get(key, maxAgeSeconds);
-      if (cached !== null) {
-        this.localIndex?.put(cached);
-        return { ...cached, cached: true };
-      }
-      if (cacheMode === "cache-only") {
-        throw new ReadError("CACHE_MISS", "No sufficiently fresh cached page is available.", {
-          details: { url: url.toString(), maxAgeSeconds },
-        });
-      }
-    }
-
-    const trace = emptyFetchTrace();
-    const operation = async (): Promise<PageReadArtifact> =>
-      this.fetchWithMode(url, mode, authProfile, browserReadiness, trace, options.signal);
-    let attempt: {
-      value: PageReadArtifact;
-      attempts: number;
-      totalRetryDelayMs: number;
-    };
-    try {
-      attempt = this.crawlPolicy === null
-        ? { value: await operation(), attempts: 1, totalRetryDelayMs: 0 }
-        : await this.crawlPolicy.execute(url, operation, options.signal);
-    } catch (error) {
-      throw errorWithFetchTrace(error, trace);
-    }
+    const { artifact, trace, totalRetryDelayMs } = await new StageExecutor(
+      this.cache,
+      this.httpFetcher,
+      this.browserFetcher,
+      this.crawlPolicy,
+      this.attemptLedger,
+    ).execute({
+      url,
+      cacheKey: key,
+      maxAgeSeconds,
+      authProfile,
+      ...(browserReadiness === undefined ? {} : { browserReadiness }),
+      requestId,
+      plan,
+      budget,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
     const result: PageReadArtifact = {
-      ...attempt.value,
+      ...artifact,
       evidence: {
-        ...attempt.value.evidence,
-        attempts: attempt.attempts,
-        totalRetryDelayMs: attempt.totalRetryDelayMs,
+        ...artifact.evidence,
+        attempts: trace.fetchAttempts.http + trace.fetchAttempts.browser,
+        retryAttempts: Math.max(
+          0,
+          trace.fetchAttempts.http + trace.fetchAttempts.browser -
+            trace.executedStages.filter((stageId) => stageId !== "cache-read").length,
+        ),
+        totalRetryDelayMs,
         fetchAttempts: trace.fetchAttempts,
         responseBytesByMethod: trace.responseBytesByMethod,
         fetchDurationMsByMethod: trace.fetchDurationMsByMethod,
+        requestId,
+        accessPlan: {
+          planId: plan.id,
+          plannerVersion: plan.plannerVersion,
+          plannedStages: plan.stages.map((stage) => ({
+            stageId: stage.id,
+            provider: stage.provider,
+            reasonCode: stage.reasonCode,
+          })),
+          executedStages: trace.executedStages,
+        },
       },
     };
 
-    if ((result.evidence.rsl?.licenseTokensApplied ?? 0) === 0) {
+    if (operation !== "map" && (result.evidence.rsl?.licenseTokensApplied ?? 0) === 0) {
       this.cache.put(key, result);
       this.localIndex?.put(result);
     }
@@ -206,117 +230,5 @@ export class ReaderService {
 
   close(): void {
     this.cache.close();
-  }
-
-  private async fetchAndExtract(
-    sourceUrl: URL,
-    fetcher: PageFetcher,
-    method: "http" | "browser",
-    trace: FetchTrace,
-    authProfile: string | null,
-    browserReadiness: BrowserReadinessPolicy | undefined,
-    signal?: AbortSignal,
-  ): Promise<PageReadArtifact> {
-    trace.fetchAttempts[method] += 1;
-    const startedAt = performance.now();
-    let page: Awaited<ReturnType<PageFetcher["fetch"]>>;
-    try {
-      page = await fetcher.fetch(sourceUrl, {
-        ...(authProfile === null ? {} : { authProfile }),
-        ...(signal === undefined ? {} : { signal }),
-        ...(browserReadiness === undefined ? {} : { browserReadiness }),
-      });
-    } finally {
-      trace.fetchDurationMsByMethod[method] += Math.max(0, performance.now() - startedAt);
-    }
-    trace.responseBytesByMethod[method] += page.responseBytes;
-    const extracted = extractPage(page);
-    return {
-      status: "ok",
-      sourceUrl: sourceUrl.toString(),
-      finalUrl: page.finalUrl,
-      fetchedAt: page.fetchedAt,
-      fetchMethod: page.method,
-      authProfile,
-      cached: false,
-      title: extracted.title,
-      byline: extracted.byline,
-      publishedTime: extracted.publishedTime,
-      contentMarkdown: extracted.markdown,
-      contentHash: extracted.contentHash,
-      completeness: "complete",
-      validation: validateContent(extracted),
-      discoveredLinks: extracted.links,
-      evidence: {
-        httpStatus: page.httpStatus,
-        contentType: page.contentType,
-        responseBytes: page.responseBytes,
-        contentCharacters: extracted.contentCharacters,
-        extractionMethod: extracted.extractionMethod,
-        ...(page.browserReadiness === undefined
-          ? {}
-          : { browserReadiness: page.browserReadiness }),
-        proxyUsed: page.proxyUsed ?? false,
-        ...(page.agentIdentity === undefined ? {} : { agentIdentity: page.agentIdentity }),
-        ...(page.rsl === undefined ? {} : { rsl: page.rsl }),
-      },
-    };
-  }
-
-  private async fetchWithMode(
-    url: URL,
-    mode: "auto" | "http" | "browser",
-    authProfile: string | null,
-    browserReadiness: BrowserReadinessPolicy | undefined,
-    trace: FetchTrace,
-    signal: AbortSignal | undefined,
-  ): Promise<PageReadArtifact> {
-    if (mode === "http") {
-      return this.fetchAndExtract(url, this.httpFetcher, "http", trace, null, undefined, signal);
-    }
-    if (mode === "browser" || authProfile !== null || browserReadiness !== undefined) {
-      return this.fetchAndExtract(
-        url,
-        this.browserFetcher,
-        "browser",
-        trace,
-        authProfile,
-        browserReadiness,
-        signal,
-      );
-    }
-    try {
-      return await this.fetchAndExtract(
-        url, this.httpFetcher, "http", trace, null, undefined, signal,
-      );
-    } catch (error) {
-      if (
-        !(error instanceof ReadError) ||
-        (error.code !== "SHELL_ONLY" && error.code !== "INCOMPLETE_CONTENT")
-      ) {
-        throw error;
-      }
-      try {
-        return await this.fetchAndExtract(
-          url, this.browserFetcher, "browser", trace, null, undefined, signal,
-        );
-      } catch (browserFailure) {
-        if (browserFailure instanceof ReadError && browserFailure.code === "BROWSER_UNAVAILABLE") {
-          throw new ReadError(
-            "BROWSER_UNAVAILABLE",
-            "HTTP returned incomplete content and the browser fallback is unavailable.",
-            {
-              details: {
-                url: url.toString(),
-                httpFailure: error.code,
-                browserFailure: browserFailure.message,
-              },
-              cause: browserFailure,
-            },
-          );
-        }
-        throw browserFailure;
-      }
-    }
   }
 }

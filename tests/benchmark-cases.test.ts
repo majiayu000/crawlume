@@ -6,19 +6,20 @@ import {
   parseBenchmarkCase,
   type BenchmarkCase,
   type BenchmarkCandidate,
+  type BenchmarkExecutionProvenance,
 } from "../benchmarks/harness/contract.js";
 import { benchmarkOutcomeForErrorCode } from "../benchmarks/controlled-site/server.js";
+import { AttemptLedger } from "../src/jobs.js";
 
 function benchmarkCase(overrides: Partial<BenchmarkCase> = {}): BenchmarkCase {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: "article-static-001",
     layer: "fixture",
     category: "article",
     input: {
       url: "https://example.com/article",
       intent: "read",
-      mode: "auto",
       freshnessSeconds: 0,
     },
     policy: {
@@ -44,9 +45,50 @@ function benchmarkCase(overrides: Partial<BenchmarkCase> = {}): BenchmarkCase {
   };
 }
 
+function provenance(overrides: Partial<BenchmarkExecutionProvenance> = {}): BenchmarkExecutionProvenance {
+  const usage = {
+    documentBytesIn: 1_024,
+    networkBytesOut: 0,
+    browserMilliseconds: 0,
+    browserContextStarts: 0,
+    retryDelayMilliseconds: 0,
+    optionalModelTokens: 0,
+  };
+  return {
+    schemaVersion: 1,
+    requestId: "request-test",
+    plan: {
+      planId: `plan_${"a".repeat(64)}`,
+      plannerVersion: "access-planner-v1",
+      plannedStages: [{ stageId: "http-read", provider: "http", reasonCode: "HTTP_PRIMARY" }],
+    },
+    executedStages: ["http-read"],
+    attempts: [{
+      sequence: 1,
+      stageId: "http-read",
+      provider: "http",
+      providerVersion: "reader-http-v1",
+      outcome: "succeeded",
+      errorCode: null,
+      usage,
+      startedAt: "2026-08-28T00:00:00.000Z",
+      completedAt: "2026-08-28T00:00:00.100Z",
+    }],
+    projection: {
+      attempts: 1,
+      lastSequence: 1,
+      lastOutcome: "succeeded",
+      lastStageId: "http-read",
+      usage,
+    },
+    ...overrides,
+  };
+}
+
 function candidate(overrides: Partial<BenchmarkCandidate> = {}): BenchmarkCandidate {
   return {
     outcome: "ok",
+    provenance: provenance(),
     artifact: {
       sourceUrl: "https://example.com/article",
       finalUrl: "https://example.com/article",
@@ -62,6 +104,7 @@ function candidate(overrides: Partial<BenchmarkCandidate> = {}): BenchmarkCandid
         contentType: "text/html; charset=utf-8",
         responseBytes: 1_024,
         attempts: 1,
+        retryAttempts: 0,
         totalRetryDelayMs: 0,
         fetchAttempts: { http: 1, browser: 0 },
         responseBytesByMethod: { http: 1_024, browser: 0 },
@@ -83,17 +126,18 @@ describe("benchmark case schema", () => {
     );
   });
 
-  it("rejects browser inputs that contradict policy", () => {
+  it("rejects browser budget that contradicts policy", () => {
     const value = benchmarkCase({
-      input: { ...benchmarkCase().input, mode: "browser" },
       policy: {
         ...benchmarkCase().policy,
         browserAllowed: false,
-        maxBrowserMs: 0,
+        maxBrowserMs: 1,
       },
     });
 
-    expect(() => parseBenchmarkCase(value)).toThrow("browser mode requires browserAllowed");
+    expect(() => parseBenchmarkCase(value)).toThrow(
+      "maxBrowserMs must be zero when browser is disallowed",
+    );
   });
 
   it("rejects non-HTTP inputs and reversed review windows", () => {
@@ -199,10 +243,35 @@ describe("independent benchmark truth evaluator", () => {
       },
     });
 
-    expect(evaluateBenchmarkCase(gateCase, { outcome: "policy_stop", errorCode: "ROBOTS_DENIED" }))
+    expect(evaluateBenchmarkCase(gateCase, {
+      outcome: "policy_stop", errorCode: "ROBOTS_DENIED", provenance: provenance(),
+    }))
       .toMatchObject({ outcome: "valid", passed: true });
     expect(evaluateBenchmarkCase(gateCase, candidate()))
       .toMatchObject({ outcome: "invalid", passed: false, falseSuccess: true });
+  });
+
+  it("requires the typed failure reason when truth declares it", () => {
+    const failureCase = benchmarkCase({
+      truth: {
+        required: [
+          { type: "outcome_equals", value: "failed" },
+          { type: "error_code_equals", value: "UPSTREAM_ERROR" },
+        ],
+        forbidden: [],
+      },
+    });
+
+    expect(evaluateBenchmarkCase(failureCase, {
+      outcome: "failed",
+      errorCode: "UPSTREAM_ERROR",
+      provenance: provenance(),
+    })).toMatchObject({ outcome: "valid", passed: true });
+    expect(evaluateBenchmarkCase(failureCase, {
+      outcome: "failed",
+      errorCode: "SSRF_BLOCKED",
+      provenance: provenance(),
+    })).toMatchObject({ outcome: "invalid", passed: false });
   });
 
   it("rejects an ok candidate with incomplete provenance", () => {
@@ -210,6 +279,20 @@ describe("independent benchmark truth evaluator", () => {
     delete (incomplete.artifact as Partial<NonNullable<BenchmarkCandidate["artifact"]>>).contentHash;
 
     expect(evaluateBenchmarkCase(benchmarkCase(), incomplete)).toMatchObject({
+      outcome: "harness_error",
+      reason: "malformed_candidate",
+      falseSuccess: false,
+    });
+  });
+
+  it("rejects provenance whose ledger projection cannot be reproduced", () => {
+    const malformed = candidate();
+    malformed.provenance.projection.usage = {
+      ...malformed.provenance.projection.usage,
+      documentBytesIn: malformed.provenance.projection.usage.documentBytesIn + 1,
+    };
+
+    expect(evaluateBenchmarkCase(benchmarkCase(), malformed)).toMatchObject({
       outcome: "harness_error",
       reason: "malformed_candidate",
       falseSuccess: false,
@@ -229,7 +312,26 @@ describe("independent benchmark truth evaluator", () => {
   });
 
   it("maps the public Reader artifact without trusting production validation", () => {
-    expect(candidateFromPageArtifact({
+    const ledger = new AttemptLedger(":memory:");
+    const usage = {
+      documentBytesIn: 512, networkBytesOut: 0, browserMilliseconds: 0,
+      browserContextStarts: 0, retryDelayMilliseconds: 0, optionalModelTokens: 0,
+    };
+    for (const [stageId, provider, outcome, errorCode, stageUsage] of [
+      ["http-read", "http", "failed", "SHELL_ONLY", usage],
+      ["browser-read", "browser", "succeeded", null, {
+        ...usage, documentBytesIn: 2_048, browserMilliseconds: 860,
+        browserContextStarts: 1, retryDelayMilliseconds: 50,
+      }],
+    ] as const) {
+      ledger.append({
+        requestId: "request-test", planId: `plan_${"a".repeat(64)}`, stageId, provider,
+        providerVersion: `reader-${provider}-v1`, outcome, errorCode,
+        rawRef: null, traceRef: null, usage: stageUsage,
+        startedAt: "2026-08-28T00:00:00.000Z", completedAt: "2026-08-28T00:00:00.100Z",
+      });
+    }
+    const mapped = candidateFromPageArtifact({
       status: "ok",
       sourceUrl: "https://example.com/article",
       finalUrl: "https://example.com/article",
@@ -251,7 +353,18 @@ describe("independent benchmark truth evaluator", () => {
         responseBytes: 2_048,
         contentCharacters: 22,
         extractionMethod: "readability",
+        requestId: "request-test",
+        accessPlan: {
+          planId: `plan_${"a".repeat(64)}`,
+          plannerVersion: "access-planner-v1",
+          plannedStages: [
+            { stageId: "http-read", provider: "http", reasonCode: "HTTP_PRIMARY" },
+            { stageId: "browser-read", provider: "browser", reasonCode: "BROWSER_AFTER_INCOMPLETE_HTTP" },
+          ],
+          executedStages: ["http-read", "browser-read"],
+        },
         attempts: 2,
+        retryAttempts: 0,
         totalRetryDelayMs: 50,
         fetchAttempts: { http: 1, browser: 1 },
         responseBytesByMethod: { http: 512, browser: 2_048 },
@@ -263,29 +376,22 @@ describe("independent benchmark truth evaluator", () => {
           textCharacters: 800,
         },
       },
-    })).toEqual(candidate({
+    }, ledger.list("request-test"), ledger.project("request-test"));
+    ledger.close();
+
+    expect(mapped).toMatchObject({
+      outcome: "ok",
+      provenance: {
+        requestId: "request-test",
+        executedStages: ["http-read", "browser-read"],
+        projection: { attempts: 2, usage: { documentBytesIn: 2_560 } },
+      },
       artifact: {
-        ...candidate().artifact!,
         content: "ground truth paragraph",
         fetchMethod: "browser",
         discoveredUrls: ["https://example.com/next"],
-        evidence: {
-          httpStatus: 200,
-          contentType: "text/html",
-          responseBytes: 2_048,
-          attempts: 2,
-          totalRetryDelayMs: 50,
-          fetchAttempts: { http: 1, browser: 1 },
-          responseBytesByMethod: { http: 512, browser: 2_048 },
-          fetchDurationMsByMethod: { http: 120, browser: 860 },
-          browserReadiness: {
-            policy: "generic",
-            waitedMs: 1_200,
-            reason: "meaningful-content-stable",
-            textCharacters: 800,
-          },
-        },
+        evidence: { attempts: 2, retryAttempts: 0, totalRetryDelayMs: 50 },
       },
-    }));
+    });
   });
 });

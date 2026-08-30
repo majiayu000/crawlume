@@ -1,16 +1,18 @@
-import { extractLinks } from "./extract.js";
-import { CrawlRequestPolicy } from "./crawl-policy.js";
 import { normalizeError, ReadError } from "./errors.js";
 import type { ReaderService } from "./reader.js";
 import type { UrlPolicy } from "./security/url-policy.js";
+import {
+  createSiteScope,
+  normalizeDiscoveredLink,
+  siteSourceUrl,
+  type SiteScope,
+} from "./site-scope.js";
 import type {
   CrawlSiteOptions,
   CrawlSiteResult,
   DiscoveredUrl,
   MapSiteOptions,
   MapSiteResult,
-  PageFetcher,
-  RawPage,
   SiteFailure,
 } from "./types.js";
 
@@ -22,12 +24,6 @@ const defaultDepth = 2;
 const maximumDepth = 10;
 
 type QueueEntry = DiscoveredUrl;
-
-type Scope = {
-  hostname: string;
-  includeSubdomains: boolean;
-  ignoreQueryParameters: boolean;
-};
 
 type CrawlExecutionOptions = CrawlSiteOptions & { signal?: AbortSignal };
 
@@ -61,27 +57,6 @@ function depthValue(value: number | undefined): number {
   return resolved;
 }
 
-function normalizeCandidate(rawUrl: string, scope: Scope): string | null {
-  if (!URL.canParse(rawUrl)) {
-    return null;
-  }
-  const url = new URL(rawUrl);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return null;
-  }
-  const inScope =
-    url.hostname === scope.hostname ||
-    (scope.includeSubdomains && url.hostname.endsWith(`.${scope.hostname}`));
-  if (!inScope) {
-    return null;
-  }
-  url.hash = "";
-  if (scope.ignoreQueryParameters) {
-    url.search = "";
-  }
-  return url.toString();
-}
-
 function toFailure(entry: QueueEntry, error: unknown): SiteFailure {
   const normalized = normalizeError(error);
   return {
@@ -93,44 +68,23 @@ function toFailure(entry: QueueEntry, error: unknown): SiteFailure {
   };
 }
 
-function shouldRender(page: RawPage, links: string[]): boolean {
-  if (!page.contentType.toLowerCase().includes("html") || links.length > 0) {
-    return false;
-  }
-  const text = page.body.toLowerCase();
-  return (
-    /enable javascript|javascript is disabled|loading(?:\.{3}|…)|something went wrong/.test(text) ||
-    (page.body.length < 4_000 && (page.body.match(/<script\b/gi)?.length ?? 0) > 3)
-  );
-}
-
 export class SiteService {
   constructor(
     private readonly urlPolicy: UrlPolicy,
     private readonly reader: ReaderService,
-    private readonly httpFetcher: PageFetcher,
-    private readonly browserFetcher: PageFetcher,
-    private readonly crawlPolicy: CrawlRequestPolicy | null = null,
   ) {}
 
   async mapSite(options: MapSiteOptions): Promise<MapSiteResult> {
     const maxPages = positiveInteger(options.maxPages, defaultMapPages, maximumMapPages, "maxPages");
     const maxDepth = depthValue(options.maxDepth);
-    const mode = options.mode ?? "auto";
-    if (options.authProfile !== undefined && mode === "http") {
-      throw new ReadError("INVALID_ARGUMENT", "authProfile requires auto or browser mode.", {
-        details: { mode },
-      });
+    const browserAllowed = options.browserAllowed ?? true;
+    if (options.authProfile !== undefined && !browserAllowed) {
+      throw new ReadError("INVALID_ARGUMENT", "authProfile requires browser access.");
     }
 
     const root = this.urlPolicy.parse(options.url);
-    await this.urlPolicy.assertPublic(root);
-    const scope: Scope = {
-      hostname: root.hostname,
-      includeSubdomains: options.includeSubdomains ?? false,
-      ignoreQueryParameters: options.ignoreQueryParameters ?? true,
-    };
-    const sourceUrl = normalizeCandidate(root.toString(), scope) ?? root.toString();
+    const scope = createSiteScope(root, options);
+    const sourceUrl = siteSourceUrl(root, scope);
     const startedAt = new Date().toISOString();
     const queue: QueueEntry[] = [{ url: sourceUrl, depth: 0, discoveredFrom: null }];
     const queued = new Set([sourceUrl]);
@@ -145,13 +99,19 @@ export class SiteService {
       }
       scannedPages += 1;
       try {
-        const page = await this.fetchForMap(new URL(entry.url), mode, options.authProfile);
+        const page = await this.reader.discoverPageArtifact({
+          url: entry.url,
+          browserAllowed,
+          cacheMode: "live",
+          ...(options.authProfile === undefined ? {} : { authProfile: options.authProfile }),
+          ...(options.budget === undefined ? {} : { budget: options.budget }),
+        });
         urls.push(entry);
         if (entry.depth >= maxDepth) {
           continue;
         }
         this.enqueueLinks(
-          extractLinks(page.body, page.finalUrl),
+          page.discoveredLinks,
           entry,
           scope,
           queued,
@@ -186,13 +146,8 @@ export class SiteService {
     );
     const maxDepth = depthValue(options.maxDepth);
     const root = this.urlPolicy.parse(options.url);
-    await this.urlPolicy.assertPublic(root);
-    const scope: Scope = {
-      hostname: root.hostname,
-      includeSubdomains: options.includeSubdomains ?? false,
-      ignoreQueryParameters: options.ignoreQueryParameters ?? true,
-    };
-    const sourceUrl = normalizeCandidate(root.toString(), scope) ?? root.toString();
+    const scope = createSiteScope(root, options);
+    const sourceUrl = siteSourceUrl(root, scope);
     const startedAt = new Date().toISOString();
     const queue: QueueEntry[] = [{ url: sourceUrl, depth: 0, discoveredFrom: null }];
     const queued = new Set([sourceUrl]);
@@ -208,9 +163,11 @@ export class SiteService {
       }
       scannedPages += 1;
       try {
-        const artifact = await this.reader.readPageArtifact({
+        const artifact = await this.reader.crawlPageArtifact({
           url: entry.url,
-          ...(options.mode === undefined ? {} : { mode: options.mode }),
+          ...(options.browserAllowed === undefined
+            ? {}
+            : { browserAllowed: options.browserAllowed }),
           ...(options.cacheMode === undefined ? {} : { cacheMode: options.cacheMode }),
           ...(options.maxAgeSeconds === undefined
             ? {}
@@ -219,6 +176,7 @@ export class SiteService {
           ...(options.browserReadiness === undefined
             ? {}
             : { browserReadiness: options.browserReadiness }),
+          ...(options.budget === undefined ? {} : { budget: options.budget }),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
         throwIfCancelled(options.signal);
@@ -249,51 +207,20 @@ export class SiteService {
     };
   }
 
-  private async fetchForMap(
-    url: URL,
-    mode: "auto" | "http" | "browser",
-    authProfile: string | undefined,
-  ): Promise<RawPage> {
-    const operation = async (): Promise<RawPage> =>
-      this.fetchForMapOnce(url, mode, authProfile);
-    return this.crawlPolicy === null
-      ? operation()
-      : (await this.crawlPolicy.execute(url, operation)).value;
-  }
-
-  private async fetchForMapOnce(
-    url: URL,
-    mode: "auto" | "http" | "browser",
-    authProfile: string | undefined,
-  ): Promise<RawPage> {
-    if (mode === "browser" || authProfile !== undefined) {
-      return this.browserFetcher.fetch(
-        url,
-        authProfile === undefined ? {} : { authProfile },
-      );
-    }
-    const page = await this.httpFetcher.fetch(url);
-    const links = extractLinks(page.body, page.finalUrl);
-    if (mode === "auto" && shouldRender(page, links)) {
-      return this.browserFetcher.fetch(url, {});
-    }
-    return page;
-  }
-
   private enqueueLinks(
     links: string[],
     parent: QueueEntry,
-    scope: Scope,
+    scope: SiteScope,
     queued: Set<string>,
     queue: QueueEntry[],
   ): void {
     for (const rawUrl of links) {
-      const url = normalizeCandidate(rawUrl, scope);
-      if (url === null || queued.has(url)) {
+      const discovered = normalizeDiscoveredLink(rawUrl, parent, scope);
+      if (discovered === null || queued.has(discovered.url)) {
         continue;
       }
-      queued.add(url);
-      queue.push({ url, depth: parent.depth + 1, discoveredFrom: parent.url });
+      queued.add(discovered.url);
+      queue.push(discovered);
     }
   }
 }

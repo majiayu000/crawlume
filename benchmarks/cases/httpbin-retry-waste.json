@@ -1,12 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "httpbin-retry-waste",
   "layer": "live",
   "category": "retry-fault",
   "input": {
     "url": "https://httpbin.org/status/500",
     "intent": "read",
-    "mode": "http",
     "freshnessSeconds": 0
   },
   "policy": {
@@ -18,7 +17,8 @@
   },
   "truth": {
     "required": [
-      { "type": "outcome_equals", "value": "failed" }
+      { "type": "outcome_equals", "value": "failed" },
+      { "type": "error_code_equals", "value": "UPSTREAM_ERROR" }
     ],
     "forbidden": []
   },

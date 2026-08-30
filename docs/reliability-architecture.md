@@ -1,7 +1,7 @@
 # Diaoyan 可靠性与成本优化架构
 
-状态：Architecture Foundation，Benchmark/Readiness 首版与 Contracts/Attempt Ledger 基础切片已实现
-最后更新：2026-08-29
+状态：Architecture Foundation，Benchmark/Readiness、确定性 Planner 与 Reader/Map/Crawl Ledger/Stage Runtime 首版已实现
+最后更新：2026-08-30
 配套真值规范：[reliability-benchmark-spec.md](./reliability-benchmark-spec.md)
 
 选型说明：本文描述的是较早形成的候选组件设计。跨项目架构调研和四方案决策见
@@ -28,15 +28,15 @@ subject to policy, authorization, freshness and resource budgets
 | --- | --- | --- |
 | Entrypoints | `src/mcp.ts`、`src/cli/main.ts`、`src/server.ts` | CLI/MCP 已共享应用核心，继续保持公共合同薄层 |
 | Composition | `src/app.ts` 构造 HTTP、Browser、Cache、Job、Monitor、Metrics | 当前依赖组装清晰，适合渐进加入 Planner/Runtime，不需要先拆包 |
-| Access decision | `src/reader.ts` 仅支持 `auto/http/browser`，`auto` 只在 `SHELL_ONLY`/`INCOMPLETE_CONTENT` 时回退 | Access Planner 是边界补全，不应在 Reader 中继续堆条件分支 |
+| Access decision | `src/reliability/planner.ts` 生成内容寻址 Plan；`src/reader.ts` 按 Stage 执行；`read`、显式 `discovery`、`crawl` 共用该路径 | `fetchWithMode`、公开 `mode` 和 Site `shouldRender` 均已删除 |
 | Browser runtime | `src/runtime/readiness.ts` 与 `src/fetch/browser.ts` 已支持正文稳定兜底、目标 selector、attached/visible、预算化滚动、总预算硬超时和 readiness 证据 | 更多交互类型、站点 Adapter 策略和完整阶段 Trace 仍待实现 |
 | Extraction | `src/extract.ts` 使用 JSON/plain、Readability、Document fallback | 缺少 content-type/站点 Extractor Registry |
 | Validation | `src/validation.ts` 只检查字数和 fallback 方法 | 当前 `ok` 不能等同语义有效，需要独立 Validator Contract |
-| Crawl state | `src/site.ts` 内存 BFS、串行执行；`src/jobs.ts` 持久化整项 Job | Job 可恢复但页级 Frontier 不耐久，无法安全提高并发 |
-| Retry | `src/crawl-policy.ts` 对整个 operation 重试 | 需要 Stage-level Attempt Ledger，避免重复已成功阶段 |
+| Crawl state | 同步 `src/site.ts` 保持有界串行；异步 Crawl 使用 SQLite 页级 Frontier、lease、fencing、并发 Worker 和 cursor publication | 单机首版已完成；多机权威 Frontier 尚未实现 |
+| Retry | `src/crawl-policy.ts` 接受每 Stage retry policy；异步 Frontier 持久化 origin interval、429 cooldown 和 Crawl 累计预算 | 固定间隔首版已完成；自适应并发和 Circuit Breaker 尚缺 |
 | Cache | `src/cache.ts` TTL SQLite cache | 缺少 revalidation、singleflight、版本化 Artifact key 和清理 |
 | Metrics | `src/metrics.ts` 记录请求、错误码、bytes、attempt、duration | 是良好起点，但缺少有效真值、阶段耗时、浏览器成本和 Planner 路径 |
-| Tests | `tests/` 有 26 个测试文件、246 条测试，含独立 Browser readiness runtime、Intent/Adapter 传递与 Tournament truth 测试 | 新边界必须保持 headless/fake adapter 测试能力 |
+| Tests | 全库测试覆盖 Planner/Runtime/Site，并有 7 类真实受控 HTTP 故障、75-run 真实 Chromium Readiness Tournament 与 6-Case 公网 Corpus | 当前规模仍只证明实验级纵向切片，不代表生产流量证明 |
 | Repo state | 2026-08-28 `main` at `074ac92`，无仓库级 AGENTS/CLAUDE 指令 | 本 Spec 以当前主线为证据，不声称远端或未来实现状态 |
 
 ## Reference Models Considered
@@ -122,8 +122,8 @@ benchmarks/
   controlled-site/
 ```
 
-迁移期间现有 `ReaderService` 仍是公共 Facade，内部逐步委托 Planner/Executor；不要同时维护两个
-`auto` 决策源。
+`ReaderService` 仍是公共 Facade。Reader、Map、Crawl 已统一委托确定性 Planner 并按 Stage 执行；
+Site 只维护有界 BFS、范围和逐页部分失败，不再拥有访问升级 heuristic。
 
 ## Core Contracts
 
@@ -136,12 +136,13 @@ type ReadIntent = {
   output: { format: "markdown" | "json"; schemaId?: string };
   freshness: { maxAgeSeconds: number; allowStaleWhileRevalidate: boolean };
   authorization: { profileId: string | null; allowedOrigins: string[] };
+  completion: { type: "content" | "discovery" } | DomCompletion;
   budget: ExecutionBudget;
 };
 ```
 
-调用方声明目标和预算，不声明内部必须使用哪个实现。兼容期保留 `mode=http|browser`，将其映射为
-Provider allowlist。
+调用方声明目标、Browser 是否允许、完成条件和预算，不声明内部必须使用哪个实现。旧
+`mode=auto|http|browser` 已按破坏性变更删除，不保留兼容层。
 
 ### ExecutionBudget
 
@@ -149,14 +150,19 @@ Provider allowlist。
 type ExecutionBudget = {
   deadlineMs: number;
   maxAttempts: number;
-  maxNetworkBytes: number;
+  maxDocumentBytes: number;
   maxBrowserMs: number;
   maxBrowserContexts: number;
   maxOptionalModelTokens: number;
 };
 ```
 
-预算是硬边界。超出预算返回 `BUDGET_EXHAUSTED`，不得 warning 后继续消耗。
+预算是硬边界。超出预算返回 `BUDGET_EXHAUSTED`，不得 warning 后继续消耗。Map/Crawl 当前把调用方
+同步 Map/Crawl 仍把预算独立应用到每个页面；异步 Crawl 另有持久化累计 `CrawlBudget`，在 claim
+事务中 reservation、完成后 settlement/refund，并为每页生成唯一 requestId。首版
+`maxDocumentBytes` 只累计 Provider 返回的主文档字节；robots、RSL、重定向响应和 Browser 子资源尚未
+纳入，因此不得把它解释成全链路网络流量。需要总流量预算时，计量必须继续下推到 Transport 和
+Browser network events。
 
 ### AccessPlan
 
@@ -385,11 +391,11 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 
 | Contract | Current source of truth | Consumers | Duplicate/fork | Action |
 | --- | --- | --- | --- | --- |
-| Public MCP/CLI input | `src/mcp.ts`、`src/cli/main.ts` | Agent、CLI | 两层参数映射是 intentional bridge | 引入共享 ReadIntent parser，保持旧参数兼容 |
-| Auto access policy | `src/reader.ts` | Reader、Site | `src/site.ts::shouldRender` 是 accidental fork | 收敛到 Planner；Site 只提交 Intent |
-| Content gate detection | `src/extract.ts` | Reader | Site 内另有 shell heuristic | 收敛到 Validator/Planner evidence |
-| Request retry | `src/crawl-policy.ts` | Reader、Site | operation 粒度过粗 | 迁移 Stage Retry 后删除旧 wrapper |
-| Crawl state | `src/jobs.ts` 整 Job + `src/site.ts` 内存 Queue | MCP Job | 两级状态无法页级恢复 | Frontier 成为页级规范源，Job 做 projection |
+| Public MCP/CLI input | `src/mcp.ts`、`src/cli/main.ts` | Agent、CLI | 已删除旧 `mode`；两层仍各自映射 browserAllowed/cache/freshness | 下一步引入共享 ReadIntent parser |
+| Access policy | `src/reliability/planner.ts` | Reader、Site | 无第二套 Site heuristic | 保持 Site 只提交 Intent |
+| Content gate detection | `src/extract.ts` | Reader/Stage Executor | 无 Site shell heuristic | 后续收敛到 Validator Registry evidence |
+| Request retry | Planner Stage policy + `src/crawl-policy.ts` + persisted origin state | Reader、Site、Frontier Worker | 每页与异步任务累计预算已统一；自适应调度未接入 | 以 Benchmark 触发自适应策略 |
+| Crawl state | `src/frontier-store.ts` + `src/runtime/frontier.ts` | MCP Job | 页级 Frontier 是规范源，Job 为 projection | 多机时迁移 PostgreSQL lease |
 | Cache | `src/cache.ts` | Reader/Index | raw/artifact 未分离 | 版本化 Artifact Store + rawRef |
 | Runtime metrics | `src/metrics.ts` | CLI/MCP stats | Benchmark truth 不存在 | 运行遥测与 Benchmark truth 分库/分合同 |
 | Architecture docs | 本文与 Benchmark Spec | Roadmap/实现任务 | `docs/spec.md` 是现状合同 | `spec.md` 继续描述已实现；本文描述目标架构 |
@@ -408,15 +414,15 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 | Observability | AttemptLedger events + projections | redacted resource facts | Cookie、Token、敏感正文、代理地址 | redaction、aggregation tests |
 | Compatibility/API | Reader Facade | new Runtime contracts | 新旧 auto policy 同时长期存在 | existing Reader/MCP/CLI tests + parity tests |
 
-## Compatibility And Deletion Plan
+## Breaking Convergence And Deletion Plan
 
 | Path/shim | Why | Owner | Keep until | Delete/converge when |
 | --- | --- | --- | --- | --- |
-| `mode=auto/http/browser` | 现有 CLI/MCP 公共合同 | Reader Facade | ReadIntent Provider allowlist 稳定 | 只删除内部分支，不破坏参数 |
-| `ReaderService.fetchWithMode` | 当前 auto policy | Reliability migration | Planner parity Case 全通过 | 委托 Executor 后删除内部决策 |
-| `SiteService.shouldRender` | Map 独立 fallback | Site migration | Map 也走 Planner | 删除重复 heuristic |
+| `mode=auto/http/browser` | 旧 CLI/MCP 公共合同 | Reader Facade | 已删除 | 完成；使用 `browserAllowed`、completion 和 budget |
+| `ReaderService.fetchWithMode` | 旧 auto policy | Reliability migration | 已删除 | 完成；single-page 委托 Planner Stage |
+| `SiteService.shouldRender` | Map 独立 fallback | Site migration | 已删除 | 完成；Map 使用 `completion=discovery` |
 | `CrawlRequestPolicy.execute` | 当前 operation retry | Runtime migration | Stage retry 覆盖现有 Case | 收敛为 Origin Governor + Stage Retry |
-| Job 级 `running -> queued` 恢复 | 当前中断恢复 | Frontier migration | 页级 lease/replay 测试通过 | Job 改 projection，不再整项重置 |
+| Job 级 `running -> queued` 恢复 | 已删除 | Frontier migration | 页级 lease/replay 与真实 SIGKILL 测试已通过 | 完成；仅回收过期 page lease |
 | 原 PageCache JSON blob | 当前 TTL cache | Store migration | versioned Artifact Store 可迁移读取 | 迁移完成且旧行 TTL 到期 |
 
 ## Validation Matrix
@@ -430,16 +436,16 @@ Benchmark truth -> strategy evaluation -> reviewed policy version -> release
 | Browser headless | adaptive readiness、回收、Trace redaction | `pnpm test -- tests/browser-readiness.test.ts` |
 | Crawl recovery | lease、中断、去重、backpressure | `pnpm test -- tests/frontier.test.ts tests/crawl-recovery.test.ts` |
 | Benchmark | Valid/Invalid/Cost 可重复 | `pnpm bench --mode pr` |
-| Existing compatibility | 旧 CLI/MCP/Reader 行为不回归 | `pnpm check && pnpm test` |
+| Breaking API | CLI/MCP/Reader 新合同一致且旧 `mode` 不再存在 | `pnpm check && pnpm test` |
 
 ## P0/P1/P2 Roadmap
 
 | Priority | Work | Files/modules | Done when | Verification |
 | --- | --- | --- | --- | --- |
 | P0 | Benchmark Schema、Truth Evaluator、Controlled Site | `benchmarks/` | 产生首个可复现 baseline | `pnpm bench --mode pr` |
-| P0 | Reliability contracts 与 Attempt Ledger（基础切片已完成） | 当前位于 `src/types.ts`、`src/jobs.ts`；待保护阈值解除后机械拆分 | 事件重放得到同一 projection；接入 Reader 前保持独立 | `pnpm test -- tests/attempt-ledger.test.ts` |
-| P0 | Deterministic Access Planner | `src/reliability/planner.ts` | 现有 auto 行为可表达，Plan 可解释 | `pnpm test -- tests/reliability-planner.test.ts` |
-| P1 | Stage Executor 与细粒度重试 | `src/runtime/executor.ts` | 不重复成功 Stage，429 按 origin 调度 | `pnpm test -- tests/reliability-runtime.test.ts` |
+| P0 | Reliability contracts 与 Attempt Ledger（Reader/Map/Crawl 首版已完成） | `src/types.ts`、`src/jobs.ts`、`src/app.ts`、`src/reader.ts` | Provider 调用与 Ledger attempt 一一对应 | `pnpm test -- tests/attempt-ledger.test.ts tests/reliability-runtime.test.ts tests/site.test.ts` |
+| P0 | Deterministic Access Planner（Reader/Map/Crawl 已完成） | `src/reliability/planner.ts` | Plan 内容寻址、可解释，content/discovery/DOM/Auth/预算路径确定 | `pnpm test -- tests/reliability-planner.test.ts` |
+| P1 | Stage Executor 与细粒度重试（每页首版已完成） | `src/runtime/executor.ts` | 不重复成功 Stage；deadline、attempt、主文档字节和 Browser 预算显式失败 | `pnpm test -- tests/reliability-runtime.test.ts tests/site.test.ts` |
 | P1 | Composable Browser Readiness（首版已完成） | `src/runtime/readiness.ts`、Browser Provider、公开 Read Intent | Intent/Adapter 目标条件优先，Generic 稳定兜底，滚动有预算 | `pnpm test -- tests/browser-readiness.test.ts tests/readiness-tournament.test.ts && pnpm bench:readiness` |
 | P1 | Extractor/Validator Registry | `src/reliability/validation.ts`、`src/adapters/` | JSON/Feed/Article 等合同独立可测 | registry contract tests + Benchmark |
 | P1 | Artifact Store revalidation/singleflight | Cache/Store adapters | 相同请求合并，304 正确复用，版本升级可重抽取 | cache/revalidation tests |

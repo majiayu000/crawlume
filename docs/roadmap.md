@@ -37,11 +37,11 @@
 
 ## v0.5 持久异步抓取（已完成）
 
-- SQLite 持久 Crawl Job 与 UUID。
-- `start_crawl`、`get_crawl`、`cancel_crawl` MCP 工具。
-- 单 Worker 无空轮询调度。
-- 结构化成功、失败和页面级部分结果。
-- 协作式取消与进程重启恢复。
+- SQLite 页级 Frontier、UUID、lease/heartbeat、owner + generation fencing 和 cursor publication。
+- `start_crawl`、`get_crawl`、`get_crawl_pages`、`pause_crawl`、`resume_crawl`、`cancel_crawl` MCP 工具。
+- 1–32 页并发、全局 Worker 容量、按 origin 持久启动间隔和 `Retry-After` cooldown。
+- Crawl 累计 attempts、主文档字节、Browser 时间/Context 和 deadline 硬预算。
+- 活动请求协作式取消；`SIGKILL` 后回收过期 lease，已提交页面不重抓。
 - 普通 CLI 与长期服务 Worker 生命周期隔离。
 
 ## v0.6 域名策略与有界重试（已完成）
@@ -96,12 +96,16 @@
 
 ## v0.12 Access Planner 与 Attempt Ledger
 
-- `ReadIntent`、`ExecutionBudget`、`AccessPlan`、`StageResult` 和 `ValidationResult` 稳定合同（首版已完成）。
-- Cache、HTTP、Browser 变成 Provider；现有 `mode` 参数映射为 Provider allowlist。
-- append-only Attempt Ledger 和可重放 projection（独立 SQLite store 首版已完成；尚未接入 Reader 主链）。
-- Stage-level retry，避免重复已经成功的 HTTP、Browser 或 Extraction 阶段。
+- `ReadIntent`、`ExecutionBudget`、`AccessPlan`、`StageResult` 和 `ValidationResult` 稳定合同（首版已完成；已增加 completion、PlanningFacts、reason code 和内容寻址 Plan ID）。
+- Cache、HTTP、Browser 进入统一 Provider Stage；破坏性删除 `mode`，边界只声明是否允许 Browser、完成条件和预算（Reader、Map、Crawl 首版已完成）。
+- append-only Attempt Ledger 和可重放 projection（SQLite store 与 Reader/Map/Crawl 接线首版已完成；耐久 Frontier 已接入异步 Crawl）。
+- Stage Executor 已从 Reader 拆出；Stage-level retry 不重复已成功阶段，全局 deadline、attempt、主文档
+  bytes、Browser 时间和 Context 数量均以 `BUDGET_EXHAUSTED` 显式终止（每页与异步 Crawl 累计预算首版已完成）。
+- Benchmark 成功、失败和策略停止均携带可复算 Plan + Attempt Ledger provenance；主文档 bytes 与
+  Provider attempts 是代理成本，不宣称为全链路网络总量。
 - 429/`Retry-After` 进入按 origin 调度，不通过身份轮换规避。
-- `ReaderService.fetchWithMode` 和 `SiteService.shouldRender` 收敛到唯一 Planner。
+- `ReaderService.fetchWithMode` 与 `SiteService.shouldRender` 均已删除；Reader、Map、Crawl 统一提交 Intent，由确定性 Planner、Stage Executor 和 Attempt Ledger 执行。
+- 已加入 7 类真实受控 HTTP 故障：慢响应头、慢响应体、分块超限、重定向链、预算内/预算外 `Retry-After` 和持续 500；正式 40-Case 配额仍未完成。
 
 ## v0.13 Browser Readiness 与内容质量
 
@@ -113,13 +117,13 @@
 - 同一 raw response 可运行多个 Extractor，不因抽取失败重复下载。
 - LLM 仅作为显式、预算化的可选 uncertain 路径。
 
-## v0.14 Durable Concurrent Crawl Engine
+## v0.14 Durable Concurrent Crawl Engine（首版已完成）
 
-- 页级持久 Frontier、lease、checkpoint、去重和中断恢复。
+- 页级持久 Frontier、lease、checkpoint、去重、中断恢复和分页 publication 已完成。
 - HTTP、Browser、授权 Session 分池。
-- 全局资源预算和按 origin 自适应并发、backpressure、Circuit Breaker。
+- 全局资源预算、按 origin 固定间隔/429 cooldown 和 backpressure 首版已完成；自适应并发与 Circuit Breaker 待实现。
 - ETag/Last-Modified revalidation、singleflight、stale-while-revalidate 和 Cache 清理。
-- 流式页面结果和可解释部分失败。
+- cursor 页面结果和可解释部分失败已完成；推送式流输出待实现。
 
 ## v0.15 Optimization Loop 与首批 Adapter
 
@@ -141,3 +145,7 @@
 每个阶段都必须具备：稳定输入契约、显式失败、SSRF 与凭证隔离、聚焦测试、真实公开站点冒烟，
 以及升级后不降低既有安全边界的证据。v0.11 起还必须报告同一 Benchmark Case Set 下的有效成功率、
 错误成功率和单位有效结果成本；原始请求成功率不能单独作为发布证据。
+
+机器判定 Gate 已实现 `experimental`、`canary-ready`、`release-candidate` 和
+`production-proven` 四级。当前 Corpus 规模仍属于 `experimental`；代码通过少量公网 Canary 不能被描述为
+生产级。

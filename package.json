@@ -21,6 +21,7 @@
     "auth": "tsx src/cli/auth.ts",
     "bench:case": "tsx benchmarks/controlled-site/server.ts --runner reader-case",
     "bench:corpus": "tsx benchmarks/controlled-site/server.ts --runner reader-corpus",
+    "bench:faults": "vitest run tests/controlled-fault-matrix.test.ts",
     "bench:http": "tsx benchmarks/harness/summary.ts",
     "bench:readiness": "tsx benchmarks/controlled-site/server.ts --runner readiness-tournament",
     "cli": "tsx src/cli/main.ts",

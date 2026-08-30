@@ -1,5 +1,9 @@
 # Diaoyan v0.5 异步抓取任务规范
 
+> 历史规范：最初的整 Job 串行模型已由 2026-08-30 的页级耐久并发 Frontier 取代。当前合同见
+> [`spec.md`](spec.md)，实施与验收记录见
+> [`feature/8-30/durable-concurrent-crawl-plan.md`](feature/8-30/durable-concurrent-crawl-plan.md)。
+
 ## 目标
 
 把现有同步 `crawl_site` 包装为可持久化、可查询、可取消、可在进程重启后恢复的抓取任务。

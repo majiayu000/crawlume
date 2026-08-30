@@ -9,19 +9,17 @@ describe("diaoyan CLI", () => {
       markdown: false,
       options: {
         url: "https://example.com/article",
-        mode: "auto",
+        browserAllowed: true,
         cacheMode: "prefer-cache",
         maxAgeSeconds: 900,
       },
     });
   });
 
-  it("parses browser, cache, profile, age, and Markdown options", () => {
+  it("parses cache, profile, age, and Markdown options", () => {
     expect(
       parseCli([
         "read",
-        "--mode",
-        "browser",
         "--cache-mode",
         "live",
         "--max-age-seconds",
@@ -36,7 +34,7 @@ describe("diaoyan CLI", () => {
       markdown: true,
       options: {
         url: "https://example.com/article",
-        mode: "browser",
+        browserAllowed: true,
         cacheMode: "live",
         maxAgeSeconds: 60,
         authProfile: "research",
@@ -60,7 +58,7 @@ describe("diaoyan CLI", () => {
       kind: "map",
       options: {
         url: "https://example.com/docs",
-        mode: "auto",
+        browserAllowed: true,
         maxPages: 12,
         maxDepth: 3,
         includeSubdomains: true,
@@ -74,7 +72,7 @@ describe("diaoyan CLI", () => {
       kind: "crawl",
       options: {
         url: "https://example.com/docs",
-        mode: "auto",
+        browserAllowed: true,
         cacheMode: "prefer-cache",
         maxAgeSeconds: 900,
         maxPages: 10,
@@ -138,7 +136,7 @@ describe("diaoyan CLI", () => {
   it.each([
     [["read"], "read requires a URL"],
     [["write", "https://example.com"], "Supported commands"],
-    [["read", "--mode", "magic", "https://example.com"], "unsupported value"],
+    [["read", "--no-browser", "--auth-profile", "research", "https://example.com"], "requires browser access"],
     [["read", "--max-age-seconds", "1.5", "https://example.com"], "positive integer"],
     [["read", "--unknown", "https://example.com"], "Unknown command-line option"],
     [["read", "https://one.example", "https://two.example"], "exactly one URL"],

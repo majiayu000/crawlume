@@ -1,12 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "quotes-js-auto",
   "layer": "live",
   "category": "browser-dynamic",
   "input": {
     "url": "https://quotes.toscrape.com/js/",
     "intent": "read",
-    "mode": "auto",
     "freshnessSeconds": 0
   },
   "policy": {

@@ -234,6 +234,17 @@ function indexedPage(): PageReadArtifact {
       responseBytes: 100,
       contentCharacters: 40,
       extractionMethod: "readability",
+      requestId: "request-test",
+      accessPlan: {
+        planId: `plan_${"a".repeat(64)}`,
+        plannerVersion: "access-planner-v1",
+        plannedStages: [{
+          stageId: "http-read",
+          provider: "http",
+          reasonCode: "HTTP_PRIMARY",
+        }],
+        executedStages: ["http-read"],
+      },
     },
   };
 }
