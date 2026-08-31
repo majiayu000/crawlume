@@ -24,8 +24,9 @@ release manifest；由调用方显式激活完整 release；把当前投影回�
 ## 3. Manifest 合同
 
 manifest 固定记录 schema/indexer 版本、文档数，以及按 final URL 排序的 request、Artifact、Raw、
-content hash、parser 和 validator 引用。release ID 与 manifest hash 均由规范 JSON 的 SHA-256 导出，
-创建时必须逐条核对当前投影、历史观察、Artifact 和 Raw 依赖。空投影、不完整依赖或相同 manifest
+content hash、完整投影 hash、parser 和 validator 引用。release ID 与 manifest hash 均由规范 JSON 的
+SHA-256 导出，创建时必须逐条核对当前投影、历史观察、Artifact 和 Raw 依赖。激活和读取 active 时
+重新验证完整投影 hash、Raw 内容地址与全部依赖。空投影、不完整依赖或相同 manifest
 的重复发布显式失败。已保存 manifest 禁止更新或删除；读取和激活时重新验证 hash 与内容依赖。
 
 ## 4. 激活与回滚合同
@@ -44,4 +45,5 @@ release。回滚要求已经存在 active release，并使用相同完整性检�
 - 创建不自动激活；激活状态跨进程重开持久化。
 - 回滚只接受已存在、complete、依赖完整且与 active 不同的 release。
 - 激活写入中途失败时，查询结果与 active release 均保持不变。
+- active 读取拒绝已失去依赖的 release；Artifact 投影或 Raw 内容地址篡改在激活前失败。
 - 聚焦测试、相关回归、类型检查、构建和 Patch Guard 产生新鲜证据。

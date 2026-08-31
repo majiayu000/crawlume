@@ -11,10 +11,10 @@
 | --- | --- | --- | --- |
 | R00 | 冻结 release、激活、回滚和失败原子性边界 | Complete | ADR 明确复用 Raw/Artifact/history/FTS，排除自动 rollout、远程存储和分布式索引 |
 | R01 | 先写边界与事务行为测试并确认真实 RED | Complete | 初始测试 5/5 因 release API 缺失而失败，命中缺失行为；覆盖空投影、重复/篡改 manifest、缺依赖、激活、回滚、持久化和事务失败 |
-| R02 | 创建不可变且内容可验证的 complete manifest | Complete | SHA-256 manifest/ID、数据库不可变 trigger、重复/篡改/空投影与 Raw/Artifact/history 逐项核验均由聚焦测试覆盖 |
-| R03 | 显式激活与 active 状态持久化 | Complete | 创建后 active 为 null；显式激活后跨 store 重开保留；普通索引写入原子清除过期 active 指针 |
+| R02 | 创建不可变且内容可验证的 complete manifest | Complete | SHA-256 manifest/ID、完整投影 hash、Raw 内容地址、数据库不可变 trigger，以及重复/篡改/空投影与依赖核验均由聚焦测试覆盖 |
+| R03 | 显式激活与 active 状态持久化 | Complete | 创建后 active 为 null；显式激活后跨 store 重开保留；active 读取重新验证可重建依赖；普通索引写入原子清除过期指针 |
 | R04 | 完整性受限的原子回滚 | Complete | complete 旧 release 回滚成功；不存在、building、依赖缺失均失败；注入 INSERT 失败后投影与 active 不变 |
-| R05 | 聚焦回归、check/build、Patch Guard 与提交 | Complete | 最终相关回归 23/23、`pnpm check`、`pnpm build`、`git diff --check` 通过；Patch Guard observed 4 个任务文件、0 violations；原子提交包含本账本 |
+| R05 | 聚焦回归、check/build、Patch Guard 与提交 | Complete | 集成聚焦 68/68、check、build、串行全量 57 文件/504 测试通过；Patch Guard 见集成提交 |
 
 ## 明确范围外
 
@@ -26,6 +26,10 @@
 
 - RED 1：初始 5 个测试因 release API 缺失全部失败；最小实现后 GREEN 5/5。
 - RED 2：普通索引改写后旧 active 仍存在；投影变更 trigger 落地后 GREEN 6/6。
-- 相关回归：release、page history、index、storage 共 23/23 通过。
+- 分支相关回归：release、page history、index、storage 共 23/23 通过；集成审查把发布逻辑从
+  `page-history.ts` 机械拆分到 `index-release.ts`，并新增 active 依赖、Artifact 投影和 Raw 内容地址
+  三个边界，专项测试 9/9 通过。
 - Node.js 25.9.0：`pnpm check`、`pnpm build` 与 `git diff --check` 通过。
 - Patch Guard：`observed`，4 个任务相关文件，0 violations；无删除、无二进制文件。
+- Phase 5 集成：10 个聚焦文件 68/68、41 份活文档 112 个相对链接无缺失、串行全量
+  57 个文件/504 个测试通过。

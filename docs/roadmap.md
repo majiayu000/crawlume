@@ -138,7 +138,7 @@
 - 当前通用 Nightly 280/280 Truth 通过且没有私有配对 Release 证据，因此默认 Registry 为空，不虚构
   首批具体站点 Adapter。
 
-## v0.16 AI 工具与开发者文档自主垂直索引（已完成 Phase 1–4 基础合同）
+## v0.16 AI 工具与开发者文档自主垂直索引（已完成 Phase 1–5 本地合同）
 
 - 官方 domain、人工精确 URL、SearXNG 候选三种来源统一持久化；白名单内候选自动准入，外部候选
   必须显式批准或拒绝。
@@ -151,7 +151,9 @@
 - 检索候选可在同一 judgment 快照下与 lexical baseline 配对比较；发布门槛要求三项指标均不回退且
   至少一项提升，但不会自动切换生产 ranker。
 - `search_web` 返回实际执行来源和查询前本地快照；只读 `get_search_status` 区分 ready 与 unavailable。
-- 真实 embedding/vector/reranker、索引快照发布、托管 HTTP API、分布式索引和开放 Web 仍由真实
+- 内容可验证的本地 release 支持显式激活和原子回滚；SQLite online backup 可校验并只恢复到新路径。
+- `get_search_stats` 返回脱敏的查询结果、source、p50/p95/max 与失败原因，不硬编码 SLO 门槛。
+- 真实 embedding/vector/reranker、自动 rollout、托管 HTTP API、分布式索引和开放 Web 仍由真实
   质量或容量证据触发。
 
 ## 可选的托管服务外壳

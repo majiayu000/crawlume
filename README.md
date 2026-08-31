@@ -52,6 +52,8 @@ on systems whose DNS returns ordinary public addresses.
 Available tools:
 
 - `search_web`: search the local page index, a configured SearXNG provider, or both.
+- `get_search_status`: report configured local/web query backends without running a query.
+- `get_search_stats`: report privacy-preserving observed query outcomes and latency percentiles.
 - `read_page`: return complete Markdown plus source evidence.
 - `inspect_page`: run the same checks without returning the body.
 - `map_site`: discover a bounded set of same-site links.
@@ -159,7 +161,9 @@ observed change rate and staleness. `verticalSearch.runRetrievalExperiment(...)`
 candidate-versus-lexical evaluation without changing production ranking. Search responses include
 the sources actually executed and the pre-query local snapshot; MCP clients can call the read-only
 `get_search_status` tool to distinguish a ready query backend from an unavailable one. See the
-Phase 2–4 ADRs under [`docs/`](docs/README.md) for the exact boundaries.
+Phase 2–5 ADRs under [`docs/`](docs/README.md) for the exact boundaries. Phase 5 also adds
+content-verifiable local releases with explicit activation/rollback and safe SQLite backup/restore
+library boundaries; neither is exposed as an MCP mutation tool.
 
 Synchronous `map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
 for deduplication unless `--keep-query` is supplied. Child-page failures are returned in a

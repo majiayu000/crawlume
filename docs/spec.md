@@ -38,6 +38,9 @@ SearXNG candidate、显式准入、每日 durable crawl run 和固定 query judg
 快照下配对比较 lexical baseline 与候选结果，只有三项指标无回退且至少一项提升时才通过发布门槛；
 不会自动切换生产 ranker。`search_web` 的成功或部分成功响应包含 correlation ID、实际执行来源和
 查询前本地快照；`get_search_status` 只读报告查询后端是否 ready，不执行 Provider 健康探测。
+`get_search_stats(days)` 只读报告 1–90 天内观测到的 `ok|partial|failed`、请求/实际 source、
+p50/p95/max、结果/警告数和失败原因；它不保存 query、URL、正文、Provider 地址或 correlation ID，
+也不预设或宣称产品 SLO 已达标。
 
 ### `read_page`
 
@@ -253,8 +256,9 @@ Storage。池满时事件等待，默认上限 30000ms；超时返回 retryable 
 ## 运行统计
 
 `read_page`、`inspect_page`、同步 Crawl 和异步 Crawl 的逐页读取写入 `cache.sqlite` 中独立的
-UTC 日聚合表。每次调用只记录一个最终成功或失败，重试证据作为该调用的成本数据累加。Map 与
-Search 暂不计入，避免把链接发现或搜索 Provider 成功率混入正文读取成功率。
+UTC 日聚合表。每次调用只记录一个最终成功或失败，重试证据作为该调用的成本数据累加。Map 不计入；
+Search 使用独立、最多保留 90 天的脱敏样本表，避免把查询 Provider 结果混入正文读取成功率，同时
+支持准确的查询时延分位数。
 
 统计仅报告可直接测量的数据，不估算代理、带宽、CPU、浏览器或第三方服务的货币费用。SQLite
 写入或查询失败必须显式失败，不得静默丢失数据。
@@ -364,7 +368,7 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
 - 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
 - 单元测试覆盖低成本验收状态与稳定 warning code。
-- MCP 客户端可以列出并调用十八个工具。
+- MCP 客户端可以列出并调用二十个工具。
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。

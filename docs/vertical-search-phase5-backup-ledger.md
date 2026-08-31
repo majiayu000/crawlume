@@ -12,7 +12,7 @@
 | B01 | 创建 WAL 一致备份 | Complete | RED 因模块不存在失败；GREEN 由真实 WAL 临时库证明未 checkpoint 的已提交行进入备份 |
 | B02 | 完整性与元数据验证 | Complete | RED 因校验函数缺失失败；GREEN 验证完整备份，并拒绝被覆写为非 SQLite 内容的损坏备份 |
 | B03 | 不可覆盖的原子恢复 | Complete | RED 因恢复函数缺失及底层 EEXIST 未结构化而失败；GREEN 验证恢复后关键表可读，既有备份/恢复目标保持不变 |
-| B04 | 完整验证与范围审核 | Complete | 聚焦及相关 SQLite 回归 43/43、check、build 通过；Patch Guard 仅观察到 4 个任务文件且 0 violations |
+| B04 | 完整验证与范围审核 | Complete | 分支 SQLite 回归 43/43；Phase 5 集成聚焦 68/68、check、build、串行全量 57 文件/504 测试通过 |
 
 ## 当前边界
 
@@ -25,3 +25,4 @@
 - Node.js 25.9.0：`pnpm check` 与 `pnpm build` 通过。
 - 聚焦及相关 SQLite 回归：5 个测试文件、43 个测试通过。
 - Patch Guard：4 个新增任务文件，`observed`，0 violations；无删除或二进制文件。
+- Phase 5 集成：41 份活文档 112 个相对链接无缺失；串行全量 57 个文件、504 个测试通过。

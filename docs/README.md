@@ -24,7 +24,13 @@
    [vertical-search-phase3-adr.md](./vertical-search-phase3-adr.md) 和
    [vertical-search-phase3-ledger.md](./vertical-search-phase3-ledger.md)；公共查询执行证据见
    [vertical-search-phase4-adr.md](./vertical-search-phase4-adr.md) 和
-   [vertical-search-phase4-ledger.md](./vertical-search-phase4-ledger.md)。
+   [vertical-search-phase4-ledger.md](./vertical-search-phase4-ledger.md)。本地生产就绪的三个独立闭环见
+   [Phase 5 发布 ADR](./vertical-search-phase5-release-adr.md)、
+   [发布账本](./vertical-search-phase5-release-ledger.md)、
+   [备份 ADR](./vertical-search-phase5-backup-adr.md)、
+   [备份账本](./vertical-search-phase5-backup-ledger.md)、
+   [查询 SLO ADR](./vertical-search-phase5-slo-adr.md) 和
+   [查询 SLO 账本](./vertical-search-phase5-slo-ledger.md)。
 2. [crawler-architecture-landscape.md](./crawler-architecture-landscape.md)
    基于官方文档、源码、标准和论文，对开源框架、分布式爬虫、归档系统、浏览器基础设施和闭源
    抓取/检索 API 做架构节点对比，并明确证据等级与尚不可知的内部实现。

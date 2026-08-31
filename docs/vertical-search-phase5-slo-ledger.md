@@ -12,7 +12,7 @@
 | Q01 | 脱敏 SQLite 查询样本与统计 | Complete | RED→GREEN 覆盖结果、警告、source、失败码、p50/p95/max、重启读取、空窗口和 1–90 天边界 |
 | Q02 | 查询服务自动记录 | Complete | `tests/search.test.ts` 覆盖 `ok`、`partial`、`failed` 各一次；非法参数不进入样本 |
 | Q03 | MCP 只读统计入口 | Complete | `tests/mcp.test.ts` 先因工具缺失失败，后可列出/调用 `get_search_stats`；错误保持 `isError` |
-| Q04 | 完整验证与范围审核 | Complete | 聚焦 17/17、check、build、串行全量 55 文件/490 测试通过；Patch Guard 见最终证据 |
+| Q04 | 完整验证与范围审核 | Complete | 分支 17/17；Phase 5 集成聚焦 68/68、check、build、串行全量 57 文件/504 测试通过 |
 
 ## 范围外
 
@@ -27,3 +27,4 @@
 - 串行全量测试：55 个测试文件、490 个测试通过；包含真实 Chrome、500 页并发和 1,000 页
   SIGKILL 恢复。
 - Patch Guard：见提交前任务快照审核；无共享文档、配置、依赖或既有测试门槛的范围外修改。
+- Phase 5 集成：41 份活文档 112 个相对链接无缺失；串行全量 57 个文件、504 个测试通过。

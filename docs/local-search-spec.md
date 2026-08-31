@@ -25,6 +25,11 @@ Raw/Artifact 离线重建，并报告 parser/extractor 与固定 indexer 版本�
 预算边界不变。详细合同和完成证据见 [二期数据层 ADR](./vertical-search-phase2-adr.md) 与
 [二期数据层账本](./vertical-search-phase2-ledger.md)。
 
+当前投影可以创建内容寻址的不可变 release manifest；manifest 只保存 Raw/Artifact/history 引用、
+完整投影 hash 和处理版本，不复制正文。创建不自动激活；激活和回滚只接受依赖完整且可重建的
+complete release，投影切换与 active 指针位于同一事务。普通索引写入会使 active 指针失效。
+详细合同见 [Phase 5 发布 ADR](./vertical-search-phase5-release-adr.md)。
+
 AI 工具与开发者文档一期通过 `DiaoyanApp.verticalSearch` 管理官方 domain、人工 URL、SearXNG
 候选、每日 durable crawl run 和固定 query judgment。其分层准入、600/300,000/60,000 容量及
 评测合同见 [一期 ADR](./vertical-search-phase1-adr.md)。该管理入口仅在本地索引启用时存在；
@@ -66,6 +71,10 @@ SQLite 文件，但使用独立表。
 `get_search_status` 是只读 MCP 工具；没有本地索引和 Web Provider 时返回 `unavailable`，否则返回
 `ready`。Provider 名称只表示已经配置，不表示实时健康探测成功。
 
+每个通过参数校验的查询把 `ok|partial|failed`、请求/实际 source、耗时、结果/警告数和失败码写入
+最多 90 天的脱敏 SQLite 样本。只读 `get_search_stats` 返回观测完整率、可用率、p50/p95/max 和
+失败原因，不把观测值冒充预设 SLO 门槛；样本不保存 query、URL、正文、Provider 地址或 correlation ID。
+
 `VerticalSearchService.runRetrievalExperiment` 使用同一 judgment 快照保存 lexical baseline 与候选
 结果的逐 query 配对指标。只有 Hit@10、Recall@10、MRR@10 均不回退且至少一项提升时发布门槛才
 通过；该门槛不自动改变生产查询，也不代表已经实现 embedding 或 reranker。
@@ -83,6 +92,9 @@ SQLite 文件，但使用独立表。
 
 - `src/index.ts`：SQLite FTS5 存储和查询。
 - `src/page-history.ts`：URL 身份观察、内容版本、离线重建和 recrawl priority。
+- `src/index-release.ts`：内容可验证的本地索引 release、显式激活和回滚。
+- `src/search-metrics.ts`：隐私安全的查询结果与时延证据。
+- `src/sqlite-backup.ts`：可验证 SQLite online backup 与只恢复到新路径的演练边界。
 - `src/reader.ts`、`src/app.ts`：成功读取后的索引写入和生命周期。
 - `src/search-serving.ts`、`src/search.ts`、`src/types.ts`：查询编排、垂直控制和返回契约。
 - `src/mcp.ts`、`src/cli/main.ts`：暴露 `source` 参数。
@@ -96,6 +108,9 @@ SQLite 文件，但使用独立表。
 - 当前投影满 300,000 页时拒绝新 URL，但允许已有 URL 更新；内容版本审计按 hash 去重。
 - URL 身份观察可查询，历史 Raw/Artifact 不被缓存清理误删，FTS 可离线重建。
 - 内容变化率与陈旧时间确定性排序已准入 exact URL，仍复用 Durable Frontier。
+- release 创建、激活和回滚保持 manifest/依赖/投影/active 原子一致，篡改与缺失依赖显式失败。
+- WAL 一致备份可校验并恢复到不存在的新路径，损坏备份和既有目标被拒绝。
+- 查询统计跨重启保留脱敏观测值，并报告真实分位数与失败原因。
 - 授权 Profile 页面不会出现在本地搜索。
 - 混合搜索本地优先、URL 去重并补足结果。
 - 外部 Provider 补足失败时返回 `partial`，无本地结果时仍失败。
