@@ -1,6 +1,6 @@
 # AI 工具与开发者文档垂直搜索一期 ADR
 
-状态：Approved for implementation
+状态：Implemented
 
 日期：2026-08-31
 

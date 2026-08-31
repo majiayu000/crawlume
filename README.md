@@ -153,6 +153,14 @@ and MRR@10 against local-only results. The approved source policy, initial gold 
 600-domain/60,000-attempt daily limits are documented in
 [`docs/vertical-search-phase1-adr.md`](docs/vertical-search-phase1-adr.md).
 
+The same local corpus now retains auditable URL identity observations and page history, can rebuild
+the FTS projection offline from retained Raw/Artifact data, and prioritizes exact-URL recrawls by
+observed change rate and staleness. `verticalSearch.runRetrievalExperiment(...)` records a paired
+candidate-versus-lexical evaluation without changing production ranking. Search responses include
+the sources actually executed and the pre-query local snapshot; MCP clients can call the read-only
+`get_search_status` tool to distinguish a ready query backend from an unavailable one. See the
+Phase 2–4 ADRs under [`docs/`](docs/README.md) for the exact boundaries.
+
 Synchronous `map` and `crawl` are same-host, serial, and bounded by default. Query parameters are removed
 for deduplication unless `--keep-query` is supplied. Child-page failures are returned in a
 `failures` array; a failed starting page fails the whole call.

@@ -138,7 +138,7 @@
 - 当前通用 Nightly 280/280 Truth 通过且没有私有配对 Release 证据，因此默认 Registry 为空，不虚构
   首批具体站点 Adapter。
 
-## v0.16 AI 工具与开发者文档自主垂直索引（已完成一期）
+## v0.16 AI 工具与开发者文档自主垂直索引（已完成 Phase 1–4 基础合同）
 
 - 官方 domain、人工精确 URL、SearXNG 候选三种来源统一持久化；白名单内候选自动准入，外部候选
   必须显式批准或拒绝。
@@ -146,7 +146,13 @@
   60,000 次 Provider 尝试；同 UTC 日重复运行、满容量和无 seed 都显式失败。
 - Raw CAS/Artifact 继续拥有原始内容，FTS5 拥有当前搜索投影，并按 content hash 记录处理版本审计。
 - 固定 query judgment 强制本地查询，输出 Hit@10、Recall@10 和 MRR@10；SearXNG 不参与自主查询。
-- 分布式索引、向量检索、reranker、公共管理 API/MCP 和开放 Web 继续由后续真实基准触发。
+- 每次公开 publication 保存 URL 身份观察和历史 Raw/Artifact 引用；FTS 可离线重建，exact URL
+  重抓顺序使用确定性的变化率与陈旧时间优先级。
+- 检索候选可在同一 judgment 快照下与 lexical baseline 配对比较；发布门槛要求三项指标均不回退且
+  至少一项提升，但不会自动切换生产 ranker。
+- `search_web` 返回实际执行来源和查询前本地快照；只读 `get_search_status` 区分 ready 与 unavailable。
+- 真实 embedding/vector/reranker、索引快照发布、托管 HTTP API、分布式索引和开放 Web 仍由真实
+  质量或容量证据触发。
 
 ## 可选的托管服务外壳
 

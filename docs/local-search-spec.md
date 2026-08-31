@@ -61,6 +61,15 @@ SQLite 文件，但使用独立表。
 - `warnings`: 外部补足失败时包含稳定 code、message 和 retryable；其他成功结果为空数组。
 - 混合结果的 `totalResults` 为 `null`，因为两套结果去重后无法可靠推导全量数量。
 
+`SearchService.searchWeb` 的公共返回还包含执行证据：correlation ID、请求 source、实际执行的
+`local|web` 来源，以及仅在本地检索确实执行时存在的查询前文档数和 `local-fts5-v1` 快照。
+`get_search_status` 是只读 MCP 工具；没有本地索引和 Web Provider 时返回 `unavailable`，否则返回
+`ready`。Provider 名称只表示已经配置，不表示实时健康探测成功。
+
+`VerticalSearchService.runRetrievalExperiment` 使用同一 judgment 快照保存 lexical baseline 与候选
+结果的逐 query 配对指标。只有 Hit@10、Recall@10、MRR@10 均不回退且至少一项提升时发布门槛才
+通过；该门槛不自动改变生产查询，也不代表已经实现 embedding 或 reranker。
+
 ## 安全与失败边界
 
 - SQL 查询继续使用参数绑定。
@@ -75,7 +84,7 @@ SQLite 文件，但使用独立表。
 - `src/index.ts`：SQLite FTS5 存储和查询。
 - `src/page-history.ts`：URL 身份观察、内容版本、离线重建和 recrawl priority。
 - `src/reader.ts`、`src/app.ts`：成功读取后的索引写入和生命周期。
-- `src/search.ts`、`src/types.ts`：搜索编排和返回契约。
+- `src/search-serving.ts`、`src/search.ts`、`src/types.ts`：查询编排、垂直控制和返回契约。
 - `src/mcp.ts`、`src/cli/main.ts`：暴露 `source` 参数。
 - `tests/`：索引更新、授权隔离、本地搜索、混合去重和显式部分失败。
 - `README.md`、`docs/spec.md`、`docs/roadmap.md`：使用说明和版本状态。

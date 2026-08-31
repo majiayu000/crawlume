@@ -33,6 +33,12 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 SearXNG candidate、显式准入、每日 durable crawl run 和固定 query judgment。每日计划最多
 60,000 次 Provider 尝试、官方 domain 最多 600 个；质量评测只查询自有 FTS5。
 
+长期数据层记录 requested/redirect/final/declared canonical 身份观察和历史 Raw/Artifact 引用，支持
+离线重建当前 FTS 投影，并按变化率与陈旧时间确定 exact URL 的重抓优先级。检索实验在同一 judgment
+快照下配对比较 lexical baseline 与候选结果，只有三项指标无回退且至少一项提升时才通过发布门槛；
+不会自动切换生产 ranker。`search_web` 的成功或部分成功响应包含 correlation ID、实际执行来源和
+查询前本地快照；`get_search_status` 只读报告查询后端是否 ready，不执行 Provider 健康探测。
+
 ### `read_page`
 
 输入：
