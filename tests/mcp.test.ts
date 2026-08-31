@@ -134,6 +134,13 @@ describe("MCP server", () => {
         })),
       },
       search: {
+        status: vi.fn(() => ({
+          status: "ready" as const,
+          localIndexAvailable: true,
+          localDocuments: 1,
+          webProvider: "searxng",
+          retrievalVersion: "local-fts5-v1",
+        })),
         searchWeb: vi.fn(async () => ({
           status: "ok" as const,
           query: "MiniMax H3",
@@ -154,6 +161,12 @@ describe("MCP server", () => {
           ],
           totalResults: 1,
           warnings: [],
+          trace: {
+            correlationId: "00000000-0000-4000-8000-000000000002",
+            requestedSource: "auto" as const,
+            executedSources: ["web"] as const,
+            localSnapshot: null,
+          },
         })),
       },
       jobs: {
@@ -224,6 +237,7 @@ describe("MCP server", () => {
       "get_crawl",
       "get_crawler_stats",
       "get_rsl_audit",
+      "get_search_status",
       "start_monitor",
       "get_monitor",
       "list_monitors",
@@ -235,6 +249,19 @@ describe("MCP server", () => {
       "read_page",
       "search_web",
     ].sort());
+
+    const searchStatus = await client.callTool({
+      name: "get_search_status",
+      arguments: {},
+    });
+    expect(searchStatus.isError).not.toBe(true);
+    expect(searchStatus.structuredContent).toEqual({
+      status: "ready",
+      localIndexAvailable: true,
+      localDocuments: 1,
+      webProvider: "searxng",
+      retrievalVersion: "local-fts5-v1",
+    });
 
     const read = await client.callTool({
       name: "read_page",
@@ -294,6 +321,12 @@ describe("MCP server", () => {
       status: "ok",
       provider: "searxng",
       totalResults: 1,
+      trace: {
+        correlationId: "00000000-0000-4000-8000-000000000002",
+        requestedSource: "auto",
+        executedSources: ["web"],
+        localSnapshot: null,
+      },
     });
 
     const started = await client.callTool({
@@ -418,6 +451,9 @@ describe("MCP server", () => {
         },
       },
       search: {
+        status: () => {
+          throw new ReadError("INTERNAL_ERROR", "Search status is unavailable.");
+        },
         searchWeb: async () => {
           throw new ReadError("SEARCH_PROVIDER_NOT_CONFIGURED", "Search is not configured.");
         },
@@ -465,6 +501,12 @@ describe("MCP server", () => {
     expect(missingMonitor.isError).toBe(true);
     expect(missingMonitor.content).toEqual([
       expect.objectContaining({ type: "text", text: expect.stringContaining("MONITOR_NOT_FOUND") }),
+    ]);
+
+    const searchStatus = await client.callTool({ name: "get_search_status", arguments: {} });
+    expect(searchStatus.isError).toBe(true);
+    expect(searchStatus.content).toEqual([
+      expect.objectContaining({ type: "text", text: expect.stringContaining("INTERNAL_ERROR") }),
     ]);
   });
 });

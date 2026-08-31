@@ -564,6 +564,28 @@ export type SearchWebResult = {
   warnings: SearchWarning[];
 };
 
+export type SearchQueryTrace = {
+  correlationId: string;
+  requestedSource: SearchSource;
+  executedSources: Array<"local" | "web">;
+  localSnapshot: {
+    retrievalVersion: "local-fts5-v1";
+    documents: number;
+  } | null;
+};
+
+export type SearchServingResult = SearchWebResult & {
+  trace: SearchQueryTrace;
+};
+
+export type SearchServingStatus = {
+  status: "ready" | "unavailable";
+  localIndexAvailable: boolean;
+  localDocuments: number | null;
+  webProvider: string | null;
+  retrievalVersion: "local-fts5-v1" | null;
+};
+
 export type CrawlerStatsDay = {
   date: string;
   requests: number;

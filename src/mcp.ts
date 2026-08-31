@@ -90,6 +90,8 @@ const searchWebInput = z.object({
   source: z.enum(searchSources).default("auto"),
 });
 
+const emptyInput = z.object({}).strict();
+
 const crawlJobInput = z.object({
   jobId: z.uuid().describe("Crawl job ID returned by start_crawl."),
 });
@@ -209,7 +211,8 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
       instructions:
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, and start/get/pause/resume/cancel/get-pages controls for durable crawling, " +
-        "inspect_page for diagnostics, get_crawler_stats for local operational metrics, " +
+        "inspect_page for diagnostics, get_search_status for the local search serving contract, " +
+        "get_crawler_stats for local operational metrics, " +
         "get_rsl_audit for bounded license and access audit records, " +
         "and start_monitor/get_monitor/list_monitors/cancel_monitor for durable page-change monitoring. " +
         "Access failures are explicit: never treat an isError result as page content. " +
@@ -230,6 +233,24 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     async (args): Promise<CallToolResult> => {
       try {
         return successResult({ ...(await app.search.searchWeb(toSearchOptions(args))) });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_search_status",
+    {
+      title: "Get search status",
+      description:
+        "Report whether local search is available, its document count and retrieval implementation version without running a query.",
+      inputSchema: emptyInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async (): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.search.status() });
       } catch (error) {
         return errorResult(error);
       }

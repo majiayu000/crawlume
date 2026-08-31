@@ -44,6 +44,45 @@ describe("SearchService", () => {
         provider: "local",
         results: [{ source: "local", url: "https://example.com/h3" }],
         warnings: [],
+        trace: {
+          correlationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          requestedSource: "local",
+          executedSources: ["local"],
+          localSnapshot: {
+            retrievalVersion: "local-fts5-v1",
+            documents: 1,
+          },
+        },
+      });
+    } finally {
+      index.close();
+    }
+  });
+
+  it("reports the serving status without running a query", () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    try {
+      expect(new SearchService(null, index).status()).toEqual({
+        status: "ready",
+        localIndexAvailable: true,
+        localDocuments: 1,
+        webProvider: null,
+        retrievalVersion: "local-fts5-v1",
+      });
+      expect(new SearchService({ name: "test-web", search: vi.fn() }).status()).toEqual({
+        status: "ready",
+        localIndexAvailable: false,
+        localDocuments: null,
+        webProvider: "test-web",
+        retrievalVersion: null,
+      });
+      expect(new SearchService(null).status()).toEqual({
+        status: "unavailable",
+        localIndexAvailable: false,
+        localDocuments: null,
+        webProvider: null,
+        retrievalVersion: null,
       });
     } finally {
       index.close();
@@ -68,6 +107,11 @@ describe("SearchService", () => {
         "https://example.com/other",
       ]);
       expect(result.results[0]?.source).toBe("local");
+      expect(result.trace).toMatchObject({
+        requestedSource: "auto",
+        executedSources: ["local", "web"],
+        localSnapshot: { retrievalVersion: "local-fts5-v1", documents: 1 },
+      });
     } finally {
       index.close();
     }
@@ -91,6 +135,56 @@ describe("SearchService", () => {
         status: "partial",
         provider: "local+broken-web",
         warnings: [{ code: "SEARCH_PROVIDER_ERROR", retryable: true }],
+        trace: {
+          requestedSource: "auto",
+          executedSources: ["local", "web"],
+          localSnapshot: { retrievalVersion: "local-fts5-v1", documents: 1 },
+        },
+      });
+    } finally {
+      index.close();
+    }
+  });
+
+  it("does not claim local retrieval when an explicit web query bypasses a configured index", async () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    const provider = {
+      name: "test-web",
+      search: vi.fn(async (): Promise<SearchWebResult> => webResult()),
+    };
+    try {
+      const result = await new SearchService(provider, index).searchWeb({
+        query: "MiniMax H3",
+        source: "web",
+      });
+      expect(result.trace).toMatchObject({
+        requestedSource: "web",
+        executedSources: ["web"],
+        localSnapshot: null,
+      });
+    } finally {
+      index.close();
+    }
+  });
+
+  it("does not claim local retrieval for auto pagination beyond page one", async () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    const provider = {
+      name: "test-web",
+      search: vi.fn(async (): Promise<SearchWebResult> => webResult()),
+    };
+    try {
+      const result = await new SearchService(provider, index).searchWeb({
+        query: "MiniMax H3",
+        source: "auto",
+        page: 2,
+      });
+      expect(result.trace).toMatchObject({
+        requestedSource: "auto",
+        executedSources: ["web"],
+        localSnapshot: null,
       });
     } finally {
       index.close();
