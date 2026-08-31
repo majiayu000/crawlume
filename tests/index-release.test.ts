@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { PageCache } from "../src/cache.js";
 import { ReadError } from "../src/errors.js";
 import { LocalPageIndex } from "../src/index.js";
-import { LocalIndexReleaseStore } from "../src/page-history.js";
+import { LocalIndexReleaseStore } from "../src/index-release.js";
 import type { PageReadArtifact, ReadIntent } from "../src/types.js";
 import { rawPage } from "./helpers.js";
 
@@ -150,6 +150,7 @@ describe("local index releases", () => {
             requestId: "request-one",
             artifactKey,
             contentHash: "hash-one",
+            projectionHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
           }],
         },
       });
@@ -221,6 +222,78 @@ describe("local index releases", () => {
       expect(releases.activeRelease()).toBeNull();
       expect(index.search("Candidate release two", 10, 1)).toHaveLength(1);
     } finally {
+      releases.close();
+      index.close();
+      cache.close();
+    }
+  });
+
+  it("does not report an active release whose Artifact dependency is no longer rebuildable", () => {
+    const path = dataPath();
+    const cache = new PageCache(path);
+    const index = new LocalPageIndex(path);
+    const releases = new LocalIndexReleaseStore(path);
+    const database = new DatabaseSync(path);
+    try {
+      const artifactKey = publish(index, cache, artifact("one"));
+      const release = releases.createRelease();
+      releases.activateRelease(release.id);
+      database.prepare("DELETE FROM artifact_cache_entries WHERE artifact_key = ?").run(artifactKey);
+      database.prepare("DELETE FROM artifacts WHERE artifact_key = ?").run(artifactKey);
+
+      expectCode(() => releases.activeRelease(), "INTERNAL_ERROR");
+    } finally {
+      database.close();
+      releases.close();
+      index.close();
+      cache.close();
+    }
+  });
+
+  it("rejects Artifact projection tampering before activation", () => {
+    const path = dataPath();
+    const cache = new PageCache(path);
+    const index = new LocalPageIndex(path);
+    const releases = new LocalIndexReleaseStore(path);
+    const database = new DatabaseSync(path);
+    try {
+      const artifactKey = publish(index, cache, artifact("one"));
+      const release = releases.createRelease();
+      const stored = database.prepare(
+        "SELECT result_json FROM artifacts WHERE artifact_key = ?",
+      ).get(artifactKey) as { result_json: string };
+      const tampered = JSON.parse(stored.result_json) as PageReadArtifact;
+      tampered.title = "Tampered release title";
+      database.prepare("UPDATE artifacts SET result_json = ? WHERE artifact_key = ?")
+        .run(JSON.stringify(tampered), artifactKey);
+
+      expectCode(() => releases.activateRelease(release.id), "INTERNAL_ERROR");
+      expect(releases.activeRelease()).toBeNull();
+    } finally {
+      database.close();
+      releases.close();
+      index.close();
+      cache.close();
+    }
+  });
+
+  it("rejects Raw content-address tampering before activation", () => {
+    const path = dataPath();
+    const cache = new PageCache(path);
+    const index = new LocalPageIndex(path);
+    const releases = new LocalIndexReleaseStore(path);
+    const database = new DatabaseSync(path);
+    try {
+      publish(index, cache, artifact("one"));
+      const release = releases.createRelease();
+      const rawRef = release.manifest.documents[0]!.rawRef;
+      database.prepare("UPDATE raw_objects SET bytes = ? WHERE raw_ref = ?")
+        .run(Buffer.from("tampered raw body"), rawRef);
+
+      expectCode(() => releases.activateRelease(release.id), "INTERNAL_ERROR");
+      expect(releases.activeRelease()).toBeNull();
+    } finally {
+      database.close();
       releases.close();
       index.close();
       cache.close();
