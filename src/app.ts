@@ -7,6 +7,7 @@ import { LocalPageIndex } from "./index.js";
 import { FrontierStore } from "./frontier-store.js";
 import { AttemptLedger } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
+import { SearchServingMetrics } from "./search-metrics.js";
 import { PageMonitorService, PageMonitorStore } from "./monitors.js";
 import { ProxyPool } from "./proxy.js";
 import { ProfileManager } from "./profiles.js";
@@ -27,6 +28,7 @@ export type DiaoyanApp = {
   search: SearchService;
   verticalSearch: VerticalSearchService | null;
   metrics: CrawlerMetrics;
+  searchMetrics: SearchServingMetrics;
   monitors: PageMonitorService;
   rslAudit: RslAccessAudit;
   attemptLedger: AttemptLedger;
@@ -56,6 +58,7 @@ export function createApp(
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
   const metrics = new CrawlerMetrics(config.cachePath);
+  const searchMetrics = new SearchServingMetrics(config.cachePath);
   const rslAudit = new RslAccessAudit(config.cachePath, config.rslUsage);
   const attemptLedger = new AttemptLedger(config.cachePath);
   const localIndex = config.localIndexEnabled ? new LocalPageIndex(config.cachePath) : null;
@@ -83,7 +86,7 @@ export function createApp(
         config.userAgent,
         config.requestTimeoutMs,
       );
-  const search = new SearchService(searchProvider, localIndex);
+  const search = new SearchService(searchProvider, localIndex, searchMetrics);
   const jobs = new DurableCrawlService(
     new FrontierStore(config.cachePath),
     reader,
@@ -113,6 +116,7 @@ export function createApp(
     search,
     verticalSearch,
     metrics,
+    searchMetrics,
     monitors,
     rslAudit,
     attemptLedger,
@@ -129,6 +133,7 @@ export function createApp(
       await captureClose(() => verticalSearch?.close(), failures);
       await captureClose(() => localIndex?.close(), failures);
       await captureClose(() => metrics.close(), failures);
+      await captureClose(() => searchMetrics.close(), failures);
       await captureClose(() => rslAudit.close(), failures);
       await captureClose(() => attemptLedger.close(), failures);
       await captureClose(async () => transport.close(), failures);

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import { ReadError } from "./errors.js";
+import { normalizeError, ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
+import type { SearchServingMetricsRecorder } from "./search-metrics.js";
 import {
   searchSources,
   searchTimeRanges,
@@ -33,6 +34,8 @@ export class SearchService {
   constructor(
     private readonly provider: SearchProvider | null,
     private readonly localIndex: LocalPageIndex | null = null,
+    private readonly metrics: SearchServingMetricsRecorder | null = null,
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   status(): SearchServingStatus {
@@ -48,16 +51,23 @@ export class SearchService {
   async searchWeb(options: SearchWebOptions): Promise<SearchServingResult> {
     const normalized = normalizeOptions(options);
     const source = options.source ?? "auto";
+    const startedAt = this.now();
     const usesLocal = source === "local" || (source === "auto" && normalized.page === 1);
     const localSnapshot = usesLocal && this.localIndex !== null
       ? { retrievalVersion: "local-fts5-v1" as const, documents: this.localIndex.count() }
       : null;
-    const execution = source === "web" || (source === "auto" && normalized.page > 1)
-      ? { result: await this.searchProvider(normalized), sources: ["web" as const] }
-      : source === "local"
-        ? { result: this.searchLocal(normalized), sources: ["local" as const] }
-        : await this.searchAuto(normalized);
-    return {
+    let execution: SearchExecution;
+    try {
+      execution = source === "web" || (source === "auto" && normalized.page > 1)
+        ? { result: await this.searchProvider(normalized), sources: ["web" as const] }
+        : source === "local"
+          ? { result: this.searchLocal(normalized), sources: ["local" as const] }
+          : await this.searchAuto(normalized);
+    } catch (error) {
+      this.metrics?.recordFailure(source, normalizeError(error), this.now() - startedAt);
+      throw error;
+    }
+    const result: SearchServingResult = {
       ...execution.result,
       trace: {
         correlationId: randomUUID(),
@@ -66,6 +76,8 @@ export class SearchService {
         localSnapshot,
       },
     };
+    this.metrics?.recordSuccess(result, this.now() - startedAt);
+    return result;
   }
 
   private searchLocal(options: ProviderSearchOptions): SearchWebResult {

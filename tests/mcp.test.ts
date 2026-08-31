@@ -210,6 +210,28 @@ describe("MCP server", () => {
           daily: [],
         })),
       },
+      searchMetrics: {
+        getStats: vi.fn(() => ({
+          status: "ok" as const,
+          generatedAt: "2026-08-25T00:00:00.000Z",
+          since: "2026-08-19T00:00:00.000Z",
+          days: 7,
+          totals: {
+            requests: 4,
+            ok: 2,
+            partial: 1,
+            failed: 1,
+            completeRate: 0.5,
+            usableRate: 0.75,
+          },
+          latencyMs: { p50: 20, p95: 100, max: 100 },
+          requestedSources: { auto: 3, local: 0, web: 1 },
+          executedSources: { local: 1, web: 1, hybrid: 1, unobserved: 1 },
+          resultCount: 3,
+          warningCount: 1,
+          failureReasons: [{ code: "SEARCH_PROVIDER_ERROR", count: 1 }],
+        })),
+      },
       rslAudit: {
         list: vi.fn(() => ({
           status: "ok" as const,
@@ -237,6 +259,7 @@ describe("MCP server", () => {
       "get_crawl",
       "get_crawler_stats",
       "get_rsl_audit",
+      "get_search_stats",
       "get_search_status",
       "start_monitor",
       "get_monitor",
@@ -261,6 +284,17 @@ describe("MCP server", () => {
       localDocuments: 1,
       webProvider: "searxng",
       retrievalVersion: "local-fts5-v1",
+    });
+
+    const searchStats = await client.callTool({
+      name: "get_search_stats",
+      arguments: { days: 7 },
+    });
+    expect(searchStats.isError).not.toBe(true);
+    expect(searchStats.structuredContent).toMatchObject({
+      status: "ok",
+      totals: { requests: 4, ok: 2, partial: 1, failed: 1 },
+      latencyMs: { p50: 20, p95: 100, max: 100 },
     });
 
     const read = await client.callTool({
@@ -458,6 +492,11 @@ describe("MCP server", () => {
           throw new ReadError("SEARCH_PROVIDER_NOT_CONFIGURED", "Search is not configured.");
         },
       },
+      searchMetrics: {
+        getStats: () => {
+          throw new ReadError("INTERNAL_ERROR", "Search statistics are unavailable.");
+        },
+      },
       jobs: {
         start: () => {
           throw new ReadError("ACCESS_DENIED", "The site denied access.");
@@ -506,6 +545,15 @@ describe("MCP server", () => {
     const searchStatus = await client.callTool({ name: "get_search_status", arguments: {} });
     expect(searchStatus.isError).toBe(true);
     expect(searchStatus.content).toEqual([
+      expect.objectContaining({ type: "text", text: expect.stringContaining("INTERNAL_ERROR") }),
+    ]);
+
+    const searchStats = await client.callTool({
+      name: "get_search_stats",
+      arguments: { days: 7 },
+    });
+    expect(searchStats.isError).toBe(true);
+    expect(searchStats.content).toEqual([
       expect.objectContaining({ type: "text", text: expect.stringContaining("INTERNAL_ERROR") }),
     ]);
   });

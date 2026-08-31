@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ReadError } from "../src/errors.js";
 import { SearchService, SearxngProvider } from "../src/search.js";
 import { LocalPageIndex } from "../src/index.js";
 import type { SearchRequester } from "../src/search.js";
@@ -16,6 +17,57 @@ function jsonResponse(value: unknown, status = 200) {
 }
 
 describe("SearchService", () => {
+  it("records ok, partial, and failed serving outcomes without recording invalid input", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const metrics = {
+      recordSuccess: vi.fn((result: SearchWebResult, durationMs: number) => {
+        records.push({ outcome: result.status, durationMs });
+      }),
+      recordFailure: vi.fn((source: string, error: { code: string }, durationMs: number) => {
+        records.push({ outcome: "failed", source, errorCode: error.code, durationMs });
+      }),
+    };
+    const times = [100, 110, 200, 230, 300, 340];
+    const now = () => times.shift() ?? 0;
+    const provider = {
+      name: "test-web",
+      search: vi.fn()
+        .mockResolvedValueOnce(webResult())
+        .mockRejectedValueOnce(new ReadError("SEARCH_PROVIDER_ERROR", "offline")),
+    };
+    const service = new SearchService(provider, null, metrics, now);
+
+    await service.searchWeb({ query: "ok", source: "web" });
+    await expect(service.searchWeb({ query: "failed", source: "web" })).rejects.toMatchObject({
+      code: "SEARCH_PROVIDER_ERROR",
+    });
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    const partialProvider = {
+      name: "broken-web",
+      search: vi.fn(async () => {
+        throw new ReadError("SEARCH_PROVIDER_ERROR", "offline");
+      }),
+    };
+    try {
+      await new SearchService(partialProvider, index, metrics, now).searchWeb({
+        query: "MiniMax H3",
+        limit: 2,
+      });
+    } finally {
+      index.close();
+    }
+    await expect(service.searchWeb({ query: " " })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+
+    expect(records).toEqual([
+      { outcome: "ok", durationMs: 10 },
+      { outcome: "failed", source: "web", errorCode: "SEARCH_PROVIDER_ERROR", durationMs: 30 },
+      { outcome: "partial", durationMs: 40 },
+    ]);
+  });
+
   it("fails visibly when no provider is configured", async () => {
     await expect(new SearchService(null).searchWeb({ query: "MiniMax H3" })).rejects.toMatchObject({
       code: "SEARCH_PROVIDER_NOT_CONFIGURED",

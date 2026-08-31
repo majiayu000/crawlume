@@ -586,6 +586,36 @@ export type SearchServingStatus = {
   retrievalVersion: "local-fts5-v1" | null;
 };
 
+export type SearchServingStatsResult = {
+  status: "ok";
+  generatedAt: string;
+  since: string;
+  days: number;
+  totals: {
+    requests: number;
+    ok: number;
+    partial: number;
+    failed: number;
+    completeRate: number | null;
+    usableRate: number | null;
+  };
+  latencyMs: {
+    p50: number | null;
+    p95: number | null;
+    max: number | null;
+  };
+  requestedSources: Record<SearchSource, number>;
+  executedSources: {
+    local: number;
+    web: number;
+    hybrid: number;
+    unobserved: number;
+  };
+  resultCount: number;
+  warningCount: number;
+  failureReasons: Array<{ code: string; count: number }>;
+};
+
 export type CrawlerStatsDay = {
   date: string;
   requests: number;

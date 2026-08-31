@@ -212,6 +212,7 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
         "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, and start/get/pause/resume/cancel/get-pages controls for durable crawling, " +
         "inspect_page for diagnostics, get_search_status for the local search serving contract, " +
+        "get_search_stats for privacy-preserving observed query outcomes and latency, " +
         "get_crawler_stats for local operational metrics, " +
         "get_rsl_audit for bounded license and access audit records, " +
         "and start_monitor/get_monitor/list_monitors/cancel_monitor for durable page-change monitoring. " +
@@ -251,6 +252,24 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
     async (): Promise<CallToolResult> => {
       try {
         return successResult({ ...app.search.status() });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_search_stats",
+    {
+      title: "Get search statistics",
+      description:
+        "Return privacy-preserving observed query outcomes, requested and executed source counts, latency percentiles, and failure reasons.",
+      inputSchema: crawlerStatsInput,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    async ({ days }): Promise<CallToolResult> => {
+      try {
+        return successResult({ ...app.searchMetrics.getStats(days) });
       } catch (error) {
         return errorResult(error);
       }
