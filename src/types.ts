@@ -308,6 +308,7 @@ export type FetchEvidence = {
   contentType: string;
   responseBytes: number;
   finalUrl: string;
+  redirects?: UrlRedirect[];
   etag?: string;
   lastModified?: string;
   notModified?: boolean;
@@ -315,6 +316,12 @@ export type FetchEvidence = {
   proxyUsed?: boolean;
   agentIdentity?: AgentIdentityEvidence;
   rsl?: RslEvidence;
+};
+
+export type UrlRedirect = {
+  fromUrl: string;
+  toUrl: string;
+  httpStatus: number | null;
 };
 
 export type RawPage = FetchEvidence & {
@@ -372,6 +379,10 @@ export type ReadPageResult = {
     proxyUsed?: boolean;
     agentIdentity?: AgentIdentityEvidence;
     rsl?: RslEvidence;
+    urlIdentity?: {
+      redirects: UrlRedirect[];
+      declaredCanonicalUrl: string | null;
+    };
   };
 };
 

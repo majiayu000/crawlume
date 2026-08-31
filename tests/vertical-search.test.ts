@@ -14,6 +14,7 @@ type ServiceOptions = {
   start?: (options: DurableCrawlOptions) => CrawlJob;
   get?: (id: string) => CrawlJob;
   indexCount?: () => number;
+  recrawlPriority?: (url: string, nowMs: number) => number;
   now?: () => number;
 };
 
@@ -84,7 +85,10 @@ function createService(options: ServiceOptions = {}): VerticalSearchService {
     search: {
       searchWeb: vi.fn(options.searchWeb ?? (async () => { throw new Error("not used"); })),
     },
-    index: { count: vi.fn(options.indexCount ?? (() => 0)) },
+    index: {
+      count: vi.fn(options.indexCount ?? (() => 0)),
+      recrawlPriority: vi.fn(options.recrawlPriority ?? (() => 0)),
+    },
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   services.push(service);
@@ -206,6 +210,27 @@ describe("VerticalSearchService discovery admission", () => {
 });
 
 describe("VerticalSearchService daily incremental runs", () => {
+  it("orders admitted exact URLs by deterministic page-history recrawl priority", () => {
+    const started: string[] = [];
+    const service = createService({
+      start: (options) => {
+        started.push(options.url);
+        return crawlJob(`job-${started.length}`);
+      },
+      recrawlPriority: (url) => url.endsWith("/fast") ? 10_000 : 10,
+      now: () => Date.parse("2026-08-31T08:00:00.000Z"),
+    });
+    service.addManualUrl("https://docs.example.com/slow");
+    service.addManualUrl("https://docs.example.com/fast");
+
+    service.startDailyRun();
+
+    expect(started).toEqual([
+      "https://docs.example.com/fast",
+      "https://docs.example.com/slow",
+    ]);
+  });
+
   it("caps a 600-domain daily plan at 60,000 provider attempts", () => {
     let sequence = 0;
     const start = vi.fn((options: DurableCrawlOptions) => crawlJob(`job-${sequence += 1}`));

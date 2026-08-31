@@ -18,7 +18,9 @@
    Diaoyan/FetchTrail 从网页获取层走向自主搜索引擎目标 C 所缺少的数据面和分阶段建设路径；该目标
    不属于当前已完成的本地 Retrieval Runtime。
    已批准的一期实现边界见 [vertical-search-phase1-adr.md](./vertical-search-phase1-adr.md)，逐项进度见
-   [vertical-search-phase1-ledger.md](./vertical-search-phase1-ledger.md)。
+   [vertical-search-phase1-ledger.md](./vertical-search-phase1-ledger.md)。长期网页数据层边界见
+   [vertical-search-phase2-adr.md](./vertical-search-phase2-adr.md)，逐项进度见
+   [vertical-search-phase2-ledger.md](./vertical-search-phase2-ledger.md)。
 2. [crawler-architecture-landscape.md](./crawler-architecture-landscape.md)
    基于官方文档、源码、标准和论文，对开源框架、分布式爬虫、归档系统、浏览器基础设施和闭源
    抓取/检索 API 做架构节点对比，并明确证据等级与尚不可知的内部实现。

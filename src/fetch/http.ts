@@ -22,6 +22,7 @@ export type TransportResponse = {
   proxyUsed: boolean;
   agentIdentity: ReturnType<AgentIdentity["evidence"]>;
   linkHeader: string | null;
+  redirects?: Array<{ fromUrl: string; toUrl: string; httpStatus: number }>;
   etag?: string;
   lastModified?: string;
 };
@@ -168,11 +169,12 @@ export class HttpTransport {
     } = {},
   ): Promise<TransportResponse> {
     let current = initialUrl;
+    const redirectChain: NonNullable<TransportResponse["redirects"]> = [];
     const maxBytes = Math.min(options.maxBytes ?? this.config.maxResponseBytes, this.config.maxResponseBytes);
     const proxy = this.proxyPool.acquire();
     const dispatcher = this.dispatcherFor(proxy?.uri ?? null);
 
-    for (let redirects = 0; redirects <= this.config.maxRedirects; redirects += 1) {
+    for (let redirectCount = 0; redirectCount <= this.config.maxRedirects; redirectCount += 1) {
       await this.urlPolicy.assertPublic(current);
       const access = await options.beforeRequest?.(current);
 
@@ -212,12 +214,18 @@ export class HttpTransport {
             details: { httpStatus: response.status, url: current.toString() },
           });
         }
-        if (redirects === this.config.maxRedirects) {
+        if (redirectCount === this.config.maxRedirects) {
           throw new ReadError("UPSTREAM_ERROR", "The page exceeded the redirect limit.", {
             details: { maxRedirects: this.config.maxRedirects, url: current.toString() },
           });
         }
-        current = this.urlPolicy.parse(new URL(location, current).toString());
+        const next = this.urlPolicy.parse(new URL(location, current).toString());
+        redirectChain.push({
+          fromUrl: current.toString(),
+          toUrl: next.toString(),
+          httpStatus: response.status,
+        });
+        current = next;
         continue;
       }
 
@@ -245,6 +253,7 @@ export class HttpTransport {
         proxyUsed: proxy !== null,
         agentIdentity: this.identity.evidence(),
         linkHeader: response.headers.get("link"),
+        redirects: redirectChain,
         ...(response.headers.get("etag") === null
           ? {}
           : { etag: response.headers.get("etag") as string }),
@@ -430,6 +439,7 @@ export class HttpPageFetcher implements PageFetcher {
         contentType: response.contentType,
         responseBytes: response.responseBytes,
         finalUrl: response.url.toString(),
+        redirects: response.redirects ?? [],
         proxyUsed: response.proxyUsed,
         agentIdentity: response.agentIdentity,
         rsl,

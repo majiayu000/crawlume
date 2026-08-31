@@ -4,6 +4,14 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { normalizeError, ReadError } from "./errors.js";
+import {
+  PageHistoryStore,
+  type PageHistory,
+  type PageIndexPublication,
+  type ProjectionRebuildReport,
+  type RecrawlPriority,
+} from "./page-history.js";
+export { localSearchIndexerVersion } from "./page-history.js";
 import type { DurableCrawlService } from "./runtime/frontier.js";
 import type {
   CrawlJob,
@@ -62,6 +70,7 @@ function snippetFrom(markdown: string): string {
 
 export class LocalPageIndex {
   private readonly database: DatabaseSync;
+  private readonly historyStore: PageHistoryStore;
 
   constructor(path: string, private readonly maximumDocuments = 300_000) {
     if (!Number.isSafeInteger(maximumDocuments) || maximumDocuments <= 0) {
@@ -115,12 +124,13 @@ export class LocalPageIndex {
         VALUES (new.id, new.title, new.final_url, new.content_markdown);
       END;
     `);
+    this.historyStore = new PageHistoryStore(this.database, maximumDocuments);
     if (path !== ":memory:") {
       chmodSync(path, 0o600);
     }
   }
 
-  put(page: PageReadArtifact): void {
+  put(page: PageReadArtifact, publication?: PageIndexPublication): void {
     if (page.authProfile !== null) {
       return;
     }
@@ -165,6 +175,9 @@ export class LocalPageIndex {
         page.evidence.extractorVersion,
         page.validation.validatorVersion,
       );
+      if (publication !== undefined) {
+        this.historyStore.record(page, publication);
+      }
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -189,6 +202,22 @@ export class LocalPageIndex {
       extractorVersion: row.extractor_version,
       validatorVersion: row.validator_version,
     }));
+  }
+
+  history(finalUrl: string): PageHistory {
+    return this.historyStore.history(finalUrl);
+  }
+
+  rebuildProjection(): ProjectionRebuildReport {
+    return this.historyStore.rebuildProjection();
+  }
+
+  recrawlPriority(url: string, nowMs: number): number {
+    return this.historyStore.recrawlPriority(url, nowMs);
+  }
+
+  recrawlPriorities(now: string, urls: string[]): RecrawlPriority[] {
+    return this.historyStore.recrawlPriorities(now, urls);
   }
 
   search(
@@ -303,7 +332,7 @@ type VerticalSearchRuntimeDependencies = {
   path: string;
   jobs: Pick<DurableCrawlService, "start" | "get">;
   search: { searchWeb(options: SearchWebOptions): Promise<SearchWebResult> };
-  index: Pick<LocalPageIndex, "count">;
+  index: Pick<LocalPageIndex, "count" | "recrawlPriority">;
   now: () => number;
   listAdmittedSeeds: () => VerticalRuntimeSeed[];
   markScheduled: (seedIds: string[], scheduledAtMs: number) => void;
@@ -343,8 +372,11 @@ function crawlOptions(seed: VerticalRuntimeSeed, attempts: number): DurableCrawl
 function plannedSeeds(
   seeds: VerticalRuntimeSeed[],
   maximumAttempts: number,
+  priority: (seed: VerticalRuntimeSeed) => number,
 ): Array<{ seed: VerticalRuntimeSeed; attempts: number }> {
   const byAge = [...seeds].sort((left, right) => {
+    const priorityDifference = priority(right) - priority(left);
+    if (priorityDifference !== 0) return priorityDifference;
     const leftTime = left.lastScheduledAt === null ? -1 : Date.parse(left.lastScheduledAt);
     const rightTime = right.lastScheduledAt === null ? -1 : Date.parse(right.lastScheduledAt);
     return leftTime - rightTime || left.id.localeCompare(right.id);
@@ -432,7 +464,13 @@ export class VerticalSearchRuntime {
       remainingPages,
       this.dependencies.maximumDailyProviderAttempts,
     );
-    const plan = plannedSeeds(seeds, maximumAttempts);
+    const plan = plannedSeeds(
+      seeds,
+      maximumAttempts,
+      (seed) => seed.scope === "url"
+        ? this.dependencies.index.recrawlPriority(seed.url, now)
+        : 0,
+    );
     const plannedAttempts = plan.reduce((total, item) => total + item.attempts, 0);
     const id = randomUUID();
     this.database.prepare(`

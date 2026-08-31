@@ -1,4 +1,10 @@
-import { chromium, type BrowserContext, type LaunchOptions, type Page } from "playwright-core";
+import {
+  chromium,
+  type BrowserContext,
+  type LaunchOptions,
+  type Page,
+  type Response as BrowserResponse,
+} from "playwright-core";
 
 import {
   BrowserFailureTraceStore,
@@ -14,6 +20,7 @@ import {
   ReadError,
 } from "../errors.js";
 import type { PageFetchOptions, PageFetcher, RawPage } from "../types.js";
+import type { UrlRedirect } from "../types.js";
 import { ProfileManager } from "../profiles.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
@@ -86,6 +93,23 @@ export function pageReadinessRuntime(page: Page): BrowserTargetReadinessRuntime 
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     },
   };
+}
+
+async function browserRedirects(response: BrowserResponse): Promise<UrlRedirect[]> {
+  const edges: UrlRedirect[] = [];
+  let request = response.request();
+  while (request.redirectedFrom() !== null) {
+    const previous = request.redirectedFrom();
+    if (previous === null) break;
+    const previousResponse = await previous.response();
+    edges.unshift({
+      fromUrl: previous.url(),
+      toUrl: request.url(),
+      httpStatus: previousResponse?.status() ?? null,
+    });
+    request = previous;
+  }
+  return edges;
 }
 
 function requestKey(url: URL): string {
@@ -419,6 +443,7 @@ export class BrowserPageFetcher implements PageFetcher {
 
       tracePhase = "response";
       const finalUrl = page.url();
+      const redirects = await browserRedirects(response);
       const finalParsed = this.urlPolicy.parse(finalUrl);
       await this.urlPolicy.assertPublic(finalParsed);
       const body = await page.content();
@@ -496,6 +521,7 @@ export class BrowserPageFetcher implements PageFetcher {
         contentType: response.headers()["content-type"] ?? "text/html",
         responseBytes,
         finalUrl,
+        redirects,
         browserReadiness: {
           policy: readinessPolicy === undefined ? "generic" : "target",
           waitedMs: readiness.waitedMs,

@@ -61,6 +61,19 @@ type FailedCheck = {
   errorCode: ReadErrorCode;
 };
 
+export function declaredCanonicalUrl(page: RawPage): string | null {
+  const mediaType = page.contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const html = mediaType === "" || mediaType === "text/html" || mediaType === "application/xhtml+xml";
+  if (!html) return null;
+  const href = new JSDOM(page.body, { url: page.finalUrl }).window.document
+    .querySelector<HTMLLinkElement>("link[rel~='canonical' i]")
+    ?.getAttribute("href");
+  if (href === undefined || href === null || !URL.canParse(href, page.finalUrl)) return null;
+  const canonical = new URL(href, page.finalUrl);
+  canonical.hash = "";
+  return canonical.toString();
+}
+
 function genericContentValidation(input: ValidationCandidate): ValidationResult {
   const { candidate, intent, page } = input;
   const mediaType = page.contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
@@ -162,12 +175,12 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
     passed: candidate.extractionMethod !== "document",
     message: "The candidate should not depend on generic document fallback extraction.",
   });
-  const canonical = document?.querySelector<HTMLLinkElement>("link[rel~='canonical' i]")?.href;
+  const canonical = declaredCanonicalUrl(page);
   checks.push({
     code: "CANONICAL_IDENTITY",
-    passed: canonical === undefined
+    passed: canonical === null
       ? null
-      : new URL(canonical, page.finalUrl).origin === new URL(intent.url).origin,
+      : new URL(canonical).origin === new URL(intent.url).origin,
     message: "A declared canonical URL should preserve the requested origin identity.",
   });
   if (intent.output.schemaId === undefined) {

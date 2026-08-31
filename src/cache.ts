@@ -345,13 +345,22 @@ export class PageCache {
             AND artifact_key NOT IN (SELECT artifact_key FROM artifact_cache_entries)
         `).run().changes);
       }
+      const hasPageHistory = this.database.prepare(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get("indexed_page_history") !== undefined;
       const artifactsDeleted = Number(this.database.prepare(
         `DELETE FROM artifacts
-         WHERE artifact_key NOT IN (SELECT artifact_key FROM artifact_cache_entries)`,
+         WHERE artifact_key NOT IN (SELECT artifact_key FROM artifact_cache_entries)
+           ${hasPageHistory
+             ? "AND artifact_key NOT IN (SELECT artifact_key FROM indexed_page_history)"
+             : ""}`,
       ).run().changes);
       const rawObjectsDeleted = Number(this.database.prepare(
         `DELETE FROM raw_objects
-         WHERE raw_ref NOT IN (SELECT raw_ref FROM artifacts)`,
+         WHERE raw_ref NOT IN (SELECT raw_ref FROM artifacts)
+           ${hasPageHistory
+             ? "AND raw_ref NOT IN (SELECT raw_ref FROM indexed_page_history)"
+             : ""}`,
       ).run().changes);
       this.database.exec("COMMIT");
       return {

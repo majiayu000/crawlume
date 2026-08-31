@@ -17,6 +17,14 @@
 URL 仍可更新。`indexed_page_versions` 按 final URL + content hash 记录首次抓取时间和
 extractor/validator 版本；同一 hash 的重抓不新增版本。原始正文仍由 Raw CAS/Artifact 表拥有。
 
+长期数据层按每次公开 publication 保存 Artifact/Raw 引用和 URL 身份观察，包括 requested URL、
+有序 redirect edge、final URL 与页面声明的 canonical URL；canonical 只作为可审计声明，不自动折叠
+URL。未变化重抓仍保留观察，内容版本按 Artifact 聚合。当前 FTS 投影可在不联网的情况下从仍存在的
+Raw/Artifact 离线重建，并报告 parser/extractor 与固定 indexer 版本；任一依赖缺失都会显式失败并
+保留原投影。已准入 exact URL 的每日 durable run 顺序由确定性的内容变化率和陈旧时间决定，容量与
+预算边界不变。详细合同和完成证据见 [二期数据层 ADR](./vertical-search-phase2-adr.md) 与
+[二期数据层账本](./vertical-search-phase2-ledger.md)。
+
 AI 工具与开发者文档一期通过 `DiaoyanApp.verticalSearch` 管理官方 domain、人工 URL、SearXNG
 候选、每日 durable crawl run 和固定 query judgment。其分层准入、600/300,000/60,000 容量及
 评测合同见 [一期 ADR](./vertical-search-phase1-adr.md)。该管理入口仅在本地索引启用时存在；
@@ -65,6 +73,7 @@ SQLite 文件，但使用独立表。
 ## 影响文件
 
 - `src/index.ts`：SQLite FTS5 存储和查询。
+- `src/page-history.ts`：URL 身份观察、内容版本、离线重建和 recrawl priority。
 - `src/reader.ts`、`src/app.ts`：成功读取后的索引写入和生命周期。
 - `src/search.ts`、`src/types.ts`：搜索编排和返回契约。
 - `src/mcp.ts`、`src/cli/main.ts`：暴露 `source` 参数。
@@ -76,6 +85,8 @@ SQLite 文件，但使用独立表。
 - 读取公开页面后可在无 SearXNG 环境下用 `source=local` 找到。
 - 重读同一最终 URL 后只保留最新版本。
 - 当前投影满 300,000 页时拒绝新 URL，但允许已有 URL 更新；内容版本审计按 hash 去重。
+- URL 身份观察可查询，历史 Raw/Artifact 不被缓存清理误删，FTS 可离线重建。
+- 内容变化率与陈旧时间确定性排序已准入 exact URL，仍复用 Durable Frontier。
 - 授权 Profile 页面不会出现在本地搜索。
 - 混合搜索本地优先、URL 去重并补足结果。
 - 外部 Provider 补足失败时返回 `partial`，无本地结果时仍失败。

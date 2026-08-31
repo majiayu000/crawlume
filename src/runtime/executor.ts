@@ -17,7 +17,7 @@ import type {
   ResourceUsage,
   ValidationResult,
 } from "../types.js";
-import { defaultValidatorRegistry } from "../validation.js";
+import { declaredCanonicalUrl, defaultValidatorRegistry } from "../validation.js";
 import { ProviderRegistry, type ProviderStageResult } from "./providers.js";
 
 export type FetchTrace = {
@@ -564,6 +564,10 @@ export class StageExecutor {
         proxyUsed: page.proxyUsed ?? false,
         ...(page.agentIdentity === undefined ? {} : { agentIdentity: page.agentIdentity }),
         ...(page.rsl === undefined ? {} : { rsl: page.rsl }),
+        urlIdentity: {
+          redirects: page.redirects ?? [],
+          declaredCanonicalUrl: declaredCanonicalUrl(page),
+        },
       },
     };
   }

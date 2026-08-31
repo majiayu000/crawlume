@@ -498,7 +498,7 @@ export type VerticalSearchDependencies = {
   urlPolicy: UrlPolicy;
   jobs: Pick<DurableCrawlService, "start" | "get">;
   search: Pick<SearchService, "searchWeb">;
-  index: Pick<LocalPageIndex, "count">;
+  index: Pick<LocalPageIndex, "count" | "recrawlPriority">;
   now?: () => number;
 };
 

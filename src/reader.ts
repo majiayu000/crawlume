@@ -290,7 +290,9 @@ export class ReaderService {
           ? {}
           : { lastModified: publication.lastModified }),
       });
-      if (artifactKey !== null) this.localIndex?.put(result);
+      if (artifactKey !== null) {
+        this.localIndex?.put(result, { artifactKey, rawRef: publication.rawRef });
+      }
     }
     if (operation !== "map" && artifactKey !== null) {
       this.attemptLedger?.commitTerminal({
