@@ -12,6 +12,7 @@ import {
   LocalPageIndex,
   VerticalSearchRuntime,
   type VerticalQueryEvaluationReport,
+  type VerticalRetrievalExperimentReport,
   type VerticalRun,
 } from "./index.js";
 import type { DurableCrawlService } from "./runtime/frontier.js";
@@ -711,6 +712,28 @@ export class VerticalSearchService {
 
   async evaluateQuerySet(): Promise<VerticalQueryEvaluationReport> {
     return this.runtime.evaluateQuerySet();
+  }
+
+  async runRetrievalExperiment(
+    name: string,
+    retrieveCandidate: (query: string, limit: number) => Promise<string[]>,
+  ): Promise<VerticalRetrievalExperimentReport> {
+    const normalizedName = name.replace(/\s+/g, " ").trim();
+    if (normalizedName.length === 0) {
+      throw new ReadError("INVALID_ARGUMENT", "A retrieval experiment name is required.");
+    }
+    return this.runtime.runRetrievalExperiment(normalizedName, async (query, limit) => {
+      const urls = await retrieveCandidate(query, limit);
+      return [...new Set(urls.map((input) => {
+        const parsed = this.dependencies.urlPolicy.parse(input);
+        parsed.hash = "";
+        return parsed.toString();
+      }))].slice(0, limit);
+    });
+  }
+
+  getRetrievalExperiment(name: string): VerticalRetrievalExperimentReport {
+    return this.runtime.getRetrievalExperiment(name.replace(/\s+/g, " ").trim());
   }
 
   close(): void {

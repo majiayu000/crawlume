@@ -309,6 +309,34 @@ export type VerticalQueryEvaluationReport = {
   cases: VerticalQueryEvaluation[];
 };
 
+export type VerticalRetrievalMetrics = Pick<
+  VerticalQueryEvaluationReport,
+  "hitAt10" | "recallAt10" | "mrrAt10"
+>;
+type VerticalRetrievalOutcome = Omit<VerticalQueryEvaluation, "query" | "expectedUrls">;
+
+export type VerticalRetrievalExperimentReport = {
+  id: string;
+  name: string;
+  evaluatedAt: string;
+  queryCount: number;
+  baseline: VerticalRetrievalMetrics;
+  candidate: VerticalRetrievalMetrics;
+  delta: VerticalRetrievalMetrics;
+  releaseGate: {
+    passed: boolean;
+    noRegression: Record<keyof VerticalRetrievalMetrics, boolean>;
+    improvesAtLeastOneMetric: boolean;
+  };
+  cases: Array<{
+    query: string;
+    expectedUrls: string[];
+    baseline: VerticalRetrievalOutcome;
+    candidate: VerticalRetrievalOutcome;
+    delta: Omit<VerticalRetrievalMetrics, "mrrAt10"> & { reciprocalRank: number };
+  }>;
+};
+
 type VerticalRunRow = {
   id: string;
   day: string;
@@ -345,6 +373,43 @@ const terminalCrawlStatuses = new Set<CrawlJob["status"]>([
   "failed",
   "cancelled",
 ]);
+
+function resultUrls(results: Array<Pick<SearchResult, "url">>): string[] {
+  return results.map((result) => {
+    const parsed = new URL(result.url);
+    parsed.hash = "";
+    return parsed.toString();
+  });
+}
+
+function queryOutcome(
+  expectedUrls: string[],
+  urls: string[],
+): VerticalRetrievalOutcome {
+  const expected = new Set(expectedUrls);
+  const relevantRanks = urls.flatMap((url, index) => expected.has(url) ? [index + 1] : []);
+  const matched = new Set(urls.filter((url) => expected.has(url))).size;
+  return {
+    resultUrls: urls,
+    hitAt10: matched > 0 ? 1 : 0,
+    recallAt10: matched / expected.size,
+    reciprocalRank: relevantRanks[0] === undefined ? 0 : 1 / relevantRanks[0],
+  };
+}
+
+function mean(values: number[]): number {
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function aggregateMetrics(
+  outcomes: VerticalRetrievalOutcome[],
+): VerticalRetrievalMetrics {
+  return {
+    hitAt10: mean(outcomes.map((item) => item.hitAt10)),
+    recallAt10: mean(outcomes.map((item) => item.recallAt10)),
+    mrrAt10: mean(outcomes.map((item) => item.reciprocalRank)),
+  };
+}
 
 function utcDay(now: number): string {
   return new Date(now).toISOString().slice(0, 10);
@@ -434,6 +499,12 @@ export class VerticalSearchRuntime {
         expected_urls_json TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS vertical_search_retrieval_experiments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        evaluated_at_ms INTEGER NOT NULL,
+        report_json TEXT NOT NULL
       ) STRICT;
     `);
     if (path !== ":memory:") chmodSync(path, 0o600);
@@ -564,33 +635,97 @@ export class VerticalSearchRuntime {
         limit: 10,
         page: 1,
       });
-      const resultUrls = response.results.map((result) => {
-        const parsed = new URL(result.url);
-        parsed.hash = "";
-        return parsed.toString();
-      });
-      const expected = new Set(expectedUrls);
-      const relevantRanks = resultUrls.flatMap((url, index) => expected.has(url) ? [index + 1] : []);
-      const matched = new Set(resultUrls.filter((url) => expected.has(url))).size;
+      const outcome = queryOutcome(expectedUrls, resultUrls(response.results));
       cases.push({
         query: judgment.query,
         expectedUrls,
-        resultUrls,
-        hitAt10: matched > 0 ? 1 : 0,
-        recallAt10: matched / expected.size,
-        reciprocalRank: relevantRanks[0] === undefined ? 0 : 1 / relevantRanks[0],
+        ...outcome,
       });
     }
-    const mean = (values: number[]): number =>
-      values.reduce((total, value) => total + value, 0) / values.length;
+    const metrics = aggregateMetrics(cases);
     return {
       evaluatedAt: new Date(this.dependencies.now()).toISOString(),
       queryCount: cases.length,
-      hitAt10: mean(cases.map((item) => item.hitAt10)),
-      recallAt10: mean(cases.map((item) => item.recallAt10)),
-      mrrAt10: mean(cases.map((item) => item.reciprocalRank)),
+      ...metrics,
       cases,
     };
+  }
+
+  async runRetrievalExperiment(
+    name: string,
+    retrieveCandidate: (query: string, limit: number) => Promise<string[]>,
+  ): Promise<VerticalRetrievalExperimentReport> {
+    const existing = this.database.prepare(
+      "SELECT 1 FROM vertical_search_retrieval_experiments WHERE name = ?",
+    ).get(name);
+    if (existing !== undefined) {
+      throw new ReadError("INVALID_ARGUMENT", "A retrieval experiment with this name already exists.", {
+        details: { name },
+      });
+    }
+    const judgments = this.database.prepare(`
+      SELECT query, expected_urls_json FROM vertical_search_queries ORDER BY rowid
+    `).all() as unknown as Array<{ query: string; expected_urls_json: string }>;
+    if (judgments.length === 0) {
+      throw new ReadError("INVALID_ARGUMENT", "No vertical-search query judgments are configured.");
+    }
+    const cases: VerticalRetrievalExperimentReport["cases"] = [];
+    for (const judgment of judgments) {
+      const expectedUrls = JSON.parse(judgment.expected_urls_json) as string[];
+      const [response, candidateUrls] = await Promise.all([
+        this.dependencies.search.searchWeb({
+          query: judgment.query, source: "local", limit: 10, page: 1,
+        }),
+        retrieveCandidate(judgment.query, 10),
+      ]);
+      const baseline = queryOutcome(expectedUrls, resultUrls(response.results));
+      const candidate = queryOutcome(expectedUrls, candidateUrls);
+      cases.push({ query: judgment.query, expectedUrls, baseline, candidate, delta: {
+        hitAt10: candidate.hitAt10 - baseline.hitAt10,
+        recallAt10: candidate.recallAt10 - baseline.recallAt10,
+        reciprocalRank: candidate.reciprocalRank - baseline.reciprocalRank,
+      } });
+    }
+    const baseline = aggregateMetrics(cases.map((item) => item.baseline));
+    const candidate = aggregateMetrics(cases.map((item) => item.candidate));
+    const delta = {
+      hitAt10: candidate.hitAt10 - baseline.hitAt10,
+      recallAt10: candidate.recallAt10 - baseline.recallAt10,
+      mrrAt10: candidate.mrrAt10 - baseline.mrrAt10,
+    };
+    const noRegression = {
+      hitAt10: delta.hitAt10 >= 0,
+      recallAt10: delta.recallAt10 >= 0,
+      mrrAt10: delta.mrrAt10 >= 0,
+    };
+    const improvesAtLeastOneMetric = Object.values(delta).some((value) => value > 0);
+    const evaluatedAtMs = this.dependencies.now();
+    const report: VerticalRetrievalExperimentReport = {
+      id: randomUUID(), name, evaluatedAt: new Date(evaluatedAtMs).toISOString(),
+      queryCount: cases.length, baseline, candidate, delta,
+      releaseGate: {
+        passed: Object.values(noRegression).every(Boolean) && improvesAtLeastOneMetric,
+        noRegression, improvesAtLeastOneMetric,
+      },
+      cases,
+    };
+    this.database.prepare(`
+      INSERT INTO vertical_search_retrieval_experiments(id, name, evaluated_at_ms, report_json)
+      VALUES (?, ?, ?, ?)
+    `).run(report.id, name, evaluatedAtMs, JSON.stringify(report));
+    return report;
+  }
+
+  getRetrievalExperiment(name: string): VerticalRetrievalExperimentReport {
+    const row = this.database.prepare(
+      "SELECT report_json FROM vertical_search_retrieval_experiments WHERE name = ?",
+    ).get(name) as { report_json: string } | undefined;
+    if (row === undefined) {
+      throw new ReadError("INVALID_ARGUMENT", "The retrieval experiment does not exist.", {
+        details: { name },
+      });
+    }
+    return JSON.parse(row.report_json) as VerticalRetrievalExperimentReport;
   }
 
   close(): void {

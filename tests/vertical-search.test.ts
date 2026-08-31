@@ -365,6 +365,122 @@ describe("VerticalSearchService query evaluation", () => {
       code: "INVALID_ARGUMENT",
     });
   });
+
+  it("records a named paired experiment and passes only a measured improvement", async () => {
+    const searchWeb = vi.fn(async (options: import("../src/types.js").SearchWebOptions) => {
+      const urls = options.query === "agent sdk"
+        ? ["https://docs.example.com/other", "https://docs.example.com/sdk"]
+        : ["https://docs.example.com/other"];
+      return {
+        status: "ok" as const,
+        query: options.query,
+        provider: "local",
+        searchedAt: "2026-08-31T00:00:00.000Z",
+        page: 1,
+        results: urls.map((url) => ({
+          title: url,
+          url,
+          snippet: "",
+          source: "local" as const,
+          engines: ["diaoyan-local"],
+          score: null,
+          publishedAt: null,
+          thumbnailUrl: null,
+        })),
+        totalResults: null,
+        warnings: [],
+      };
+    });
+    const service = createService({
+      searchWeb,
+      now: () => Date.parse("2026-08-31T08:00:00.000Z"),
+    });
+    service.setQueryJudgment("agent sdk", ["https://docs.example.com/sdk"]);
+    service.setQueryJudgment("responses api", ["https://docs.example.com/api"]);
+    const retrieveCandidate = vi.fn(async (query: string, limit: number) => {
+      expect(limit).toBe(10);
+      return query === "agent sdk"
+        ? ["https://docs.example.com/sdk#install", "https://docs.example.com/other"]
+        : ["https://docs.example.com/api"];
+    });
+
+    const report = await service.runRetrievalExperiment("  hybrid-v1  ", retrieveCandidate);
+
+    expect(report).toMatchObject({
+      name: "hybrid-v1",
+      evaluatedAt: "2026-08-31T08:00:00.000Z",
+      queryCount: 2,
+      baseline: { hitAt10: 0.5, recallAt10: 0.5, mrrAt10: 0.25 },
+      candidate: { hitAt10: 1, recallAt10: 1, mrrAt10: 1 },
+      delta: { hitAt10: 0.5, recallAt10: 0.5, mrrAt10: 0.75 },
+      releaseGate: {
+        passed: true,
+        noRegression: { hitAt10: true, recallAt10: true, mrrAt10: true },
+        improvesAtLeastOneMetric: true,
+      },
+    });
+    expect(report.cases).toEqual([
+      expect.objectContaining({
+        query: "agent sdk",
+        expectedUrls: ["https://docs.example.com/sdk"],
+        baseline: expect.objectContaining({
+          resultUrls: ["https://docs.example.com/other", "https://docs.example.com/sdk"],
+          reciprocalRank: 0.5,
+        }),
+        candidate: expect.objectContaining({
+          resultUrls: ["https://docs.example.com/sdk", "https://docs.example.com/other"],
+          reciprocalRank: 1,
+        }),
+        delta: expect.objectContaining({ reciprocalRank: 0.5 }),
+      }),
+      expect.objectContaining({
+        query: "responses api",
+        baseline: expect.objectContaining({ reciprocalRank: 0 }),
+        candidate: expect.objectContaining({ reciprocalRank: 1 }),
+      }),
+    ]);
+    expect(searchWeb).toHaveBeenCalledTimes(2);
+    expect(searchWeb.mock.calls.every(([options]) => options.source === "local")).toBe(true);
+    expect(retrieveCandidate).toHaveBeenCalledTimes(2);
+    expect(service.getRetrievalExperiment("hybrid-v1")).toEqual(report);
+    await expect(service.runRetrievalExperiment("hybrid-v1", retrieveCandidate)).rejects
+      .toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
+  it("blocks release when the candidate only reproduces the lexical baseline", async () => {
+    const urls = ["https://docs.example.com/sdk"];
+    const service = createService({
+      searchWeb: async (options) => ({
+        status: "ok",
+        query: options.query,
+        provider: "local",
+        searchedAt: "2026-08-31T00:00:00.000Z",
+        page: 1,
+        results: urls.map((url) => ({
+          title: url,
+          url,
+          snippet: "",
+          source: "local",
+          engines: ["diaoyan-local"],
+          score: null,
+          publishedAt: null,
+          thumbnailUrl: null,
+        })),
+        totalResults: null,
+        warnings: [],
+      }),
+    });
+    service.setQueryJudgment("agent sdk", urls);
+
+    const report = await service.runRetrievalExperiment("lexical-copy", async () => urls);
+
+    expect(report.releaseGate).toEqual({
+      passed: false,
+      noRegression: { hitAt10: true, recallAt10: true, mrrAt10: true },
+      improvesAtLeastOneMetric: false,
+    });
+    expect(report.delta).toEqual({ hitAt10: 0, recallAt10: 0, mrrAt10: 0 });
+  });
 });
 
 describe("VerticalSearchService app lifecycle", () => {
