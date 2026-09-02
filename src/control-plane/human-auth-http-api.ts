@@ -17,7 +17,7 @@ import { controlPlaneHeader } from "./project-http-api.js";
 const oidcStateCookieName = "__Secure-diaoyan_oidc_state";
 const refreshCookieName = "__Secure-diaoyan_refresh";
 const oidcStateCookiePath = "/v1/auth/oidc/callback";
-const refreshCookiePath = "/v1/auth";
+const refreshCookiePath = "/v1/auth/refresh";
 const oidcStatePattern = /^[A-Za-z0-9_-]{43}$/u;
 const refreshTokenPattern = /^dya_rt_[A-Za-z0-9_-]{43}$/u;
 
@@ -97,6 +97,13 @@ class HumanAuthRequestError extends Error {
   }
 }
 
+class HumanAuthBrowserStateMismatchError extends OidcAuthenticationError {
+  constructor() {
+    super();
+    this.name = "HumanAuthBrowserStateMismatchError";
+  }
+}
+
 function matchHumanAuthRoute(path: string): HumanAuthRoute | null {
   return humanAuthRouteDefinitions.find(({ pattern }) => pattern.test(path)) ?? null;
 }
@@ -116,22 +123,39 @@ function requestHasBody(request: WorkerHttpRequest): boolean {
     (contentLengths.length !== 1 || contentLengths[0]?.[1] !== "0");
 }
 
-function callbackQuery(request: WorkerHttpRequest): Readonly<{ state: string; code: string }> {
+type HumanAuthCallbackQuery =
+  | Readonly<{ kind: "code"; state: string; code: string }>
+  | Readonly<{ kind: "provider_error"; state: string }>;
+
+function callbackQuery(request: WorkerHttpRequest): HumanAuthCallbackQuery {
   const parameters = new URLSearchParams(request.query ?? "");
-  for (const key of parameters.keys()) {
-    if (key !== "state" && key !== "code") throw new HumanAuthQueryError();
-  }
   const states = parameters.getAll("state");
-  const codes = parameters.getAll("code");
-  if (
-    states.length !== 1 ||
-    codes.length !== 1 ||
-    !oidcStatePattern.test(states[0] ?? "") ||
-    (codes[0]?.trim().length ?? 0) === 0
-  ) {
+  if (states.length !== 1 || !oidcStatePattern.test(states[0] ?? "")) {
     throw new HumanAuthQueryError();
   }
-  return Object.freeze({ state: states[0]!, code: codes[0]! });
+  const codes = parameters.getAll("code");
+  const errors = parameters.getAll("error");
+  if (codes.length === 1 && errors.length === 0) {
+    for (const key of parameters.keys()) {
+      if (key !== "state" && key !== "code") throw new HumanAuthQueryError();
+    }
+    if ((codes[0]?.trim().length ?? 0) === 0) throw new HumanAuthQueryError();
+    return Object.freeze({ kind: "code", state: states[0]!, code: codes[0]! });
+  }
+  if (errors.length === 1 && codes.length === 0) {
+    const allowed = new Set(["state", "error", "error_description", "error_uri"]);
+    for (const key of parameters.keys()) {
+      if (!allowed.has(key)) throw new HumanAuthQueryError();
+    }
+    for (const name of ["error", "error_description", "error_uri"] as const) {
+      const values = parameters.getAll(name);
+      if (values.length > 1 || (values.length === 1 && values[0]?.trim().length === 0)) {
+        throw new HumanAuthQueryError();
+      }
+    }
+    return Object.freeze({ kind: "provider_error", state: states[0]! });
+  }
+  throw new HumanAuthQueryError();
 }
 
 function cookieValue(request: WorkerHttpRequest, name: string): string | null {
@@ -159,7 +183,7 @@ function browserStateMatches(request: WorkerHttpRequest, state: string): boolean
 
 function bearerAccessToken(request: WorkerHttpRequest): string {
   const authorization = controlPlaneHeader(request, "authorization");
-  const matched = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u.exec(
+  const matched = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/iu.exec(
     authorization ?? "",
   );
   if (matched?.[1] === undefined) throw new AccessTokenAuthenticationError();
@@ -212,6 +236,8 @@ function authResponse(
     status,
     headers: {
       "x-request-id": requestId,
+      "cache-control": "no-store",
+      pragma: "no-cache",
       ...(body === null ? {} : { "content-type": "application/json" }),
       ...headers,
     },
@@ -307,9 +333,12 @@ export class HumanAuthHttpApi {
         });
       }
       if (route.kind === "callback") {
-        const { state, code } = callbackQuery(request);
-        if (!browserStateMatches(request, state)) throw new OidcAuthenticationError();
-        const completed = await this.services.completeLogin(state, code);
+        const callback = callbackQuery(request);
+        if (!browserStateMatches(request, callback.state)) {
+          throw new HumanAuthBrowserStateMismatchError();
+        }
+        if (callback.kind === "provider_error") throw new OidcAuthenticationError();
+        const completed = await this.services.completeLogin(callback.state, callback.code);
         return authResponse(200, requestId, loginBody(requestId, completed), {
           "set-cookie": [
             clearStateCookie(),
@@ -342,14 +371,17 @@ export class HumanAuthHttpApi {
     route: HumanAuthRoute,
     error: unknown,
   ): WorkerHttpResponse {
-    const stateCleanup = route.kind === "callback" ? { "set-cookie": [clearStateCookie()] } : {};
     if (error instanceof HumanAuthQueryError || error instanceof HumanAuthRequestError) {
       return authProblem(request, requestId, 400, error.code, "Authentication Request Invalid",
-        error.message, stateCleanup);
+        error.message);
+    }
+    if (error instanceof HumanAuthBrowserStateMismatchError) {
+      return authProblem(request, requestId, 401, error.code, "OIDC Authentication Failed",
+        error.message);
     }
     if (error instanceof OidcAuthenticationError) {
       return authProblem(request, requestId, 401, error.code, "OIDC Authentication Failed",
-        error.message, stateCleanup);
+        error.message, { "set-cookie": [clearStateCookie()] });
     }
     if (error instanceof RefreshTokenRotationConflictError) {
       return authProblem(request, requestId, 409, error.code, "Refresh Token Rotation Conflict",
@@ -366,6 +398,7 @@ export class HumanAuthHttpApi {
       });
     }
     return authProblem(request, requestId, 500, "INTERNAL_ERROR", "Internal Server Error",
-      "The human authentication request could not be completed.", stateCleanup);
+      "The human authentication request could not be completed.",
+      route.kind === "callback" ? { "set-cookie": [clearStateCookie()] } : {});
   }
 }

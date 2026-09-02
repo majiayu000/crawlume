@@ -113,6 +113,8 @@ describe("Human Auth HTTP API", () => {
       headers: {
         location: loginStart.authorizationUrl,
         "x-request-id": requestId,
+        "cache-control": "no-store",
+        pragma: "no-cache",
       },
       body: null,
     });
@@ -148,7 +150,7 @@ describe("Human Auth HTTP API", () => {
     expect(setCookies(result)).toEqual([
       "__Secure-diaoyan_oidc_state=; Path=/v1/auth/oidc/callback; Max-Age=0; " +
         "Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; HttpOnly; SameSite=Lax",
-      `__Secure-diaoyan_refresh=${refreshToken}; Path=/v1/auth; ` +
+      `__Secure-diaoyan_refresh=${refreshToken}; Path=/v1/auth/refresh; ` +
         `Expires=${refreshTokenExpiresAt.toUTCString()}; Secure; HttpOnly; SameSite=Strict`,
     ]);
   });
@@ -168,7 +170,7 @@ describe("Human Auth HTTP API", () => {
       body: { code: "OIDC_AUTHENTICATION_FAILED", request_id: requestId, retryable: false },
     });
     expect(completeLogin).not.toHaveBeenCalled();
-    expect(setCookies(result)[0]).toContain("__Secure-diaoyan_oidc_state=;");
+    expect(result.headers).not.toHaveProperty("set-cookie");
   });
 
   it.each([
@@ -187,7 +189,7 @@ describe("Human Auth HTTP API", () => {
 
     expect(result).toMatchObject({ status: 400, body: { code: "AUTH_QUERY_INVALID" } });
     expect(completeLogin).not.toHaveBeenCalled();
-    expect(setCookies(result)[0]).toContain("Max-Age=0");
+    expect(result.headers).not.toHaveProperty("set-cookie");
   });
 
   it.each([
@@ -203,7 +205,27 @@ describe("Human Auth HTTP API", () => {
 
     expect(result).toMatchObject({ status: 401, body: { code: "OIDC_AUTHENTICATION_FAILED" } });
     expect(completeLogin).not.toHaveBeenCalled();
-    expect(setCookies(result)[0]).toContain("Max-Age=0");
+    expect(result.headers).not.toHaveProperty("set-cookie");
+  });
+
+  it("clears state and returns one redacted OIDC failure for a provider denial", async () => {
+    const { api, completeLogin } = harness();
+    const result = await api.handle(request({
+      path: "/v1/auth/oidc/callback",
+      query: `?state=${state}&error=access_denied&error_description=private-provider-detail&` +
+        "error_uri=https%3A%2F%2Fidentity.example%2Fprivate-error",
+      headers: { cookie: `__Secure-diaoyan_oidc_state=${state}` },
+    }));
+
+    expect(result).toMatchObject({
+      status: 401,
+      body: { code: "OIDC_AUTHENTICATION_FAILED", request_id: requestId },
+    });
+    expect(completeLogin).not.toHaveBeenCalled();
+    expect(setCookies(result)[0]).toContain("__Secure-diaoyan_oidc_state=;");
+    expect(JSON.stringify(result)).not.toContain("private-provider-detail");
+    expect(JSON.stringify(result)).not.toContain("private-error");
+    expect(JSON.stringify(result)).not.toContain("access_denied");
   });
 
   it("rotates the refresh cookie and returns only a short-lived Access Token", async () => {
@@ -227,7 +249,7 @@ describe("Human Auth HTTP API", () => {
     });
     expect(JSON.stringify(result.body)).not.toContain(rotatedRefreshToken);
     expect(setCookies(result)).toEqual([
-      `__Secure-diaoyan_refresh=${rotatedRefreshToken}; Path=/v1/auth; ` +
+      `__Secure-diaoyan_refresh=${rotatedRefreshToken}; Path=/v1/auth/refresh; ` +
         `Expires=${refreshTokenExpiresAt.toUTCString()}; Secure; HttpOnly; SameSite=Strict`,
     ]);
   });
@@ -285,14 +307,16 @@ describe("Human Auth HTTP API", () => {
     const result = await api.handle(request({
       method: "POST",
       path: "/v1/auth/logout",
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `bEaReR ${accessToken}` },
     }));
 
     expect(verifyAccessToken).toHaveBeenCalledWith(accessToken);
     expect(revokeAllUserSessions).toHaveBeenCalledWith(userId);
     expect(result).toMatchObject({ status: 204, body: null });
     expect(result.headers).not.toHaveProperty("content-type");
-    expect(setCookies(result)[0]).toContain("__Secure-diaoyan_refresh=;");
+    expect(setCookies(result)[0]).toContain(
+      "__Secure-diaoyan_refresh=; Path=/v1/auth/refresh;",
+    );
   });
 
   it.each([
@@ -340,7 +364,11 @@ describe("Human Auth HTTP API", () => {
 
     expect(result).toMatchObject({
       status: 500,
-      headers: { "content-type": "application/problem+json" },
+      headers: {
+        "content-type": "application/problem+json",
+        "cache-control": "no-store",
+        pragma: "no-cache",
+      },
       body: { code: "INTERNAL_ERROR", retryable: true },
     });
     expect(JSON.stringify(result)).not.toContain("database password leaked");
