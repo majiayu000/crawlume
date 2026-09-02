@@ -334,7 +334,7 @@ export type WorkerHttpRequest = Readonly<{
 
 export type WorkerHttpResponse = Readonly<{
   status: number;
-  headers: Readonly<Record<string, string>>;
+  headers: Readonly<Record<string, string | string[]>>;
   body: unknown | null;
 }>;
 
