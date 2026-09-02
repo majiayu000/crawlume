@@ -43,11 +43,16 @@ import {
   runControlPlaneMigrations,
   type ControlPlaneMigrationClient,
 } from "./control-plane/migrations.js";
+import {
+  ControlPlaneJobLeaseSweeper,
+  ControlPlaneJobLeaseSweepRunner,
+} from "./control-plane/job-lease-recovery.js";
 import { createMcpServer } from "./mcp.js";
 
 const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
+const jobLeaseSweepIntervalMs = 30_000;
 const projectQueryPath = /^\/v1\/projects\/[^/]+\/(?:jobs\/[^/]+\/publications|audit-events)$/u;
 
 type WorkerTlsConfig = Readonly<{
@@ -394,6 +399,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
 
 export type ControlPlaneRuntime = Readonly<{
   origin: string;
+  finished: Promise<void>;
   close(): Promise<void>;
 }>;
 
@@ -514,9 +520,31 @@ export async function startControlPlaneRuntime(
   config: ControlPlaneRuntimeConfig,
 ): Promise<ControlPlaneRuntime> {
   const database = new PostgresControlPlaneDatabase(new Pool(config.database));
+  let sweepRunner: ControlPlaneJobLeaseSweepRunner | undefined;
+  let resolveFinished!: () => void;
+  let rejectFinished!: (error: unknown) => void;
+  const finished = new Promise<void>((resolve, reject) => {
+    resolveFinished = resolve;
+    rejectFinished = reject;
+  });
+  void finished.catch(() => undefined);
   try {
     await runControlPlaneMigrations(database);
     await database.assertReady();
+    let pendingFatalError: unknown;
+    let runtimeReady = false;
+    sweepRunner = new ControlPlaneJobLeaseSweepRunner(
+      new ControlPlaneJobLeaseSweeper(database),
+      {
+        intervalMs: jobLeaseSweepIntervalMs,
+        onFatalError: (error) => {
+          if (runtimeReady) rejectFinished(error);
+          else pendingFatalError = error;
+        },
+      },
+    );
+    await sweepRunner.start();
+    if (pendingFatalError !== undefined) throw pendingFatalError;
     const identity = new WorkerIdentityService(database, config.identity);
     const jobs = new ControlPlaneJobService(database);
     const results = new JobResultService(database);
@@ -533,39 +561,54 @@ export async function startControlPlaneRuntime(
       new ControlPlaneHttpApi(projectApi, workerApi),
       config.listener,
     );
-    let closed = false;
+    runtimeReady = true;
+    if (pendingFatalError !== undefined) rejectFinished(pendingFatalError);
+    let closePromise: Promise<void> | undefined;
+    const closeResources = async (): Promise<void> => {
+      const errors: unknown[] = [];
+      for (const close of [
+        () => sweepRunner?.close(),
+        () => listener.close(),
+        () => database.close(),
+      ]) {
+        try {
+          await close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Control-plane runtime resources failed to close.");
+      }
+    };
     return Object.freeze({
       origin: listener.origin,
-      close: async () => {
-        if (closed) return;
-        closed = true;
-        let listenerError: unknown;
-        try {
-          await listener.close();
-        } catch (error) {
-          listenerError = error;
-        }
-        try {
-          await database.close();
-        } catch (databaseError) {
-          if (listenerError !== undefined) {
-            throw new AggregateError(
-              [listenerError, databaseError],
-              "The Worker listener and PostgreSQL pool both failed to close.",
-            );
-          }
-          throw databaseError;
-        }
-        if (listenerError !== undefined) throw listenerError;
+      finished,
+      close: () => {
+        closePromise ??= closeResources().then(resolveFinished, (error: unknown) => {
+          rejectFinished(error);
+          throw error;
+        });
+        return closePromise;
       },
     });
   } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    try {
+      await sweepRunner?.close();
+    } catch (sweepCloseError) {
+      cleanupErrors.push(sweepCloseError);
+    }
     try {
       await database.close();
-    } catch (closeError) {
+    } catch (databaseCloseError) {
+      cleanupErrors.push(databaseCloseError);
+    }
+    if (cleanupErrors.length > 0) {
       throw new AggregateError(
-        [error, closeError],
-        "Control-plane startup and PostgreSQL cleanup both failed.",
+        [error, ...cleanupErrors],
+        "Control-plane startup and resource cleanup both failed.",
       );
     }
     throw error;
@@ -582,14 +625,30 @@ export async function controlPlaneMain(environment: NodeJS.ProcessEnv = process.
     await runtime.close();
   };
   const closeForSignal = (): void => {
-    void close().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`Diaoyan Worker control server shutdown failed: ${message}\n`);
-      process.exitCode = 1;
-    });
+    void close().catch(() => undefined);
   };
   process.once("SIGINT", closeForSignal);
   process.once("SIGTERM", closeForSignal);
+  let runtimeError: unknown;
+  try {
+    await runtime.finished;
+  } catch (error) {
+    runtimeError = error;
+  }
+  try {
+    process.off("SIGINT", closeForSignal);
+    process.off("SIGTERM", closeForSignal);
+    await close();
+  } catch (closeError) {
+    if (runtimeError !== undefined) {
+      throw new AggregateError(
+        [runtimeError, closeError],
+        "The control-plane runtime and shutdown both failed.",
+      );
+    }
+    throw closeError;
+  }
+  if (runtimeError !== undefined) throw runtimeError;
 }
 
 export async function main(): Promise<void> {
