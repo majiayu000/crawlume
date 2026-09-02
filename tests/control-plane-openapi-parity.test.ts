@@ -25,6 +25,10 @@ const operationSchema = z.object({
   operationId: z.string().regex(/^[A-Za-z][A-Za-z0-9]*$/u),
   "x-status": z.literal("Planned").optional(),
 }).passthrough();
+const operationResponsesSchema = operationSchema.extend({
+  responses: z.record(z.string(), z.unknown()),
+});
+const responseReferenceSchema = z.object({ $ref: z.string() }).strict();
 
 function parseDocument(source: string, document: string): unknown {
   try {
@@ -113,5 +117,33 @@ describe("control-plane OpenAPI Router parity", () => {
     expect(integratedKeys.filter((key) => plannedKeys.has(key)),
       "an integrated Router operation cannot remain Planned").toEqual([]);
     expect(integratedKeys.sort()).toEqual(documentedIntegratedKeys);
+  });
+
+  it("documents transport-level failures for Project Job pause and resume", () => {
+    const source = "project-control-api.openapi.yaml";
+    const openApi = parseValue(
+      source,
+      openApiSchema,
+      parseDocument(source, readFileSync(new URL(`../docs/${source}`, import.meta.url), "utf8")),
+    );
+    for (const action of ["pause", "resume"] as const) {
+      const path = `/projects/{project_id}/jobs/{job_id}/${action}`;
+      const pathItem = parseValue(`${source} path ${path}`, pathItemSchema, openApi.paths[path]);
+      const operation = parseValue(
+        `${source} POST ${path}`,
+        operationResponsesSchema,
+        pathItem.post,
+      );
+      expect(parseValue(
+        `${source} POST ${path} 400`,
+        responseReferenceSchema,
+        operation.responses["400"],
+      )).toEqual({ $ref: "#/components/responses/MalformedRequest" });
+      expect(parseValue(
+        `${source} POST ${path} 413`,
+        responseReferenceSchema,
+        operation.responses["413"],
+      )).toEqual({ $ref: "#/components/responses/PayloadTooLarge" });
+    }
   });
 });

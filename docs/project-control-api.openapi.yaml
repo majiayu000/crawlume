@@ -143,12 +143,16 @@ paths:
                       - type: object
                         properties:
                           status: { const: paused }
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/JobTransitionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '415':
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
@@ -195,12 +199,16 @@ paths:
                       - type: object
                         properties:
                           status: { const: queued }
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/JobTransitionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '415':
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':

@@ -15,6 +15,7 @@ import {
   JobTransitionError,
   type ControlPlaneJob,
 } from "../src/control-plane/project-scope.js";
+import { startWorkerControlServer } from "../src/server.js";
 import type {
   AuditEvent,
   JobPublication,
@@ -601,5 +602,43 @@ describe("control-plane HTTP routing", () => {
 
     expect(projects.handle).toHaveBeenCalledTimes(1);
     expect(workers.handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports pause and resume transport failures over a real loopback socket", async () => {
+    const context = harness();
+    const workers = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
+    const listener = await startWorkerControlServer(
+      new ControlPlaneHttpApi(context.api, workers),
+      { host: "127.0.0.1", port: 0, tls: null },
+    );
+    const post = (action: "pause" | "resume", suffix: string, body: string) => fetch(
+      `${listener.origin}/v1/projects/${projectId}/jobs/${jobId}/${action}${suffix}`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${rawKey}`, "content-type": "application/json" },
+        body,
+      },
+    );
+    const expectProblem = async (response: Response, status: number, code: string) => {
+      expect(response.status).toBe(status);
+      expect(response.headers.get("content-type")).toBe("application/problem+json");
+      await expect(response.json()).resolves.toMatchObject({ status, code, retryable: false });
+    };
+
+    try {
+      await expectProblem(await post("pause", "", ""), 400, "JSON_INVALID");
+      await expectProblem(await post("resume", "", "{"), 400, "JSON_INVALID");
+      await expectProblem(await post("pause", "?force=true", "{}"), 400, "QUERY_UNSUPPORTED");
+      await expectProblem(
+        await post("resume", "", "x".repeat(65_537)),
+        413,
+        "REQUEST_BODY_TOO_LARGE",
+      );
+      expect(context.pauseJob).not.toHaveBeenCalled();
+      expect(context.resumeJob).not.toHaveBeenCalled();
+      expect(workers.handle).not.toHaveBeenCalled();
+    } finally {
+      await listener.close();
+    }
   });
 });
