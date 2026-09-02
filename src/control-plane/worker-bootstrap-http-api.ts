@@ -394,7 +394,7 @@ export class WorkerBootstrapHttpApi {
       );
     }
     if (error instanceof WorkerAuthenticationError) {
-      return problem(request, requestId, 401, error.code, "Worker Authentication Failed",
+      return problem(request, requestId, 400, error.code, "Worker Proof Invalid",
         "The Worker identity, challenge, signature, or session is invalid.");
     }
     if (error instanceof WorkerPublicKeyError) {

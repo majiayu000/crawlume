@@ -362,7 +362,7 @@ describe("Worker bootstrap HTTP API", () => {
     }))).resolves.toMatchObject({ status: 404, body: { code: "WORKER_NOT_FOUND" } });
   });
 
-  it("uses uniform authentication failures without leaking enrollment or session credentials", async () => {
+  it("uses route-specific invalid credential responses without leaking secrets", async () => {
     const invalidEnrollment = await harness({
       enroll: vi.fn(async () => { throw new WorkerEnrollmentAuthenticationError(); }),
     });
@@ -412,7 +412,7 @@ describe("Worker bootstrap HTTP API", () => {
       body: { worker_id: workerId },
     }));
     expect(challengeResult).toMatchObject({
-      status: 401,
+      status: 400,
       body: { code: "WORKER_AUTHENTICATION_FAILED" },
     });
     expect(challengeResult.headers).not.toHaveProperty("www-authenticate");
@@ -423,7 +423,7 @@ describe("Worker bootstrap HTTP API", () => {
       body: { worker_id: workerId, challenge: challengeValue, signature },
     }));
     expect(sessionResult).toMatchObject({
-      status: 401,
+      status: 400,
       body: { code: "WORKER_AUTHENTICATION_FAILED" },
     });
     expect(sessionResult.headers).not.toHaveProperty("www-authenticate");
