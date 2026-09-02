@@ -23,6 +23,7 @@ import {
   type AuthenticatedUser,
   type ProjectScope,
 } from "./project-scope.js";
+import { projectApiKeyRouteDefinitions } from "./router-contract.js";
 import type { WorkerHttpRequest, WorkerHttpResponse } from "./organization-service.js";
 
 type ProjectApiKeyHttpServices = Readonly<{
@@ -50,7 +51,7 @@ type ProjectApiKeyHttpDependencies = Readonly<{
 }>;
 
 type ApiKeyRoute =
-  | Readonly<{ kind: "collection"; projectId: string; methods: readonly ["GET", "POST"] }>
+  | Readonly<{ kind: "collection"; projectId: string; methods: readonly ("GET" | "POST")[] }>
   | Readonly<{ kind: "item"; projectId: string; keyId: string; methods: readonly ["DELETE"] }>;
 
 type ApiKeyProblem = Readonly<{
@@ -81,9 +82,6 @@ class ProjectApiKeyInputError extends Error {
   }
 }
 
-const uuidPath = "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})";
-const collectionPath = new RegExp(`^/v1/projects/${uuidPath}/api-keys$`, "u");
-const itemPath = new RegExp(`^/v1/projects/${uuidPath}/api-keys/${uuidPath}$`, "u");
 const createBodySchema = z.object({
   scopes: z.array(z.enum(["tasks:write", "results:read", "project:admin"]))
     .min(1)
@@ -97,13 +95,17 @@ const cursorSchema = z.object({
 }).strict();
 
 function matchRoute(path: string): ApiKeyRoute | null {
-  const collection = collectionPath.exec(path);
-  if (collection?.[1] !== undefined) {
-    return { kind: "collection", projectId: collection[1], methods: ["GET", "POST"] };
-  }
-  const item = itemPath.exec(path);
-  if (item?.[1] !== undefined && item[2] !== undefined) {
-    return { kind: "item", projectId: item[1], keyId: item[2], methods: ["DELETE"] };
+  for (const definition of projectApiKeyRouteDefinitions) {
+    const matched = definition.pattern.exec(path);
+    const projectId = matched?.[1];
+    if (projectId === undefined) continue;
+    if (definition.kind === "collection") {
+      return { kind: definition.kind, projectId, methods: definition.methods };
+    }
+    const keyId = matched?.[2];
+    if (keyId !== undefined) {
+      return { kind: definition.kind, projectId, keyId, methods: definition.methods };
+    }
   }
   return null;
 }

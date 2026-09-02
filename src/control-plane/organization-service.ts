@@ -37,6 +37,7 @@ import {
   PrivateArtifactUploadDeniedError,
   recordAuditEvent,
 } from "./organization-authorization.js";
+import { workerRouteDefinitions } from "./router-contract.js";
 
 export { OrganizationAccessDeniedError } from "./organization-authorization.js";
 
@@ -376,13 +377,6 @@ class WorkerPathIdentityMismatchError extends Error {
   }
 }
 
-const uuidPath = "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})";
-const claimPath = new RegExp(`^/v1/workers/${uuidPath}/claims$`, "u");
-const heartbeatPath = new RegExp(`^/v1/job-leases/${uuidPath}$`, "u");
-const eventPath = new RegExp(`^/v1/job-leases/${uuidPath}/events$`, "u");
-const publicationPath = new RegExp(`^/v1/job-leases/${uuidPath}/publications$`, "u");
-const completePath = new RegExp(`^/v1/job-leases/${uuidPath}/complete$`, "u");
-
 const generationSchema = z.number().int().positive().safe();
 const localSequenceSchema = z.number().int().positive().safe();
 const contentHashSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
@@ -428,14 +422,7 @@ const completeBodySchema = z.discriminatedUnion("status", [
 ]);
 
 function matchWorkerRoute(path: string): WorkerRoute | null {
-  const candidates = [
-    [claimPath, "claim", "POST"],
-    [heartbeatPath, "heartbeat", "PATCH"],
-    [eventPath, "event", "POST"],
-    [publicationPath, "publication", "POST"],
-    [completePath, "complete", "POST"],
-  ] as const;
-  for (const [pattern, kind, method] of candidates) {
+  for (const { pattern, kind, method } of workerRouteDefinitions) {
     const identifier = pattern.exec(path)?.[1];
     if (identifier !== undefined) return { kind, identifier, method } as WorkerRoute;
   }

@@ -28,6 +28,7 @@ import {
   type CreateControlPlaneJobInput,
   type ControlPlaneJobService,
 } from "./project-scope.js";
+import { projectJobRouteDefinitions } from "./router-contract.js";
 
 type ProjectJobHttpServices = Readonly<{
   authenticate(rawKey: string, context: AuditContext): Promise<AuthenticatedProjectApiKey>;
@@ -87,14 +88,6 @@ class ProjectQueryError extends Error {
   }
 }
 
-const uuidPath = "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})";
-const createJobPath = new RegExp(`^/v1/projects/${uuidPath}/jobs$`, "u");
-const getJobPath = new RegExp(`^/v1/projects/${uuidPath}/jobs/${uuidPath}$`, "u");
-const cancelJobPath = new RegExp(`^/v1/projects/${uuidPath}/jobs/${uuidPath}/cancel$`, "u");
-const listPublicationsPath = new RegExp(
-  `^/v1/projects/${uuidPath}/jobs/${uuidPath}/publications$`, "u",
-);
-const listAuditEventsPath = new RegExp(`^/v1/projects/${uuidPath}/audit-events$`, "u");
 type ProjectJobRoute =
   | Readonly<{ kind: "create"; method: "POST"; projectId: string }>
   | Readonly<{ kind: "get"; method: "GET"; projectId: string; jobId: string }>
@@ -132,28 +125,25 @@ const auditCursorSchema = z.object({
 }).strict();
 
 function matchProjectJobRoute(path: string): ProjectJobRoute | null {
-  const created = createJobPath.exec(path);
-  if (created?.[1] !== undefined) {
-    return { kind: "create", method: "POST", projectId: created[1] };
-  }
-  const found = getJobPath.exec(path);
-  if (found?.[1] !== undefined && found[2] !== undefined) {
-    return { kind: "get", method: "GET", projectId: found[1], jobId: found[2] };
-  }
-  const cancelled = cancelJobPath.exec(path);
-  if (cancelled?.[1] !== undefined && cancelled[2] !== undefined) {
-    return { kind: "cancel", method: "POST", projectId: cancelled[1], jobId: cancelled[2] };
-  }
-  const publications = listPublicationsPath.exec(path);
-  if (publications?.[1] !== undefined && publications[2] !== undefined) {
-    return {
-      kind: "publications", method: "GET",
-      projectId: publications[1], jobId: publications[2],
-    };
-  }
-  const audit = listAuditEventsPath.exec(path);
-  if (audit?.[1] !== undefined) {
-    return { kind: "audit", method: "GET", projectId: audit[1] };
+  for (const definition of projectJobRouteDefinitions) {
+    const matched = definition.pattern.exec(path);
+    const projectId = matched?.[1];
+    if (projectId === undefined) continue;
+    if (definition.kind === "create") {
+      return { kind: definition.kind, method: definition.method, projectId };
+    }
+    if (definition.kind === "audit") {
+      return { kind: definition.kind, method: definition.method, projectId };
+    }
+    const jobId = matched?.[2];
+    if (jobId === undefined) continue;
+    if (definition.kind === "get") {
+      return { kind: definition.kind, method: definition.method, projectId, jobId };
+    }
+    if (definition.kind === "cancel") {
+      return { kind: definition.kind, method: definition.method, projectId, jobId };
+    }
+    return { kind: definition.kind, method: definition.method, projectId, jobId };
   }
   return null;
 }
