@@ -129,6 +129,9 @@ class FlowDatabase implements ControlPlaneDatabase {
     if (sql.startsWith("SELECT COALESCE(MAX(generation), 0) + 1 AS generation")) {
       return [{ generation: 1 }];
     }
+    if (sql.startsWith("SELECT id FROM job_leases")) {
+      return this.lease?.status === "active" ? [{ id: this.lease.id }] : [];
+    }
     if (sql.startsWith("INSERT INTO job_leases(")) {
       this.lease = {
         id: parameters[0],
@@ -158,7 +161,7 @@ class FlowDatabase implements ControlPlaneDatabase {
       this.job = { ...this.job, status: "running", updated_at: parameters[2] };
       return [{ id: String(this.job.id) }];
     }
-    if (sql.startsWith("UPDATE job_leases SET status = 'completed'")) {
+    if (sql.includes("UPDATE job_leases AS leases SET status = 'completed'")) {
       if (this.lease === null || this.lease.status !== "active" ||
           this.lease.id !== parameters[0] || this.lease.worker_id !== parameters[1] ||
           this.lease.project_id !== parameters[2] || this.lease.generation !== parameters[3]) {
@@ -186,7 +189,10 @@ class FlowDatabase implements ControlPlaneDatabase {
     if (sql.startsWith("SELECT worker_sessions.id FROM worker_sessions")) {
       return [{ id: sessionId }];
     }
-    if (sql.startsWith("SELECT jobs.id AS job_id, projects.organization_id")) {
+    if (sql.startsWith("SELECT job_id FROM job_leases")) {
+      return this.lease?.status === "active" ? [{ job_id: this.lease.job_id }] : [];
+    }
+    if (sql.includes("SELECT jobs.id AS job_id, projects.organization_id")) {
       if (this.job?.status !== "running") return [];
       return [{
         job_id: this.job.id,

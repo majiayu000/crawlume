@@ -640,6 +640,14 @@ export class JobResultService {
     leaseId: string,
     leaseGeneration: number,
   ): Promise<SubmissionLeaseRow> {
+    const locked = await transaction.query<{ job_id: string }>(`
+      SELECT job_id FROM job_leases
+      WHERE id = $1 AND worker_id = $2 AND project_id = $3 AND generation = $4
+        AND status = 'active'
+      FOR UPDATE
+    `, [leaseId, identity.workerId, identity.projectId, leaseGeneration]);
+    const jobId = locked.rows[0]?.job_id;
+    if (jobId === undefined) throw new JobResultLeaseFencedError();
     const result = await transaction.query<SubmissionLeaseRow>(`
       SELECT jobs.id AS job_id, projects.organization_id, jobs.data_class,
         jobs.upload_private_artifact
@@ -647,14 +655,11 @@ export class JobResultService {
       INNER JOIN jobs ON jobs.id = job_leases.job_id
         AND jobs.project_id = job_leases.project_id
       INNER JOIN projects ON projects.id = jobs.project_id
-      WHERE job_leases.id = $1 AND job_leases.worker_id = $2
-        AND job_leases.project_id = $3 AND job_leases.generation = $4
-        AND job_leases.status = 'active'
-        AND job_leases.heartbeat_deadline > CURRENT_TIMESTAMP
-        AND job_leases.lease_deadline > CURRENT_TIMESTAMP
-        AND jobs.status = 'running'
+      WHERE jobs.id = $1 AND jobs.project_id = $2 AND job_leases.id = $3
+        AND job_leases.heartbeat_deadline > clock_timestamp()
+        AND job_leases.lease_deadline > clock_timestamp() AND jobs.status = 'running'
       FOR UPDATE OF jobs
-    `, [leaseId, identity.workerId, identity.projectId, leaseGeneration]);
+    `, [jobId, identity.projectId, leaseId]);
     const lease = result.rows[0];
     if (lease === undefined) throw new JobResultLeaseFencedError();
     return lease;

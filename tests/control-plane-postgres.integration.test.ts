@@ -78,7 +78,7 @@ const fixture = Object.freeze({
   sessionId: "00000000-0000-4000-8000-000000000403",
   apiKeyId: "00000000-0000-4000-8000-000000000501",
 });
-const fixtureNow = new Date("2030-01-01T00:00:00.000Z");
+let fixtureNow = new Date(0);
 const fixtureCapabilityHash = Buffer.alloc(32, 3);
 const fixtureWorker: AuthenticatedWorker = Object.freeze({
   workerId: fixture.workerId,
@@ -268,6 +268,10 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     await administration.query(`CREATE DATABASE ${quotedTestDatabase(databaseName)}`);
     database = new Pool({ connectionString: databaseUrl(databaseName), max: 2 });
     await database.query("SELECT 1");
+    const clock = await database.query<{ now: Date }>("SELECT clock_timestamp() AS now");
+    const now = clock.rows[0]?.now;
+    if (!(now instanceof Date)) throw new Error("PostgreSQL did not return its current clock.");
+    fixtureNow = now;
   });
 
   afterEach(async () => {
@@ -492,7 +496,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     const competingResults = new JobResultService(new RendezvousControlPlaneDatabase(
       storage,
       rendezvous,
-      (statement) => statement.includes("FOR UPDATE OF jobs"),
+      (statement) => statement.includes("SELECT job_id FROM job_leases"),
     ));
     const events = await Promise.all([
       competingResults.appendEvent(

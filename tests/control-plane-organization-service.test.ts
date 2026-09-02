@@ -297,6 +297,10 @@ function submissionLease(
   }] };
 }
 
+function lockedSubmissionLease(): Response {
+  return { rows: [{ job_id: "job-a" }] };
+}
+
 function eventRow(payload: Buffer = Buffer.alloc(32, 9)): Record<string, unknown> {
   return {
     id: "event-a",
@@ -383,6 +387,7 @@ describe("Job result submission", () => {
   it("appends only structured event metadata under the authenticated lease", async () => {
     const database = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease(),
       { rows: [] },
       { rows: [{ sequence: "8" }] },
@@ -401,30 +406,34 @@ describe("Job result submission", () => {
       contentHash: resultHash,
     });
     expect(database.transactions).toBe(1);
-    expect(database.calls[1]?.statement).toContain("FOR UPDATE OF jobs");
+    expect(database.calls[1]?.statement).toContain("FOR UPDATE");
     expect(database.calls[1]?.parameters).toEqual(["lease-a", "worker-a", "project-a", 2]);
-    expect(database.calls[2]?.statement).toContain("project_id = $3");
-    expect(database.calls[2]?.parameters).toEqual(["lease-a", 3, "project-a"]);
-    expect(database.calls[3]?.statement).toContain("project_id = $2");
-    expect(database.calls[3]?.parameters).toEqual(["job-a", "project-a"]);
-    expect(database.calls[4]?.statement).not.toMatch(/body|cookie|authorization|source_url/i);
-    expect(database.calls[4]?.parameters[16]).toBe(JSON.stringify({ bytes: 4096, requests: 1 }));
+    expect(database.calls[2]?.statement).toContain("FOR UPDATE OF jobs");
+    expect(database.calls[2]?.parameters).toEqual(["job-a", "project-a", "lease-a"]);
+    expect(database.calls[3]?.statement).toContain("project_id = $3");
+    expect(database.calls[3]?.parameters).toEqual(["lease-a", 3, "project-a"]);
+    expect(database.calls[4]?.statement).toContain("project_id = $2");
+    expect(database.calls[4]?.parameters).toEqual(["job-a", "project-a"]);
+    expect(database.calls[5]?.statement).not.toMatch(/body|cookie|authorization|source_url/i);
+    expect(database.calls[5]?.parameters[16]).toBe(JSON.stringify({ bytes: 4096, requests: 1 }));
   });
 
   it("replays an identical event and rejects reuse with different metadata", async () => {
     const replayDatabase = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease(),
       { rows: [eventRow(eventPayloadHash())] },
     ]);
     await expect(new JobResultService(replayDatabase).appendEvent(
       workerIdentity, "lease-a", 2, eventInput,
     )).resolves.toMatchObject({ id: "event-a", sequence: 8 });
-    expect(replayDatabase.calls).toHaveLength(3);
-    expect(replayDatabase.calls[2]?.parameters).toEqual(["lease-a", 3, "project-a"]);
+    expect(replayDatabase.calls).toHaveLength(4);
+    expect(replayDatabase.calls[3]?.parameters).toEqual(["lease-a", 3, "project-a"]);
 
     const conflictDatabase = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease(),
       { rows: [eventRow(Buffer.alloc(32, 1))] },
     ]);
@@ -470,6 +479,7 @@ describe("Job result submission", () => {
   it("keeps private Artifact bytes local by default", async () => {
     const database = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease("authorized", false),
       { rows: [] },
       { rows: [{ sequence: "6" }] },
@@ -483,16 +493,17 @@ describe("Job result submission", () => {
       sequence: 6,
       artifact: { storage: "worker_local", objectKey: null },
     });
-    expect(database.calls[2]?.statement).toContain("job_publications.project_id = $3");
-    expect(database.calls[2]?.parameters).toEqual(["lease-a", 4, "project-a"]);
-    expect(database.calls[3]?.statement).toContain("project_id = $2");
-    expect(database.calls[3]?.parameters).toEqual(["job-a", "project-a"]);
-    expect(database.calls[4]?.parameters.at(-1)).toBeNull();
+    expect(database.calls[3]?.statement).toContain("job_publications.project_id = $3");
+    expect(database.calls[3]?.parameters).toEqual(["lease-a", 4, "project-a"]);
+    expect(database.calls[4]?.statement).toContain("project_id = $2");
+    expect(database.calls[4]?.parameters).toEqual(["job-a", "project-a"]);
+    expect(database.calls[5]?.parameters.at(-1)).toBeNull();
   });
 
   it("fails instead of downgrading an unauthorized private cloud upload", async () => {
     const database = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease("intranet", false),
     ]);
     await expect(new JobResultService(database).publishResult(
@@ -501,12 +512,13 @@ describe("Job result submission", () => {
       2,
       { ...publicationInput, storage: "cloud_object" },
     )).rejects.toEqual(new PrivateArtifactUploadDeniedError());
-    expect(database.calls).toHaveLength(2);
+    expect(database.calls).toHaveLength(3);
   });
 
   it("generates a tenant-qualified object key for a Job-approved private upload", async () => {
     const database = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease("authorized", true),
       { rows: [] },
       { rows: [{ sequence: "6" }] },
@@ -519,7 +531,7 @@ describe("Job result submission", () => {
       2,
       { ...publicationInput, storage: "cloud_object" },
     );
-    expect(database.calls[4]?.parameters[8]).toMatch(
+    expect(database.calls[5]?.parameters[8]).toMatch(
       /^organization\/organization-a\/project\/project-a\/artifact\/[0-9a-f-]+\/1$/,
     );
   });
@@ -537,17 +549,19 @@ describe("Job result submission", () => {
     };
     const replayDatabase = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease("authorized", false),
       { rows: [stored] },
     ]);
     await expect(new JobResultService(replayDatabase).publishResult(
       workerIdentity, "lease-a", 2, publicationInput,
     )).resolves.toMatchObject({ id: "publication-a", artifact: { id: "artifact-a" } });
-    expect(replayDatabase.calls).toHaveLength(3);
-    expect(replayDatabase.calls[2]?.parameters).toEqual(["lease-a", 4, "project-a"]);
+    expect(replayDatabase.calls).toHaveLength(4);
+    expect(replayDatabase.calls[3]?.parameters).toEqual(["lease-a", 4, "project-a"]);
 
     const conflictDatabase = new ScriptedDatabase([
       { rows: [{ id: "session-a" }] },
+      lockedSubmissionLease(),
       submissionLease(),
       { rows: [{ ...stored, publication_hash: Buffer.alloc(32, 1) }] },
     ]);

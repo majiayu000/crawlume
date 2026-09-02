@@ -556,7 +556,8 @@ export class ControlPlaneJobService {
           ON workers.id = $1 AND workers.project_id = jobs.project_id
           AND workers.status = 'active' AND workers.capability_hash = $3
         WHERE jobs.project_id = $2 AND jobs.status = 'queued'
-          AND jobs.not_before <= $4 AND jobs.deadline_at > $4
+          AND jobs.not_before <= clock_timestamp()
+          AND jobs.deadline_at > clock_timestamp()
           AND (jobs.pinned_worker_id IS NULL OR jobs.pinned_worker_id = workers.id)
           AND (jobs.placement_class = 'public' OR workers.kind = 'private')
           AND workers.capability_manifest @> jobs.required_capabilities
@@ -567,7 +568,6 @@ export class ControlPlaneJobService {
         identity.workerId,
         identity.projectId,
         Buffer.from(identity.capabilityHash, "base64url"),
-        now,
       ]);
       const job = selected.rows[0];
       if (job === undefined) return null;
@@ -620,6 +620,13 @@ export class ControlPlaneJobService {
     const nextHeartbeat = new Date(now.getTime() + 30_000);
     return this.database.transaction(async (transaction) => {
       await this.requireActiveWorkerSession(transaction, identity);
+      const locked = await transaction.query<{ id: string }>(`
+        SELECT id FROM job_leases
+        WHERE id = $1 AND worker_id = $2 AND project_id = $3 AND generation = $4
+          AND status = 'active'
+        FOR UPDATE
+      `, [leaseId, identity.workerId, identity.projectId, generation]);
+      if (locked.rows[0] === undefined) throw new LeaseFencedError();
       const updated = await transaction.query<JobLeaseRow>(`
         UPDATE job_leases AS leases
         SET heartbeat_at = $5,
@@ -627,8 +634,9 @@ export class ControlPlaneJobService {
         FROM jobs
         WHERE leases.id = $1 AND leases.worker_id = $2
           AND leases.project_id = $3 AND leases.generation = $4
-          AND leases.status = 'active' AND leases.heartbeat_deadline > $5
-          AND leases.lease_deadline > $5
+          AND leases.status = 'active'
+          AND leases.heartbeat_deadline > clock_timestamp()
+          AND leases.lease_deadline > clock_timestamp()
           AND jobs.id = leases.job_id AND jobs.project_id = leases.project_id
           AND jobs.status IN ('assigned', 'running')
         RETURNING leases.id, leases.project_id, leases.job_id, leases.worker_id,
@@ -670,12 +678,21 @@ export class ControlPlaneJobService {
     const now = this.now();
     return this.database.transaction(async (transaction) => {
       await this.requireActiveWorkerSession(transaction, identity);
-      const finishedLease = await transaction.query<JobLeaseRow>(`
-        UPDATE job_leases SET status = 'completed', finished_at = $5
+      const locked = await transaction.query<{ id: string }>(`
+        SELECT id FROM job_leases
         WHERE id = $1 AND worker_id = $2 AND project_id = $3 AND generation = $4
-          AND status = 'active' AND heartbeat_deadline > $5 AND lease_deadline > $5
-        RETURNING id, project_id, job_id, worker_id, generation,
-          heartbeat_deadline, lease_deadline
+          AND status = 'active'
+        FOR UPDATE
+      `, [leaseId, identity.workerId, identity.projectId, generation]);
+      if (locked.rows[0] === undefined) throw new LeaseFencedError();
+      const finishedLease = await transaction.query<JobLeaseRow>(`
+        UPDATE job_leases AS leases SET status = 'completed', finished_at = $5
+        WHERE leases.id = $1 AND leases.worker_id = $2 AND leases.project_id = $3
+          AND leases.generation = $4 AND leases.status = 'active'
+          AND leases.heartbeat_deadline > clock_timestamp()
+          AND leases.lease_deadline > clock_timestamp()
+        RETURNING leases.id, leases.project_id, leases.job_id, leases.worker_id,
+          leases.generation, leases.heartbeat_deadline, leases.lease_deadline
       `, [leaseId, identity.workerId, identity.projectId, generation, now]);
       const lease = finishedLease.rows[0];
       if (lease === undefined) throw new LeaseFencedError();
@@ -746,6 +763,13 @@ export class ControlPlaneJobService {
     requireIdentifier(jobId, "jobId");
     const now = this.now();
     return this.database.transaction(async (transaction) => {
+      if (target === "paused" || target === "cancelled") {
+        await transaction.query<{ id: string }>(`
+          UPDATE job_leases SET status = 'cancelled', finished_at = $3
+          WHERE job_id = $1 AND project_id = $2 AND status = 'active'
+          RETURNING id
+        `, [jobId, scope.projectId, now]);
+      }
       const changed = await transaction.query<ControlPlaneJobRow>(`
         UPDATE jobs SET status = $3, updated_at = $4,
           completed_at = CASE WHEN $3 = 'cancelled' THEN COALESCE(completed_at, $4)
@@ -756,13 +780,6 @@ export class ControlPlaneJobService {
       `, [jobId, scope.projectId, target, now, sources]);
       const job = changed.rows[0];
       if (job === undefined) throw new JobTransitionError();
-      if (target === "paused" || target === "cancelled") {
-        await transaction.query<{ id: string }>(`
-          UPDATE job_leases SET status = 'cancelled', finished_at = $3
-          WHERE job_id = $1 AND project_id = $2 AND status = 'active'
-          RETURNING id
-        `, [jobId, scope.projectId, now]);
-      }
       return controlPlaneJob(job);
     });
   }

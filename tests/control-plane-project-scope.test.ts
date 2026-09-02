@@ -662,6 +662,7 @@ describe("control-plane Worker claim", () => {
   it("heartbeats only the exact active generation and transitions assigned to running", async () => {
     const database = new JobDatabase([
       { rows: [{ active: true }] },
+      { rows: [{ id: "lease-b" }] },
       { rows: [{
         id: "lease-b",
         project_id: "project-a",
@@ -680,7 +681,7 @@ describe("control-plane Worker claim", () => {
     expect(database.calls[1]?.parameters.slice(0, 4)).toEqual([
       "lease-b", "worker-a", "project-a", 2,
     ]);
-    expect(database.calls[2]?.statement).toContain("status = 'running'");
+    expect(database.calls[3]?.statement).toContain("status = 'running'");
   });
 
   it("rejects an old generation without updating the Job", async () => {
@@ -732,6 +733,7 @@ describe("control-plane Job completion and controls", () => {
   it("allows only the current lease to commit a complete or partial terminal outcome", async () => {
     const database = new JobDatabase([
       { rows: [{ active: true }] },
+      { rows: [{ id: "lease-b" }] },
       { rows: [{
         id: "lease-b",
         project_id: "project-a",
@@ -758,8 +760,8 @@ describe("control-plane Job completion and controls", () => {
     expect(database.calls[1]?.parameters.slice(0, 4)).toEqual([
       "lease-b", "worker-a", "project-a", 2,
     ]);
-    expect(database.calls[2]?.parameters[1]).toBe("project-a");
-    expect(database.calls[2]?.statement).toContain("status = 'running'");
+    expect(database.calls[3]?.parameters[1]).toBe("project-a");
+    expect(database.calls[3]?.statement).toContain("status = 'running'");
   });
 
   it("rejects inconsistent terminal input before authenticating the Worker", async () => {
@@ -795,11 +797,11 @@ describe("control-plane Job completion and controls", () => {
 
   it("pauses, resumes, and cancels only inside the trusted Project", async () => {
     const database = new JobDatabase([
-      { rows: [jobRow({ status: "paused" })] },
       { rows: [{ id: "lease-a" }] },
+      { rows: [jobRow({ status: "paused" })] },
       { rows: [jobRow({ status: "queued" })] },
-      { rows: [jobRow({ status: "cancelled", completed_at: jobNow })] },
       { rows: [] },
+      { rows: [jobRow({ status: "cancelled", completed_at: jobNow })] },
     ]);
     const service = new ControlPlaneJobService(database, { now: () => new Date(jobNow) });
     const scope = await jobScope();
@@ -807,17 +809,19 @@ describe("control-plane Job completion and controls", () => {
     await expect(service.pause(scope, "job-a")).resolves.toMatchObject({ status: "paused" });
     await expect(service.resume(scope, "job-a")).resolves.toMatchObject({ status: "queued" });
     await expect(service.cancel(scope, "job-a")).resolves.toMatchObject({ status: "cancelled" });
-    expect(database.calls[0]?.parameters.slice(0, 2)).toEqual(["job-a", "project-a"]);
+    expect(database.calls[0]?.statement).toContain("UPDATE job_leases");
+    expect(database.calls[1]?.parameters.slice(0, 2)).toEqual(["job-a", "project-a"]);
     expect(database.calls[2]?.parameters.slice(0, 2)).toEqual(["job-a", "project-a"]);
-    expect(database.calls[3]?.parameters.slice(0, 2)).toEqual(["job-a", "project-a"]);
+    expect(database.calls[3]?.statement).toContain("UPDATE job_leases");
+    expect(database.calls[4]?.parameters.slice(0, 2)).toEqual(["job-a", "project-a"]);
   });
 
   it("uses one transition error for another Project and an invalid state", async () => {
-    const database = new JobDatabase([{ rows: [] }]);
+    const database = new JobDatabase([{ rows: [] }, { rows: [] }]);
     const service = new ControlPlaneJobService(database);
 
     await expect(service.cancel(await jobScope(), "job-b"))
       .rejects.toEqual(new JobTransitionError());
-    expect(database.calls[0]?.parameters.slice(0, 2)).toEqual(["job-b", "project-a"]);
+    expect(database.calls[1]?.parameters.slice(0, 2)).toEqual(["job-b", "project-a"]);
   });
 });
