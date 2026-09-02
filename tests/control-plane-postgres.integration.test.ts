@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { generateKeyPair } from "jose";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -19,9 +20,14 @@ import {
 import {
   ControlPlaneJobService,
   JobIdempotencyConflictError,
+  type ControlPlaneDatabase,
+  type ControlPlaneQuery,
   type CreateControlPlaneJobInput,
 } from "../src/control-plane/project-scope.js";
-import { PostgresControlPlaneDatabase } from "../src/server.js";
+import {
+  PostgresControlPlaneDatabase,
+  startControlPlaneRuntime,
+} from "../src/server.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
 const describeWithPostgres = configuredDatabaseUrl === undefined ? describe.skip : describe;
@@ -172,6 +178,79 @@ function eventInput(localSequence: number, eventType: string): JobEventInput {
     usage: Object.freeze({ requests: 1 }),
     occurredAt: new Date(fixtureNow.getTime() + localSequence),
   });
+}
+
+class PostgresTransactionRendezvous {
+  readonly backendPids: number[] = [];
+  private readonly released: Promise<void>;
+  private release!: () => void;
+
+  constructor(pool: Pool, private readonly participants: number) {
+    if (participants < 2 || pool.options.max < participants) {
+      throw new Error(
+        `PostgreSQL transaction rendezvous requires ${participants} pool connections; ` +
+        `the pool provides ${pool.options.max}.`,
+      );
+    }
+    this.released = new Promise((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  async arrive(transaction: ControlPlaneQuery): Promise<void> {
+    const result = await transaction.query<{ backend_pid: number }>(`
+      SELECT pg_backend_pid() AS backend_pid
+    `, []);
+    const backendPid = result.rows[0]?.backend_pid;
+    if (
+      typeof backendPid !== "number" ||
+      !Number.isInteger(backendPid) ||
+      this.backendPids.includes(backendPid)
+    ) {
+      throw new Error("Each PostgreSQL rendezvous participant must own a distinct backend.");
+    }
+    this.backendPids.push(backendPid);
+    if (this.backendPids.length === this.participants) this.release();
+    if (this.backendPids.length > this.participants) {
+      throw new Error("Too many PostgreSQL transactions reached the rendezvous.");
+    }
+    await this.released;
+  }
+}
+
+class RendezvousControlPlaneDatabase implements ControlPlaneDatabase {
+  constructor(
+    private readonly delegate: ControlPlaneDatabase,
+    private readonly rendezvous: PostgresTransactionRendezvous,
+    private readonly isCompetitionQuery: (statement: string) => boolean,
+  ) {}
+
+  query<Row>(statement: string, parameters: readonly unknown[]): Promise<{ rows: Row[] }> {
+    return this.delegate.query<Row>(statement, parameters);
+  }
+
+  transaction<Result>(
+    operation: (transaction: ControlPlaneQuery) => Promise<Result>,
+  ): Promise<Result> {
+    return this.delegate.transaction(async (transaction) => {
+      let arrived = false;
+      const controlled: ControlPlaneQuery = {
+        query: async <Row>(statement: string, parameters: readonly unknown[]) => {
+          if (!arrived && this.isCompetitionQuery(statement)) {
+            arrived = true;
+            await this.rendezvous.arrive(transaction);
+          }
+          return transaction.query<Row>(statement, parameters);
+        },
+      };
+      return operation(controlled);
+    });
+  }
+}
+
+function expectTwoBackends(rendezvous: PostgresTransactionRendezvous): void {
+  expect(rendezvous.backendPids).toHaveLength(2);
+  expect(new Set(rendezvous.backendPids).size).toBe(2);
 }
 
 describeWithPostgres("control-plane migrations on PostgreSQL", () => {
@@ -354,12 +433,19 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       { correlationId: "db-03-concurrent-claim" },
     );
 
+    const rendezvous = new PostgresTransactionRendezvous(database!, 2);
+    const competingJobs = new ControlPlaneJobService(new RendezvousControlPlaneDatabase(
+      storage,
+      rendezvous,
+      (statement) => statement.includes("FOR UPDATE OF jobs SKIP LOCKED"),
+    ), { now: () => fixtureNow });
     const attempts = await Promise.all([
-      jobs.claimNext(fixtureWorker),
-      jobs.claimNext(fixtureWorker),
+      competingJobs.claimNext(fixtureWorker),
+      competingJobs.claimNext(fixtureWorker),
     ]);
     const claims = attempts.filter((attempt) => attempt !== null);
 
+    expectTwoBackends(rendezvous);
     expect(claims).toHaveLength(1);
     expect(claims[0]).toMatchObject({
       job: { id: created.id, status: "running" },
@@ -402,11 +488,22 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     const firstInput = eventInput(10, "page-fetched");
     const secondInput = eventInput(20, "page-parsed");
 
+    const rendezvous = new PostgresTransactionRendezvous(database!, 2);
+    const competingResults = new JobResultService(new RendezvousControlPlaneDatabase(
+      storage,
+      rendezvous,
+      (statement) => statement.includes("FOR UPDATE OF jobs"),
+    ));
     const events = await Promise.all([
-      results.appendEvent(fixtureWorker, claim.lease.id, claim.lease.generation, firstInput),
-      results.appendEvent(fixtureWorker, claim.lease.id, claim.lease.generation, secondInput),
+      competingResults.appendEvent(
+        fixtureWorker, claim.lease.id, claim.lease.generation, firstInput,
+      ),
+      competingResults.appendEvent(
+        fixtureWorker, claim.lease.id, claim.lease.generation, secondInput,
+      ),
     ]);
 
+    expectTwoBackends(rendezvous);
     expect(events.map((event) => event.sequence).sort((left, right) => left - right))
       .toEqual([1, 2]);
     const stored = await database!.query<{
@@ -459,16 +556,23 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     const storage = new PostgresControlPlaneDatabase(database!);
     const jobs = new ControlPlaneJobService(storage, { now: () => fixtureNow });
     const input = jobInput("https://example.com/idempotent");
+    const rendezvous = new PostgresTransactionRendezvous(database!, 2);
+    const competingJobs = new ControlPlaneJobService(new RendezvousControlPlaneDatabase(
+      storage,
+      rendezvous,
+      (statement) => statement.includes("INSERT INTO jobs("),
+    ), { now: () => fixtureNow });
 
     const created = await Promise.all([
-      jobs.createJob(fixtureProjectKey, "db-03-idempotent", input, {
+      competingJobs.createJob(fixtureProjectKey, "db-03-idempotent", input, {
         correlationId: "db-03-idempotent-a",
       }),
-      jobs.createJob(fixtureProjectKey, "db-03-idempotent", input, {
+      competingJobs.createJob(fixtureProjectKey, "db-03-idempotent", input, {
         correlationId: "db-03-idempotent-b",
       }),
     ]);
 
+    expectTwoBackends(rendezvous);
     expect(created[0]!.id).toBe(created[1]!.id);
     await expect(jobs.createJob(
       fixtureProjectKey,
@@ -483,7 +587,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     });
   });
 
-  it("retains claimed Job and event state after the connection pool is rebuilt", async () => {
+  it("retains claimed Job and event state across Control Plane runtime restart", async () => {
     await runControlPlaneMigrations(database!);
     await seedRuntimeFixture(database!);
     const initialStorage = new PostgresControlPlaneDatabase(database!);
@@ -506,7 +610,33 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     );
 
     await database!.end();
-    database = new Pool({ connectionString: databaseUrl(databaseName!), max: 2 });
+    database = undefined;
+    const connectionString = databaseUrl(databaseName!);
+    const { privateKey, publicKey } = await generateKeyPair("EdDSA");
+    const runtimeConfig = {
+      database: { connectionString, max: 2 },
+      identity: {
+        sessionTokenIssuer: "https://db-03.control.example",
+        sessionTokenAudience: "db-03-worker",
+        sessionTokenPrivateKey: privateKey,
+        sessionTokenPublicKey: publicKey,
+      },
+      listener: { host: "127.0.0.1", port: 0, tls: null },
+    } as const;
+    const firstRuntime = await startControlPlaneRuntime(runtimeConfig);
+    try {
+      expect(firstRuntime.origin).toMatch(/^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/u);
+    } finally {
+      await firstRuntime.close();
+    }
+    const restartedRuntime = await startControlPlaneRuntime(runtimeConfig);
+    try {
+      expect(restartedRuntime.origin).toMatch(/^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/u);
+    } finally {
+      await restartedRuntime.close();
+    }
+
+    database = new Pool({ connectionString, max: 2 });
     await database.query("SELECT 1");
     const restartedStorage = new PostgresControlPlaneDatabase(database);
     const restartedJobs = new ControlPlaneJobService(restartedStorage, { now: () => fixtureNow });
@@ -525,5 +655,16 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     await expect(database.query<{ count: string }>(`
       SELECT count(*) AS count FROM job_events WHERE job_id = $1
     `, [created.id])).resolves.toMatchObject({ rows: [{ count: "1" }] });
+  });
+
+  it("rejects a two-party transaction rendezvous on a single-connection pool", async () => {
+    const singleConnection = new Pool({ connectionString: databaseUrl(databaseName!), max: 1 });
+    try {
+      expect(() => new PostgresTransactionRendezvous(singleConnection, 2)).toThrow(
+        "PostgreSQL transaction rendezvous requires 2 pool connections; the pool provides 1.",
+      );
+    } finally {
+      await singleConnection.end();
+    }
   });
 });

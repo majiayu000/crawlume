@@ -33,6 +33,7 @@ docker run \
   --rm \
   --name "$container_name" \
   --env "POSTGRES_PASSWORD=$test_password" \
+  --tmpfs /var/lib/postgresql/data \
   --publish 127.0.0.1::5432 \
   postgres:16-alpine >/dev/null
 
