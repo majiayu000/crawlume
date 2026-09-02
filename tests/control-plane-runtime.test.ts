@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   endPool: vi.fn(),
   events: [] as string[],
   fatalHandler: undefined as ((error: unknown) => void) | undefined,
+  serverErrorHandler: undefined as ((error: Error) => void) | undefined,
+  listen: vi.fn(),
   poolQuery: vi.fn(),
   recoverExpiredJobLeases: vi.fn(),
   closeSweepRunner: vi.fn(),
@@ -76,6 +78,7 @@ describe("control-plane runtime startup", () => {
     vi.clearAllMocks();
     mocks.events.length = 0;
     mocks.fatalHandler = undefined;
+    mocks.serverErrorHandler = undefined;
     mocks.runMigrations.mockImplementation(async () => {
       mocks.events.push("migrations");
     });
@@ -87,17 +90,21 @@ describe("control-plane runtime startup", () => {
     mocks.closeSweepRunner.mockResolvedValue(undefined);
     mocks.endPool.mockResolvedValue(undefined);
     mocks.closeListener.mockImplementation((closed: (error?: Error) => void) => closed());
+    mocks.listen.mockImplementation((listening: () => void) => listening());
     const server = {
       maxHeadersCount: 0,
       headersTimeout: 0,
       requestTimeout: 0,
       keepAliveTimeout: 0,
-      on: vi.fn().mockReturnThis(),
+      on: vi.fn((event: string, handler: (error: Error) => void) => {
+        if (event === "error") mocks.serverErrorHandler = handler;
+        return server;
+      }),
       once: vi.fn().mockReturnThis(),
       off: vi.fn().mockReturnThis(),
       listen: vi.fn((_port: number, _host: string, listening: () => void) => {
         mocks.events.push("listener-start");
-        listening();
+        mocks.listen(listening);
         return server;
       }),
       address: vi.fn(() => ({ address: "127.0.0.1", family: "IPv4", port: 3210 })),
@@ -174,18 +181,17 @@ describe("control-plane runtime startup", () => {
     expect(mocks.endPool).toHaveBeenCalledOnce();
   });
 
-  it("propagates a periodic sweep failure through controlPlaneMain and shuts down", async () => {
+  it("propagates an undefined periodic fatal reason through controlPlaneMain and shuts down", async () => {
     const running = controlPlaneMain(await runtimeEnvironment());
     await vi.waitFor(() => expect(mocks.createHttpServer).toHaveBeenCalledOnce());
-    const sweepError = new Error("periodic sweep failed");
 
-    mocks.fatalHandler?.(sweepError);
+    mocks.fatalHandler?.(undefined);
 
-    await expect(running).rejects.toBe(sweepError);
-    expect(mocks.events.slice(-3)).toEqual(["sweeper", "listener", "database"]);
+    await expect(running).rejects.toBeUndefined();
+    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
   });
 
-  it("starts sweeping before listening and closes sweeper, listener, then database", async () => {
+  it("starts sweeping before listening and closes listener, sweeper, then database", async () => {
     const runtime = await startControlPlaneRuntime(await runtimeConfig());
     expect(mocks.events.slice(0, 4)).toEqual([
       "migrations",
@@ -198,7 +204,7 @@ describe("control-plane runtime startup", () => {
     await runtime.close();
 
     await expect(finished).resolves.toBeUndefined();
-    expect(mocks.events.slice(-3)).toEqual(["sweeper", "listener", "database"]);
+    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
   });
 
   it("closes once for concurrent callers", async () => {
@@ -210,7 +216,8 @@ describe("control-plane runtime startup", () => {
     const first = runtime.close();
     const second = runtime.close();
     expect(second).toBe(first);
-    expect(mocks.closeSweepRunner).toHaveBeenCalledOnce();
+    expect(mocks.closeListener).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mocks.closeSweepRunner).toHaveBeenCalledOnce());
 
     releaseSweepClose();
     await Promise.all([first, second]);
@@ -231,9 +238,9 @@ describe("control-plane runtime startup", () => {
 
     const closing = runtime.close();
     await expect(closing).rejects.toMatchObject({
-      errors: [sweepError, listenerError, databaseError],
+      errors: [listenerError, sweepError, databaseError],
     });
-    expect(mocks.events.slice(-3)).toEqual(["sweeper", "listener", "database"]);
+    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
   });
 
   it("handles a signal by closing and resolving the main runtime", async () => {
@@ -246,7 +253,7 @@ describe("control-plane runtime startup", () => {
     Reflect.apply(signalHandler!, process, []);
 
     await expect(running).resolves.toBeUndefined();
-    expect(mocks.events.slice(-3)).toEqual(["sweeper", "listener", "database"]);
+    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
   });
 
   it("preserves both a periodic fatal error and a shutdown failure", async () => {
@@ -259,5 +266,29 @@ describe("control-plane runtime startup", () => {
     mocks.fatalHandler?.(fatalError);
 
     await expect(running).rejects.toMatchObject({ errors: [fatalError, closeError] });
+  });
+
+  it("fails startup on an undefined fatal reason while the listener is binding", async () => {
+    let finishListening!: () => void;
+    mocks.listen.mockImplementationOnce((listening: () => void) => {
+      finishListening = listening;
+    });
+    const starting = startControlPlaneRuntime(await runtimeConfig());
+    await vi.waitFor(() => expect(mocks.events).toContain("listener-start"));
+    mocks.fatalHandler?.(undefined);
+    finishListening();
+
+    await expect(starting).rejects.toBeUndefined();
+    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+  });
+
+  it("reports listener failures through the runtime fatal channel", async () => {
+    const runtime = await startControlPlaneRuntime(await runtimeConfig());
+    const listenerError = new Error("listener failed");
+
+    mocks.serverErrorHandler?.(listenerError);
+
+    await expect(runtime.finished).rejects.toBe(listenerError);
+    await runtime.close();
   });
 });

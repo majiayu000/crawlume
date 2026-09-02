@@ -69,6 +69,7 @@ export type WorkerControlServerConfig = Readonly<{
 
 export type WorkerControlListener = Readonly<{
   origin: string;
+  failure: Promise<never>;
   close(): Promise<void>;
 }>;
 
@@ -294,6 +295,10 @@ export async function startWorkerControlServer(
   server.headersTimeout = workerReceiveTimeoutMs;
   server.requestTimeout = workerReceiveTimeoutMs;
   server.keepAliveTimeout = 5_000;
+  let rejectFailure!: (error: Error) => void;
+  const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
+  void failure.catch(() => undefined);
+  server.on("error", rejectFailure);
   server.on("clientError", (_error, socket) => {
     if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
   });
@@ -309,11 +314,12 @@ export async function startWorkerControlServer(
   const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
   return Object.freeze({
     origin: `${config.tls === null ? "http" : "https"}://${host}:${address.port}`,
+    failure,
     close: async () => {
       for (const controller of controllers) controller.abort();
-      server.closeAllConnections();
       await new Promise<void>((resolveClose, rejectClose) => {
         server.close((error) => error === undefined ? resolveClose() : rejectClose(error));
+        server.closeAllConnections();
       });
     },
   });
@@ -521,6 +527,7 @@ export async function startControlPlaneRuntime(
 ): Promise<ControlPlaneRuntime> {
   const database = new PostgresControlPlaneDatabase(new Pool(config.database));
   let sweepRunner: ControlPlaneJobLeaseSweepRunner | undefined;
+  let listener: WorkerControlListener | undefined;
   let resolveFinished!: () => void;
   let rejectFinished!: (error: unknown) => void;
   const finished = new Promise<void>((resolve, reject) => {
@@ -532,6 +539,7 @@ export async function startControlPlaneRuntime(
     await runControlPlaneMigrations(database);
     await database.assertReady();
     let pendingFatalError: unknown;
+    let hasPendingFatalError = false;
     let runtimeReady = false;
     sweepRunner = new ControlPlaneJobLeaseSweepRunner(
       new ControlPlaneJobLeaseSweeper(database),
@@ -539,12 +547,15 @@ export async function startControlPlaneRuntime(
         intervalMs: jobLeaseSweepIntervalMs,
         onFatalError: (error) => {
           if (runtimeReady) rejectFinished(error);
-          else pendingFatalError = error;
+          else {
+            pendingFatalError = error;
+            hasPendingFatalError = true;
+          }
         },
       },
     );
     await sweepRunner.start();
-    if (pendingFatalError !== undefined) throw pendingFatalError;
+    if (hasPendingFatalError) throw pendingFatalError;
     const identity = new WorkerIdentityService(database, config.identity);
     const jobs = new ControlPlaneJobService(database);
     const results = new JobResultService(database);
@@ -559,18 +570,20 @@ export async function startControlPlaneRuntime(
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
     });
     const workerApi = new WorkerHttpApi({ identity, jobs, results });
-    const listener = await startWorkerControlServer(
+    listener = await startWorkerControlServer(
       new ControlPlaneHttpApi(projectApi, workerApi),
       config.listener,
     );
+    const activeListener = listener;
+    if (hasPendingFatalError) throw pendingFatalError;
     runtimeReady = true;
-    if (pendingFatalError !== undefined) rejectFinished(pendingFatalError);
+    void activeListener.failure.catch((error: unknown) => rejectFinished(error));
     let closePromise: Promise<void> | undefined;
     const closeResources = async (): Promise<void> => {
       const errors: unknown[] = [];
       for (const close of [
+        () => activeListener.close(),
         () => sweepRunner?.close(),
-        () => listener.close(),
         () => database.close(),
       ]) {
         try {
@@ -585,7 +598,7 @@ export async function startControlPlaneRuntime(
       }
     };
     return Object.freeze({
-      origin: listener.origin,
+      origin: activeListener.origin,
       finished,
       close: () => {
         closePromise ??= closeResources().then(resolveFinished, (error: unknown) => {
@@ -597,6 +610,11 @@ export async function startControlPlaneRuntime(
     });
   } catch (error) {
     const cleanupErrors: unknown[] = [];
+    try {
+      await listener?.close();
+    } catch (listenerCloseError) {
+      cleanupErrors.push(listenerCloseError);
+    }
     try {
       await sweepRunner?.close();
     } catch (sweepCloseError) {
@@ -632,17 +650,19 @@ export async function controlPlaneMain(environment: NodeJS.ProcessEnv = process.
   process.once("SIGINT", closeForSignal);
   process.once("SIGTERM", closeForSignal);
   let runtimeError: unknown;
+  let hasRuntimeError = false;
   try {
     await runtime.finished;
   } catch (error) {
     runtimeError = error;
+    hasRuntimeError = true;
   }
   try {
     process.off("SIGINT", closeForSignal);
     process.off("SIGTERM", closeForSignal);
     await close();
   } catch (closeError) {
-    if (runtimeError !== undefined) {
+    if (hasRuntimeError) {
       throw new AggregateError(
         [runtimeError, closeError],
         "The control-plane runtime and shutdown both failed.",
@@ -650,7 +670,7 @@ export async function controlPlaneMain(environment: NodeJS.ProcessEnv = process.
     }
     throw closeError;
   }
-  if (runtimeError !== undefined) throw runtimeError;
+  if (hasRuntimeError) throw runtimeError;
 }
 
 export async function main(): Promise<void> {
