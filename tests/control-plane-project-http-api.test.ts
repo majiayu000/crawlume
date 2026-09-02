@@ -604,14 +604,14 @@ describe("control-plane HTTP routing", () => {
     expect(workers.handle).toHaveBeenCalledTimes(1);
   });
 
-  it("reports pause and resume transport failures over a real loopback socket", async () => {
+  it("reports Project Job action transport failures over a real loopback socket", async () => {
     const context = harness();
     const workers = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
     const listener = await startWorkerControlServer(
       new ControlPlaneHttpApi(context.api, workers),
       { host: "127.0.0.1", port: 0, tls: null },
     );
-    const post = (action: "pause" | "resume", suffix: string, body: string) => fetch(
+    const post = (action: "pause" | "resume" | "cancel", suffix: string, body: string) => fetch(
       `${listener.origin}/v1/projects/${projectId}/jobs/${jobId}/${action}${suffix}`,
       {
         method: "POST",
@@ -634,8 +634,16 @@ describe("control-plane HTTP routing", () => {
         413,
         "REQUEST_BODY_TOO_LARGE",
       );
+      await expectProblem(await post("cancel", "", "{"), 400, "JSON_INVALID");
+      await expectProblem(await post("cancel", "?force=true", "{}"), 400, "QUERY_UNSUPPORTED");
+      await expectProblem(
+        await post("cancel", "", "x".repeat(65_537)),
+        413,
+        "REQUEST_BODY_TOO_LARGE",
+      );
       expect(context.pauseJob).not.toHaveBeenCalled();
       expect(context.resumeJob).not.toHaveBeenCalled();
+      expect(context.cancelJob).not.toHaveBeenCalled();
       expect(workers.handle).not.toHaveBeenCalled();
     } finally {
       await listener.close();

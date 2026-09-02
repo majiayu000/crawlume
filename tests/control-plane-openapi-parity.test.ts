@@ -29,6 +29,17 @@ const operationResponsesSchema = operationSchema.extend({
   responses: z.record(z.string(), z.unknown()),
 });
 const responseReferenceSchema = z.object({ $ref: z.string() }).strict();
+const schemaCatalogSchema = z.object({
+  components: z.object({ schemas: z.record(z.string(), z.unknown()) }),
+}).passthrough();
+const objectPropertiesSchema = z.object({
+  properties: z.record(z.string(), z.unknown()),
+}).passthrough();
+const oneOfSchema = z.object({ oneOf: z.array(z.unknown()) }).passthrough();
+const safeIntegerSchema = z.object({
+  type: z.literal("integer"),
+  maximum: z.literal(Number.MAX_SAFE_INTEGER),
+}).passthrough();
 
 function parseDocument(source: string, document: string): unknown {
   try {
@@ -119,14 +130,14 @@ describe("control-plane OpenAPI Router parity", () => {
     expect(integratedKeys.sort()).toEqual(documentedIntegratedKeys);
   });
 
-  it("documents transport-level failures for Project Job pause and resume", () => {
+  it("documents transport-level failures for every Project Job action", () => {
     const source = "project-control-api.openapi.yaml";
     const openApi = parseValue(
       source,
       openApiSchema,
       parseDocument(source, readFileSync(new URL(`../docs/${source}`, import.meta.url), "utf8")),
     );
-    for (const action of ["pause", "resume"] as const) {
+    for (const action of ["pause", "resume", "cancel"] as const) {
       const path = `/projects/{project_id}/jobs/{job_id}/${action}`;
       const pathItem = parseValue(`${source} path ${path}`, pathItemSchema, openApi.paths[path]);
       const operation = parseValue(
@@ -144,6 +155,53 @@ describe("control-plane OpenAPI Router parity", () => {
         responseReferenceSchema,
         operation.responses["413"],
       )).toEqual({ $ref: "#/components/responses/PayloadTooLarge" });
+    }
+  });
+
+  it("caps every Worker request integer at the JavaScript safe maximum", () => {
+    const source = "worker-control-api.openapi.yaml";
+    const openApi = parseValue(
+      source,
+      schemaCatalogSchema,
+      parseDocument(source, readFileSync(new URL(`../docs/${source}`, import.meta.url), "utf8")),
+    );
+    const requestFields = {
+      LeaseGenerationRequest: ["generation"],
+      JobEventRequest: ["generation", "local_sequence", "byte_count", "duration_ms"],
+      JobPublicationRequest: ["generation", "local_sequence", "byte_count"],
+    } as const;
+    for (const [schemaName, fieldNames] of Object.entries(requestFields)) {
+      const schema = parseValue(
+        `${source} schema ${schemaName}`,
+        objectPropertiesSchema,
+        openApi.components.schemas[schemaName],
+      );
+      for (const fieldName of fieldNames) {
+        expect(parseValue(
+          `${source} schema ${schemaName}.${fieldName}`,
+          safeIntegerSchema,
+          schema.properties[fieldName],
+        ).maximum).toBe(Number.MAX_SAFE_INTEGER);
+      }
+    }
+
+    const complete = parseValue(
+      `${source} schema CompleteJobRequest`,
+      oneOfSchema,
+      openApi.components.schemas.CompleteJobRequest,
+    );
+    expect(complete.oneOf).toHaveLength(2);
+    for (const [index, branch] of complete.oneOf.entries()) {
+      const properties = parseValue(
+        `${source} schema CompleteJobRequest branch ${index}`,
+        objectPropertiesSchema,
+        branch,
+      ).properties;
+      expect(parseValue(
+        `${source} schema CompleteJobRequest branch ${index}.generation`,
+        safeIntegerSchema,
+        properties.generation,
+      ).maximum).toBe(Number.MAX_SAFE_INTEGER);
     }
   });
 });

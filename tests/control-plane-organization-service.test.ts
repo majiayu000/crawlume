@@ -802,4 +802,84 @@ describe("Worker HTTP API", () => {
     });
     expect(wrongMedia).toMatchObject({ status: 415, body: { code: "WORKER_MEDIA_TYPE_UNSUPPORTED" } });
   });
+
+  it.each([
+    {
+      field: "heartbeat generation",
+      path: `/v1/job-leases/${leaseUuid}`,
+      method: "PATCH",
+      body: { generation: Number.MAX_SAFE_INTEGER + 1 },
+      calls: "heartbeats",
+    },
+    ...(["generation", "local_sequence", "byte_count", "duration_ms"] as const).map((field) => ({
+      field: `event ${field}`,
+      path: `/v1/job-leases/${leaseUuid}/events`,
+      method: "POST",
+      body: {
+        generation: 2,
+        local_sequence: 3,
+        event_type: "page-fetched",
+        page_status: 200,
+        error_code: null,
+        provider: "http",
+        byte_count: 4096,
+        duration_ms: 125,
+        content_hash: resultHash,
+        usage: { requests: 1 },
+        occurred_at: occurredAt.toISOString(),
+        [field]: Number.MAX_SAFE_INTEGER + 1,
+      },
+      calls: "events" as const,
+    })),
+    ...(["generation", "local_sequence", "byte_count"] as const).map((field) => ({
+      field: `publication ${field}`,
+      path: `/v1/job-leases/${leaseUuid}/publications`,
+      method: "POST",
+      body: {
+        generation: 2,
+        local_sequence: 4,
+        content_hash: resultHash,
+        byte_count: 4096,
+        media_type: "text/html",
+        completeness: "complete",
+        storage: "worker_local",
+        [field]: Number.MAX_SAFE_INTEGER + 1,
+      },
+      calls: "publications" as const,
+    })),
+    ...(["completed", "failed"] as const).map((status) => ({
+      field: `${status} completion generation`,
+      path: `/v1/job-leases/${leaseUuid}/complete`,
+      method: "POST",
+      body: status === "completed"
+        ? {
+            generation: Number.MAX_SAFE_INTEGER + 1,
+            status,
+            result_completeness: "complete",
+            error_code: null,
+          }
+        : {
+            generation: Number.MAX_SAFE_INTEGER + 1,
+            status,
+            result_completeness: null,
+            error_code: "WORKER_FAILED",
+          },
+      calls: "completions" as const,
+    })),
+  ] as const)("rejects unsafe $field before calling its service", async ({
+    path,
+    method,
+    body,
+    calls,
+  }) => {
+    const harness = workerHttpHarness();
+    const response = await harness.api.handle(httpRequest(path, body, method));
+
+    expect(response).toMatchObject({
+      status: 422,
+      headers: { "content-type": "application/problem+json" },
+      body: { status: 422, code: "WORKER_REQUEST_INVALID", retryable: false },
+    });
+    expect(harness.calls[calls]).toHaveLength(0);
+  });
 });
