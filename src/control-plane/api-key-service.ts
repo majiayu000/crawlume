@@ -639,73 +639,76 @@ export class WorkerIdentityService {
     }
     const signature = decodeWorkerSignature(input.signature);
     const now = this.now();
-    const consumed = await this.database.query<WorkerChallengeIdentityRow>(`
-      UPDATE worker_session_challenges AS challenges SET consumed_at = $3
-      FROM workers, worker_public_keys
-      WHERE challenges.challenge_hash = $1 AND challenges.worker_id = $2
-        AND challenges.consumed_at IS NULL AND challenges.expires_at > $3
-        AND workers.id = challenges.worker_id
-        AND workers.project_id = challenges.project_id AND workers.status = 'active'
-        AND worker_public_keys.id = challenges.public_key_id
+    return this.database.transaction(async (transaction) => {
+      const selected = await transaction.query<WorkerChallengeIdentityRow>(`
+      SELECT challenges.worker_id, challenges.project_id, challenges.public_key_id,
+        worker_public_keys.public_key_spki, workers.capability_hash
+      FROM worker_session_challenges AS challenges
+      INNER JOIN workers ON workers.id = challenges.worker_id
+        AND workers.project_id = challenges.project_id
+      INNER JOIN worker_public_keys ON worker_public_keys.id = challenges.public_key_id
         AND worker_public_keys.worker_id = challenges.worker_id
         AND worker_public_keys.project_id = challenges.project_id
+      WHERE challenges.challenge_hash = $1 AND challenges.worker_id = $2
+        AND challenges.consumed_at IS NULL AND challenges.expires_at > $3
+        AND workers.status = 'active'
         AND worker_public_keys.revoked_at IS NULL
-      RETURNING challenges.worker_id, challenges.project_id, challenges.public_key_id,
-        worker_public_keys.public_key_spki, workers.capability_hash
+      FOR UPDATE OF challenges
     `, [hashWorkerValue(input.challenge), workerId, now]);
-    const identity = consumed.rows[0];
-    if (identity === undefined) throw new WorkerAuthenticationError();
-
-    try {
-      const key = createPublicKey({ key: identity.public_key_spki, format: "der", type: "spki" });
-      if (!verifySignature(
-        null,
-        Buffer.from(workerSigningPayload(input.challenge)),
-        key,
-        signature,
-      )) throw new WorkerAuthenticationError();
-    } catch (error) {
-      if (error instanceof WorkerAuthenticationError) throw error;
-      throw new WorkerAuthenticationError(error);
-    }
-
-    const sessionId = randomUUID();
-    const expiresAt = new Date(now.getTime() + workerSessionTtlSeconds * 1_000);
-    const inserted = await this.database.query<{ id: string }>(`
+      const identity = selected.rows[0];
+      if (identity === undefined) throw new WorkerAuthenticationError();
+      try {
+        const key = createPublicKey({ key: identity.public_key_spki, format: "der", type: "spki" });
+        if (!verifySignature(
+          null, Buffer.from(workerSigningPayload(input.challenge)), key, signature,
+        )) throw new WorkerAuthenticationError();
+      } catch (error) {
+        if (error instanceof WorkerAuthenticationError) throw error;
+        throw new WorkerAuthenticationError(error);
+      }
+      const sessionId = randomUUID();
+      const expiresAt = new Date(now.getTime() + workerSessionTtlSeconds * 1_000);
+      const inserted = await transaction.query<{ id: string }>(`
+      WITH consumed AS (
+        UPDATE worker_session_challenges SET consumed_at = $7
+        WHERE challenge_hash = $6 AND worker_id = $2
+          AND project_id = $3 AND public_key_id = $4
+          AND consumed_at IS NULL AND expires_at > $7
+        RETURNING project_id, worker_id, public_key_id
+      )
       INSERT INTO worker_sessions(
         id, project_id, worker_id, public_key_id, capability_hash, created_at, expires_at
       )
-      SELECT $1, workers.project_id, workers.id, worker_public_keys.id,
-        workers.capability_hash, $6, $7
-      FROM workers
-      INNER JOIN worker_public_keys
-        ON worker_public_keys.worker_id = workers.id
-        AND worker_public_keys.project_id = workers.project_id
-      WHERE workers.id = $2 AND workers.project_id = $3 AND workers.status = 'active'
-        AND worker_public_keys.id = $4 AND worker_public_keys.revoked_at IS NULL
+      SELECT $1, consumed.project_id, consumed.worker_id, consumed.public_key_id,
+        workers.capability_hash, $7, $8 FROM consumed
+      INNER JOIN workers ON workers.id = consumed.worker_id
+        AND workers.project_id = consumed.project_id
+      INNER JOIN worker_public_keys ON worker_public_keys.id = consumed.public_key_id
+        AND worker_public_keys.worker_id = consumed.worker_id
+        AND worker_public_keys.project_id = consumed.project_id
+      WHERE workers.status = 'active' AND worker_public_keys.revoked_at IS NULL
         AND workers.capability_hash = $5
       RETURNING id
     `, [
       sessionId, identity.worker_id, identity.project_id, identity.public_key_id,
-      identity.capability_hash, now, expiresAt,
+      identity.capability_hash, hashWorkerValue(input.challenge), now, expiresAt,
     ]);
-    if (inserted.rows[0] === undefined) throw new WorkerAuthenticationError();
-
-    const issuedAt = Math.floor(now.getTime() / 1_000);
-    const capabilityHash = identity.capability_hash.toString("base64url");
-    const token = await new SignJWT({
-      project_id: identity.project_id,
-      capability_hash: capabilityHash,
-    })
-      .setProtectedHeader({ alg: "EdDSA", typ: "worker+jwt" })
-      .setIssuer(this.config.sessionTokenIssuer)
-      .setAudience(this.config.sessionTokenAudience)
-      .setSubject(identity.worker_id)
-      .setJti(sessionId)
-      .setIssuedAt(issuedAt)
-      .setExpirationTime(issuedAt + workerSessionTtlSeconds)
-      .sign(this.config.sessionTokenPrivateKey);
-    return Object.freeze({ token, expiresAt });
+      if (inserted.rows[0] === undefined) throw new WorkerAuthenticationError();
+      const issuedAt = Math.floor(now.getTime() / 1_000);
+      const capabilityHash = identity.capability_hash.toString("base64url");
+      const token = await new SignJWT({
+        project_id: identity.project_id, capability_hash: capabilityHash,
+      })
+        .setProtectedHeader({ alg: "EdDSA", typ: "worker+jwt" })
+        .setIssuer(this.config.sessionTokenIssuer)
+        .setAudience(this.config.sessionTokenAudience)
+        .setSubject(identity.worker_id)
+        .setJti(sessionId)
+        .setIssuedAt(issuedAt)
+        .setExpirationTime(issuedAt + workerSessionTtlSeconds)
+        .sign(this.config.sessionTokenPrivateKey);
+      return Object.freeze({ token, expiresAt });
+    });
   }
 
   async verifySession(token: string): Promise<AuthenticatedWorker> {

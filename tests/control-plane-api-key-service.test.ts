@@ -37,6 +37,7 @@ type Response = { rows: unknown[] } | ((call: Call) => { rows: unknown[] });
 class ApiKeyDatabase implements ControlPlaneDatabase {
   readonly calls: Call[] = [];
   transactions = 0;
+  private transactionTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly responses: Response[]) {}
 
@@ -44,7 +45,15 @@ class ApiKeyDatabase implements ControlPlaneDatabase {
     operation: (transaction: ControlPlaneQuery) => Promise<Result>,
   ): Promise<Result> {
     this.transactions += 1;
-    return operation(this);
+    const previous = this.transactionTail;
+    let release!: () => void;
+    this.transactionTail = new Promise((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation(this);
+    } finally {
+      release();
+    }
   }
 
   async query<Row>(statement: string, parameters: readonly unknown[]): Promise<{ rows: Row[] }> {
@@ -289,6 +298,29 @@ function storedWorker(capabilityHash: Buffer, overrides: Record<string, unknown>
   };
 }
 
+function workerChallengeProof(character = "D") {
+  const keys = workerKeyPair();
+  const challenge = `dya_wc_${character.repeat(43)}`;
+  const capabilityHash = createHash("sha256").update("capabilities").digest();
+  const signature = signMessage(
+    null,
+    Buffer.from(`dya-worker-session-v1\n${challenge}`),
+    keys.privateKey,
+  ).toString("base64url");
+  return {
+    challenge,
+    signature,
+    capabilityHash,
+    identity: {
+      worker_id: "worker-a",
+      project_id: "project-a",
+      public_key_id: "key-a",
+      public_key_spki: keys.publicKeyDer,
+      capability_hash: capabilityHash,
+    },
+  };
+}
+
 describe("Worker enrollment", () => {
   it("lets an admin create a ten-minute Project-bound token and stores only its hash", async () => {
     const database = new ApiKeyDatabase([
@@ -438,22 +470,9 @@ describe("Worker challenge and session", () => {
   });
 
   it("verifies the Ed25519 proof and issues a five-minute Project-bound session", async () => {
-    const keys = workerKeyPair();
-    const challenge = `dya_wc_${"D".repeat(43)}`;
-    const capabilityHash = createHash("sha256").update("capabilities").digest();
-    const signature = signMessage(
-      null,
-      Buffer.from(`dya-worker-session-v1\n${challenge}`),
-      keys.privateKey,
-    ).toString("base64url");
+    const { challenge, signature, capabilityHash, identity } = workerChallengeProof();
     const database = new ApiKeyDatabase([
-      { rows: [{
-        worker_id: "worker-a",
-        project_id: "project-a",
-        public_key_id: "key-a",
-        public_key_spki: keys.publicKeyDer,
-        capability_hash: capabilityHash,
-      }] },
+      { rows: [identity] },
       { rows: [{ id: "session-a" }] },
       { rows: [{ active: true }] },
     ]);
@@ -476,6 +495,8 @@ describe("Worker challenge and session", () => {
     expect(verifiedJwt.payload.project_id).toBe("project-a");
     expect(verifiedJwt.payload.capability_hash).toBe(capabilityHash.toString("base64url"));
     expect((verifiedJwt.payload.exp as number) - (verifiedJwt.payload.iat as number)).toBe(300);
+    expect(database.calls[0]?.statement).toContain("FOR UPDATE OF challenges");
+    expect(database.calls[1]?.statement).toContain("WITH consumed AS");
 
     await expect(active.service.verifySession(session.token)).resolves.toEqual({
       workerId: "worker-a",
@@ -486,24 +507,74 @@ describe("Worker challenge and session", () => {
     expect(database.calls[2]?.parameters.slice(1, 3)).toEqual(["worker-a", "project-a"]);
   });
 
-  it("consumes a challenge even when the signature is invalid", async () => {
-    const keys = workerKeyPair();
-    const database = new ApiKeyDatabase([{ rows: [{
-      worker_id: "worker-a",
-      project_id: "project-a",
-      public_key_id: "key-a",
-      public_key_spki: keys.publicKeyDer,
-      capability_hash: createHash("sha256").update("capabilities").digest(),
-    }] }]);
+  it("does not consume a challenge when the signature is invalid", async () => {
+    const proof = workerChallengeProof("E");
+    const database = new ApiKeyDatabase([
+      { rows: [proof.identity] },
+      { rows: [proof.identity] },
+      { rows: [{ id: "session-a" }] },
+    ]);
     const { service } = await workerHarness(database);
 
     await expect(service.createSession({
       workerId: "worker-a",
-      challenge: `dya_wc_${"E".repeat(43)}`,
+      challenge: proof.challenge,
       signature: Buffer.alloc(64).toString("base64url"),
     })).rejects.toEqual(new WorkerAuthenticationError());
     expect(database.calls).toHaveLength(1);
-    expect(database.calls[0]?.statement).toContain("SET consumed_at");
+    expect(database.calls[0]?.statement).toContain("FOR UPDATE OF challenges");
+    expect(database.calls[0]?.statement).not.toContain("SET consumed_at");
+
+    await expect(service.createSession({
+      workerId: "worker-a",
+      challenge: proof.challenge,
+      signature: proof.signature,
+    })).resolves.toMatchObject({ expiresAt: new Date(workerNow.getTime() + 5 * 60 * 1_000) });
+    expect(database.calls[2]?.statement).toContain("WITH consumed AS");
+  });
+
+  it("allows only one concurrent session exchange for a challenge", async () => {
+    const proof = workerChallengeProof("G");
+    const database = new ApiKeyDatabase([
+      { rows: [proof.identity] },
+      { rows: [{ id: "session-a" }] },
+      { rows: [] },
+    ]);
+    const { service } = await workerHarness(database);
+    const exchanges = await Promise.allSettled([
+      service.createSession({
+        workerId: "worker-a", challenge: proof.challenge, signature: proof.signature,
+      }),
+      service.createSession({
+        workerId: "worker-a", challenge: proof.challenge, signature: proof.signature,
+      }),
+    ]);
+
+    expect(exchanges.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    const rejected = exchanges.find(({ status }) => status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: new WorkerAuthenticationError() });
+    expect(database.calls.filter(({ statement }) => statement.includes("INSERT INTO worker_sessions")))
+      .toHaveLength(1);
+  });
+
+  it("can retry a challenge after a database failure rolls back its exchange", async () => {
+    const proof = workerChallengeProof("H");
+    const databaseFailure = new Error("database unavailable");
+    const database = new ApiKeyDatabase([
+      { rows: [proof.identity] },
+      () => { throw databaseFailure; },
+      { rows: [proof.identity] },
+      { rows: [{ id: "session-a" }] },
+    ]);
+    const { service } = await workerHarness(database);
+
+    await expect(service.createSession({
+      workerId: "worker-a", challenge: proof.challenge, signature: proof.signature,
+    })).rejects.toBe(databaseFailure);
+    await expect(service.createSession({
+      workerId: "worker-a", challenge: proof.challenge, signature: proof.signature,
+    })).resolves.toMatchObject({ expiresAt: new Date(workerNow.getTime() + 5 * 60 * 1_000) });
+    expect(database.transactions).toBe(2);
   });
 
   it("rejects a valid JWT when its database session or Worker is inactive", async () => {
