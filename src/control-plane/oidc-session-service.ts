@@ -14,7 +14,9 @@ import type {
   ControlPlaneQuery,
 } from "./project-scope.js";
 
-const loginAttemptTtlMs = 10 * 60 * 1_000;
+const loginAttemptTtlSeconds = 10 * 60;
+const loginAttemptCooldownSeconds = 1;
+const oidcLoginBudgetLockNamespace = "diaoyan:oidc-login-budget";
 const accessTokenTtlSeconds = 10 * 60;
 const refreshFamilyTtlMs = 30 * 24 * 60 * 60 * 1_000;
 const refreshRotationGraceMs = 5_000;
@@ -73,6 +75,11 @@ type UserRow = {
 };
 
 type IdRow = { id: string };
+type AdvisoryLockRow = { acquired: boolean };
+type LoginAttemptInsertRow = IdRow & { created_at: Date; expires_at: Date };
+type BeginLoginOutcome =
+  | { kind: "created"; expiresAt: Date }
+  | { kind: "rate-limited" };
 
 type RefreshTokenRow = {
   id: string;
@@ -112,6 +119,16 @@ export class OidcAuthenticationError extends Error {
   constructor(cause?: unknown) {
     super("The OIDC login could not be authenticated.", cause === undefined ? undefined : { cause });
     this.name = "OidcAuthenticationError";
+  }
+}
+
+export class OidcLoginRateLimitedError extends Error {
+  readonly code = "OIDC_LOGIN_RATE_LIMITED";
+  readonly retryAfterSeconds = loginAttemptCooldownSeconds;
+
+  constructor() {
+    super("OIDC login initiation is temporarily rate limited.");
+    this.name = "OidcLoginRateLimitedError";
   }
 }
 
@@ -274,33 +291,56 @@ export class OidcSessionService {
   }
 
   async beginLogin(): Promise<OidcLoginStart> {
-    const now = this.now();
-    const expiresAt = new Date(now.getTime() + loginAttemptTtlMs);
     const state = randomBase64Url();
     const nonce = randomBase64Url();
     const codeVerifier = randomBase64Url();
     const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
-
-    const inserted = await this.database.query<IdRow>(`
-      INSERT INTO oidc_login_attempts(
-        id, state_hash, issuer, client_id, redirect_uri,
-        code_verifier, nonce, created_at, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING id
-    `, [
-      randomUUID(),
-      hashSecret(state),
+    const lockSubject = JSON.stringify([
+      oidcLoginBudgetLockNamespace,
       this.config.issuer,
       this.config.clientId,
-      this.config.redirectUri,
-      codeVerifier,
-      nonce,
-      now,
-      expiresAt,
     ]);
-    if (inserted.rows[0] === undefined) {
-      throw new Error("The OIDC login attempt insert returned no record.");
-    }
+    const outcome = await this.database.transaction<BeginLoginOutcome>(async (transaction) => {
+      const lock = await transaction.query<AdvisoryLockRow>(`
+        SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired
+      `, [lockSubject]);
+      if (lock.rows[0]?.acquired !== true) return { kind: "rate-limited" };
+
+      await transaction.query(`
+        DELETE FROM oidc_login_attempts
+        WHERE issuer = $1 AND client_id = $2
+          AND (
+            (consumed_at IS NULL AND expires_at <= clock_timestamp()) OR
+            (consumed_at <= clock_timestamp() - make_interval(secs => $3::integer))
+          )
+      `, [this.config.issuer, this.config.clientId, loginAttemptCooldownSeconds]);
+
+      const inserted = await transaction.query<LoginAttemptInsertRow>(`
+        INSERT INTO oidc_login_attempts(
+          id, state_hash, issuer, client_id, redirect_uri,
+          code_verifier, nonce, created_at, expires_at
+        )
+        SELECT $1, $2, $3, $4, $5, $6, $7,
+          clock_timestamp(),
+          clock_timestamp() + make_interval(secs => $8::integer)
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM oidc_login_attempts
+          WHERE issuer = $3 AND client_id = $4
+            AND created_at > clock_timestamp() - make_interval(secs => $9::integer)
+        )
+        RETURNING id, created_at, expires_at
+      `, [
+        randomUUID(), hashSecret(state), this.config.issuer, this.config.clientId,
+        this.config.redirectUri, codeVerifier, nonce,
+        loginAttemptTtlSeconds, loginAttemptCooldownSeconds,
+      ]);
+      const attempt = inserted.rows[0];
+      return attempt === undefined
+        ? { kind: "rate-limited" }
+        : { kind: "created", expiresAt: attempt.expires_at };
+    });
+    if (outcome.kind === "rate-limited") throw new OidcLoginRateLimitedError();
 
     const authorizationUrl = new URL(this.authorizationEndpoint);
     authorizationUrl.searchParams.set("response_type", "code");
@@ -311,7 +351,7 @@ export class OidcSessionService {
     authorizationUrl.searchParams.set("nonce", nonce);
     authorizationUrl.searchParams.set("code_challenge", codeChallenge);
     authorizationUrl.searchParams.set("code_challenge_method", "S256");
-    return Object.freeze({ authorizationUrl: authorizationUrl.toString(), expiresAt });
+    return Object.freeze({ authorizationUrl: authorizationUrl.toString(), expiresAt: outcome.expiresAt });
   }
 
   async completeLogin(state: string, code: string): Promise<OidcLoginResult> {

@@ -3,6 +3,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
   AccessTokenAuthenticationError,
   OidcAuthenticationError,
+  OidcLoginRateLimitedError,
   RefreshTokenAuthenticationError,
   RefreshTokenReuseError,
   RefreshTokenRotationConflictError,
@@ -262,7 +263,7 @@ function authProblem(
     instance: request.path,
     code,
     request_id: requestId,
-    retryable: status === 500,
+    retryable: status === 429 || status === 500,
   };
   return authResponse(status, requestId, body, {
     "content-type": "application/problem+json",
@@ -378,6 +379,10 @@ export class HumanAuthHttpApi {
     if (error instanceof HumanAuthBrowserStateMismatchError) {
       return authProblem(request, requestId, 401, error.code, "OIDC Authentication Failed",
         error.message);
+    }
+    if (error instanceof OidcLoginRateLimitedError) {
+      return authProblem(request, requestId, 429, error.code, "OIDC Login Rate Limited",
+        error.message, { "retry-after": String(error.retryAfterSeconds) });
     }
     if (error instanceof OidcAuthenticationError) {
       return authProblem(request, requestId, 401, error.code, "OIDC Authentication Failed",

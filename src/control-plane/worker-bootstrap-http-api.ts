@@ -4,6 +4,7 @@ import { z, ZodError } from "zod";
 
 import {
   WorkerAuthenticationError,
+  WorkerChallengeRateLimitedError,
   WorkerEnrollmentAuthenticationError,
   WorkerNotFoundError,
   WorkerPublicKeyError,
@@ -249,7 +250,7 @@ function problem(
     instance: request.path,
     code,
     request_id: requestId,
-    retryable: status === 500,
+    retryable: status === 429 || status === 500,
     ...(errors === undefined ? {} : { errors }),
   };
   return {
@@ -392,6 +393,14 @@ export class WorkerBootstrapHttpApi {
         undefined,
         true,
       );
+    }
+    if (error instanceof WorkerChallengeRateLimitedError) {
+      const result = problem(request, requestId, 429, error.code, "Worker Challenge Rate Limited",
+        error.message);
+      return {
+        ...result,
+        headers: { ...result.headers, "retry-after": String(error.retryAfterSeconds) },
+      };
     }
     if (error instanceof WorkerAuthenticationError) {
       return problem(request, requestId, 400, error.code, "Worker Proof Invalid",

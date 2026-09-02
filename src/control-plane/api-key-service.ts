@@ -19,6 +19,12 @@ import type {
   ControlPlaneQuery,
   ProjectScope,
 } from "./project-scope.js";
+import {
+  createBoundedWorkerChallenge,
+  workerSigningPayload,
+} from "./worker-challenge-budget.js";
+
+export { WorkerChallengeRateLimitedError } from "./worker-challenge-budget.js";
 
 export const projectApiKeyScopes = [
   "tasks:write",
@@ -293,10 +299,8 @@ export async function revokeProjectApiKey(
 }
 
 const workerEnrollmentTtlMs = 10 * 60 * 1_000;
-const workerChallengeTtlMs = 2 * 60 * 1_000;
 const workerSessionTtlSeconds = 5 * 60;
 const maximumCapabilityManifestBytes = 16 * 1_024;
-const workerSignatureContext = "dya-worker-session-v1\n";
 
 export type WorkerCapabilityManifest = Readonly<Record<string, unknown>>;
 export type WorkerIdentityConfig = Readonly<{
@@ -402,6 +406,11 @@ type WorkerChallengeIdentityRow = {
   public_key_spki: Buffer;
   capability_hash: Buffer;
 };
+type WorkerSessionInsertRow = {
+  id: string;
+  created_at: Date;
+  expires_at: Date;
+};
 
 function requireWorkerText(value: string, name: string, maximumLength = 128): string {
   const normalized = value.trim();
@@ -468,10 +477,6 @@ function workerRecord(row: WorkerRow): WorkerRecord {
     createdAt: row.created_at,
     disabledAt: row.disabled_at,
   });
-}
-
-function workerSigningPayload(challenge: string): string {
-  return `${workerSignatureContext}${challenge}`;
 }
 
 function decodeWorkerSignature(signature: string): Buffer {
@@ -603,29 +608,11 @@ export class WorkerIdentityService {
 
   async createChallenge(workerId: string): Promise<WorkerChallenge> {
     const normalizedWorkerId = requireWorkerText(workerId, "workerId");
-    const now = this.now();
-    const expiresAt = new Date(now.getTime() + workerChallengeTtlMs);
-    const challenge = `dya_wc_${randomBytes(32).toString("base64url")}`;
-    const result = await this.database.query<{ id: string }>(`
-      INSERT INTO worker_session_challenges(
-        id, project_id, worker_id, public_key_id, challenge_hash, created_at, expires_at
-      )
-      SELECT $1, workers.project_id, workers.id, worker_public_keys.id, $3, $4, $5
-      FROM workers
-      INNER JOIN worker_public_keys
-        ON worker_public_keys.worker_id = workers.id
-        AND worker_public_keys.project_id = workers.project_id
-        AND worker_public_keys.revoked_at IS NULL
-      WHERE workers.id = $2 AND workers.status = 'active'
-      RETURNING id
-    `, [randomUUID(), normalizedWorkerId, hashWorkerValue(challenge), now, expiresAt]);
-    if (result.rows[0] === undefined) throw new WorkerAuthenticationError();
-    return Object.freeze({
-      workerId: normalizedWorkerId,
-      challenge,
-      signingPayload: workerSigningPayload(challenge),
-      expiresAt,
-    });
+    return createBoundedWorkerChallenge(
+      this.database,
+      normalizedWorkerId,
+      () => new WorkerAuthenticationError(),
+    );
   }
 
   async createSession(input: Readonly<{
@@ -638,7 +625,6 @@ export class WorkerIdentityService {
       throw new WorkerAuthenticationError();
     }
     const signature = decodeWorkerSignature(input.signature);
-    const now = this.now();
     return this.database.transaction(async (transaction) => {
       const selected = await transaction.query<WorkerChallengeIdentityRow>(`
       SELECT challenges.worker_id, challenges.project_id, challenges.public_key_id,
@@ -650,11 +636,11 @@ export class WorkerIdentityService {
         AND worker_public_keys.worker_id = challenges.worker_id
         AND worker_public_keys.project_id = challenges.project_id
       WHERE challenges.challenge_hash = $1 AND challenges.worker_id = $2
-        AND challenges.consumed_at IS NULL AND challenges.expires_at > $3
+        AND challenges.consumed_at IS NULL AND challenges.expires_at > clock_timestamp()
         AND workers.status = 'active'
         AND worker_public_keys.revoked_at IS NULL
       FOR UPDATE OF challenges
-    `, [hashWorkerValue(input.challenge), workerId, now]);
+    `, [hashWorkerValue(input.challenge), workerId]);
       const identity = selected.rows[0];
       if (identity === undefined) throw new WorkerAuthenticationError();
       try {
@@ -667,20 +653,25 @@ export class WorkerIdentityService {
         throw new WorkerAuthenticationError(error);
       }
       const sessionId = randomUUID();
-      const expiresAt = new Date(now.getTime() + workerSessionTtlSeconds * 1_000);
-      const inserted = await transaction.query<{ id: string }>(`
-      WITH consumed AS (
-        UPDATE worker_session_challenges SET consumed_at = $7
+      const inserted = await transaction.query<WorkerSessionInsertRow>(`
+      WITH timing AS MATERIALIZED (
+        SELECT clock_timestamp() AS created_at
+      ), consumed AS (
+        UPDATE worker_session_challenges SET consumed_at = timing.created_at
+        FROM timing
         WHERE challenge_hash = $6 AND worker_id = $2
           AND project_id = $3 AND public_key_id = $4
-          AND consumed_at IS NULL AND expires_at > $7
+          AND consumed_at IS NULL AND expires_at > timing.created_at
         RETURNING project_id, worker_id, public_key_id
       )
       INSERT INTO worker_sessions(
         id, project_id, worker_id, public_key_id, capability_hash, created_at, expires_at
       )
       SELECT $1, consumed.project_id, consumed.worker_id, consumed.public_key_id,
-        workers.capability_hash, $7, $8 FROM consumed
+        workers.capability_hash, timing.created_at,
+        timing.created_at + make_interval(secs => $7::integer)
+      FROM consumed
+      CROSS JOIN timing
       INNER JOIN workers ON workers.id = consumed.worker_id
         AND workers.project_id = consumed.project_id
       INNER JOIN worker_public_keys ON worker_public_keys.id = consumed.public_key_id
@@ -688,13 +679,15 @@ export class WorkerIdentityService {
         AND worker_public_keys.project_id = consumed.project_id
       WHERE workers.status = 'active' AND worker_public_keys.revoked_at IS NULL
         AND workers.capability_hash = $5
-      RETURNING id
+      RETURNING id, created_at, expires_at
     `, [
       sessionId, identity.worker_id, identity.project_id, identity.public_key_id,
-      identity.capability_hash, hashWorkerValue(input.challenge), now, expiresAt,
+      identity.capability_hash, hashWorkerValue(input.challenge), workerSessionTtlSeconds,
     ]);
-      if (inserted.rows[0] === undefined) throw new WorkerAuthenticationError();
-      const issuedAt = Math.floor(now.getTime() / 1_000);
+      const session = inserted.rows[0];
+      if (session === undefined) throw new WorkerAuthenticationError();
+      const issuedAt = Math.floor(session.created_at.getTime() / 1_000);
+      const expiresAt = session.expires_at;
       const capabilityHash = identity.capability_hash.toString("base64url");
       const token = await new SignJWT({
         project_id: identity.project_id, capability_hash: capabilityHash,
@@ -705,7 +698,7 @@ export class WorkerIdentityService {
         .setSubject(identity.worker_id)
         .setJti(sessionId)
         .setIssuedAt(issuedAt)
-        .setExpirationTime(issuedAt + workerSessionTtlSeconds)
+        .setExpirationTime(Math.floor(expiresAt.getTime() / 1_000))
         .sign(this.config.sessionTokenPrivateKey);
       return Object.freeze({ token, expiresAt });
     });
