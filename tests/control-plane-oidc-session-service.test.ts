@@ -20,6 +20,7 @@ import {
   OidcAuthenticationError,
   OidcSessionService,
   RefreshTokenAuthenticationError,
+  RefreshTokenRotationConflictError,
   RefreshTokenReuseError,
   type OidcSessionConfig,
 } from "../src/control-plane/oidc-session-service.js";
@@ -84,6 +85,7 @@ type Harness = {
 async function harness(
   database: IdentityDatabase,
   fetcher?: typeof fetch,
+  clock: () => Date = () => new Date(now),
 ): Promise<Harness> {
   const oidcKeys = await generateKeyPair("EdDSA");
   const accessKeys = await generateKeyPair("EdDSA");
@@ -103,7 +105,7 @@ async function harness(
   return {
     service: new OidcSessionService(database, config, {
       ...(fetcher === undefined ? {} : { fetch: fetcher }),
-      now: () => new Date(now),
+      now: clock,
     }),
     config,
     oidcKeys,
@@ -289,6 +291,29 @@ describe("OIDC Authorization Code + PKCE", () => {
 });
 
 describe("Refresh Token Rotation", () => {
+  it("samples the decision time after selecting the refresh token for update", async () => {
+    const database = new IdentityDatabase([
+      { rows: [{
+        id: "refresh-a",
+        family_id: "family-a",
+        user_id: "user-a",
+        expires_at: new Date("2026-09-30T12:00:00.000Z"),
+        used_at: null,
+        revoked_at: null,
+      }] },
+      { rows: [{ id: "refresh-a" }] },
+      { rows: [{ id: "refresh-b" }] },
+    ]);
+    const clock = vi.fn(() => {
+      expect(database.calls[0]?.statement).toContain("FOR UPDATE");
+      return new Date(now);
+    });
+    const { service } = await harness(database, undefined, clock);
+
+    await expect(service.rotateRefreshToken(validRefreshToken("A"))).resolves.toBeDefined();
+    expect(clock).toHaveBeenCalledOnce();
+  });
+
   it("uses a refresh token once and preserves the family expiration", async () => {
     const database = new IdentityDatabase([
       { rows: [{
@@ -319,7 +344,26 @@ describe("Refresh Token Rotation", () => {
     );
   });
 
-  it("commits all-session revocation before reporting token reuse", async () => {
+  it("reports a locked token used within five seconds as a rotation conflict", async () => {
+    const database = new IdentityDatabase([
+      { rows: [{
+        id: "refresh-used",
+        family_id: "family-a",
+        user_id: "user-a",
+        expires_at: new Date("2026-09-30T12:00:00.000Z"),
+        used_at: new Date("2026-09-01T11:59:56.000Z"),
+        revoked_at: null,
+      }] },
+    ]);
+    const { service } = await harness(database);
+
+    await expect(service.rotateRefreshToken(validRefreshToken("B")))
+      .rejects.toEqual(new RefreshTokenRotationConflictError());
+    expect(database.transactions).toBe(1);
+    expect(database.calls).toHaveLength(1);
+  });
+
+  it("revokes only the reused refresh family before reporting token reuse", async () => {
     const database = new IdentityDatabase([
       { rows: [{
         id: "refresh-used",
@@ -336,8 +380,36 @@ describe("Refresh Token Rotation", () => {
     await expect(service.rotateRefreshToken(validRefreshToken("B")))
       .rejects.toEqual(new RefreshTokenReuseError());
     expect(database.transactions).toBe(1);
-    expect(database.calls[1]?.statement).toContain("WHERE user_id = $1");
-    expect(database.calls[1]?.parameters).toEqual(["user-a"]);
+    expect(database.calls[1]?.statement).toContain("WHERE user_id = $1 AND family_id = $2");
+    expect(database.calls[1]?.parameters).toEqual(["user-a", "family-a"]);
+  });
+
+  it("treats expired or revoked refresh tokens as invalid even after prior use", async () => {
+    const expiredDatabase = new IdentityDatabase([{ rows: [{
+      id: "refresh-expired",
+      family_id: "family-a",
+      user_id: "user-a",
+      expires_at: new Date("2026-09-01T11:59:59.999Z"),
+      used_at: new Date("2026-09-01T11:00:00.000Z"),
+      revoked_at: null,
+    }] }]);
+    const expired = await harness(expiredDatabase);
+    await expect(expired.service.rotateRefreshToken(validRefreshToken("C")))
+      .rejects.toEqual(new RefreshTokenAuthenticationError());
+    expect(expiredDatabase.calls).toHaveLength(1);
+
+    const revokedDatabase = new IdentityDatabase([{ rows: [{
+      id: "refresh-revoked",
+      family_id: "family-a",
+      user_id: "user-a",
+      expires_at: new Date("2026-09-30T12:00:00.000Z"),
+      used_at: new Date("2026-09-01T11:00:00.000Z"),
+      revoked_at: new Date("2026-09-01T11:30:00.000Z"),
+    }] }]);
+    const revoked = await harness(revokedDatabase);
+    await expect(revoked.service.rotateRefreshToken(validRefreshToken("D")))
+      .rejects.toEqual(new RefreshTokenAuthenticationError());
+    expect(revokedDatabase.calls).toHaveLength(1);
   });
 
   it("uses one failure for malformed, unknown, expired, and revoked refresh tokens", async () => {

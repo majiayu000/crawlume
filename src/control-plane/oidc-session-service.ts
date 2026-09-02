@@ -17,6 +17,7 @@ import type {
 const loginAttemptTtlMs = 10 * 60 * 1_000;
 const accessTokenTtlSeconds = 10 * 60;
 const refreshFamilyTtlMs = 30 * 24 * 60 * 60 * 1_000;
+const refreshRotationGraceMs = 5_000;
 const maximumTokenResponseBytes = 64 * 1_024;
 
 export type OidcIdTokenAlgorithm = "RS256" | "PS256" | "ES256" | "EdDSA";
@@ -102,6 +103,7 @@ type RefreshMaterial = {
 type RotationOutcome =
   | { kind: "success"; tokens: SessionTokens }
   | { kind: "invalid" }
+  | { kind: "conflict" }
   | { kind: "reuse" };
 
 export class OidcAuthenticationError extends Error {
@@ -126,8 +128,17 @@ export class RefreshTokenReuseError extends Error {
   readonly code = "REFRESH_TOKEN_REUSE";
 
   constructor() {
-    super("Refresh token reuse was detected and all user sessions were revoked.");
+    super("Refresh token reuse was detected and its token family was revoked.");
     this.name = "RefreshTokenReuseError";
+  }
+}
+
+export class RefreshTokenRotationConflictError extends Error {
+  readonly code = "REFRESH_TOKEN_ROTATION_CONFLICT";
+
+  constructor() {
+    super("The refresh token was already rotated by another request.");
+    this.name = "RefreshTokenRotationConflictError";
   }
 }
 
@@ -367,8 +378,6 @@ export class OidcSessionService {
 
   async rotateRefreshToken(rawToken: string): Promise<SessionTokens> {
     requireRefreshTokenFormat(rawToken);
-    const now = this.now();
-    const replacement = createRefreshMaterial();
     const outcome = await this.database.transaction<RotationOutcome>(async (transaction) => {
       const selected = await transaction.query<RefreshTokenRow>(`
         SELECT id, family_id, user_id, expires_at, used_at, revoked_at
@@ -378,20 +387,28 @@ export class OidcSessionService {
       `, [hashSecret(rawToken)]);
       const current = selected.rows[0];
       if (current === undefined) return { kind: "invalid" };
+      const now = this.now();
 
+      if (current.revoked_at !== null || current.expires_at.getTime() <= now.getTime()) {
+        return { kind: "invalid" };
+      }
+      if (
+        current.used_at !== null &&
+        now.getTime() <= current.used_at.getTime() + refreshRotationGraceMs
+      ) {
+        return { kind: "conflict" };
+      }
       if (current.used_at !== null) {
         await transaction.query<IdRow>(`
           UPDATE refresh_tokens
           SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
-          WHERE user_id = $1
+          WHERE user_id = $1 AND family_id = $2
           RETURNING id
-        `, [current.user_id]);
+        `, [current.user_id, current.family_id]);
         return { kind: "reuse" };
       }
-      if (current.revoked_at !== null || current.expires_at.getTime() <= now.getTime()) {
-        return { kind: "invalid" };
-      }
 
+      const replacement = createRefreshMaterial();
       const accessToken = await this.signAccessToken(current.user_id, current.family_id, now);
       const marked = await transaction.query<IdRow>(`
         UPDATE refresh_tokens
@@ -430,6 +447,7 @@ export class OidcSessionService {
       };
     });
 
+    if (outcome.kind === "conflict") throw new RefreshTokenRotationConflictError();
     if (outcome.kind === "reuse") throw new RefreshTokenReuseError();
     if (outcome.kind === "invalid") throw new RefreshTokenAuthenticationError();
     return outcome.tokens;
