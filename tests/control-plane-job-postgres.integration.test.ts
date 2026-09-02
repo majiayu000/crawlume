@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { Pool } from "pg";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AuthenticatedProjectApiKey,
@@ -478,6 +478,76 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     }]);
   });
 
+  it.each([
+    {
+      skew: "ahead",
+      applicationClockOffsetMs: 365 * 24 * 60 * 60 * 1_000,
+      heartbeatDeadlineSeconds: 60,
+      expectedRecovered: 0,
+      expectedJobStatus: "running",
+      expectedLeaseStatus: "active",
+    },
+    {
+      skew: "behind",
+      applicationClockOffsetMs: -365 * 24 * 60 * 60 * 1_000,
+      heartbeatDeadlineSeconds: -1,
+      expectedRecovered: 1,
+      expectedJobStatus: "queued",
+      expectedLeaseStatus: "expired",
+    },
+  ] as const)(
+    "uses the PostgreSQL clock when the application clock is $skew",
+    async ({
+      applicationClockOffsetMs,
+      heartbeatDeadlineSeconds,
+      expectedRecovered,
+      expectedJobStatus,
+      expectedLeaseStatus,
+    }) => {
+      const storage = new PostgresControlPlaneDatabase(database!);
+      const now = await databaseClock(database!);
+      const jobs = new ControlPlaneJobService(storage, { now: () => now });
+      const created = await jobs.createJob(
+        fixtureProjectKey,
+        `job-sweeper-clock-${expectedLeaseStatus}`,
+        jobInput(`https://example.com/sweeper-clock-${expectedLeaseStatus}`),
+        { correlationId: `job-sweeper-clock-${expectedLeaseStatus}` },
+      );
+      const claim = await jobs.claimNext(fixtureWorker);
+      if (claim === null) throw new Error("The clock-skew Job was not claimed.");
+
+      await database!.query(`
+        UPDATE job_leases
+        SET claimed_at = clock_timestamp() - interval '2 minutes',
+          heartbeat_at = clock_timestamp() - interval '2 minutes',
+          heartbeat_deadline = clock_timestamp() + make_interval(secs => $2)
+        WHERE id = $1
+      `, [claim.lease.id, heartbeatDeadlineSeconds]);
+      const databaseNow = await databaseClock(database!);
+
+      vi.useFakeTimers({
+        now: new Date(databaseNow.getTime() + applicationClockOffsetMs),
+        toFake: ["Date"],
+      });
+      let recovered: number;
+      try {
+        recovered = await new ControlPlaneJobLeaseSweeper(storage).sweep();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      expect(recovered).toBe(expectedRecovered);
+      await expect(database!.query<{ job_status: string; lease_status: string }>(`
+        SELECT jobs.status AS job_status, job_leases.status AS lease_status
+        FROM jobs
+        INNER JOIN job_leases ON job_leases.job_id = jobs.id
+        WHERE jobs.id = $1
+      `, [created.id])).resolves.toMatchObject({
+        rows: [{ job_status: expectedJobStatus, lease_status: expectedLeaseStatus }],
+      });
+    },
+  );
+
   it("lets two sweepers recover one expired lease and fences generation one after reclaim", async () => {
     const storage = new PostgresControlPlaneDatabase(database!);
     const now = await databaseClock(database!);
@@ -491,17 +561,24 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     );
     const first = await jobs.claimNext(fixtureWorker);
     if (first === null) throw new Error("The first PostgreSQL generation was not claimed.");
+    await database!.query(`
+      UPDATE job_leases
+      SET claimed_at = clock_timestamp() - interval '2 minutes',
+        heartbeat_at = clock_timestamp() - interval '2 minutes',
+        heartbeat_deadline = clock_timestamp() - interval '1 second'
+      WHERE id = $1
+    `, [first.lease.id]);
 
     const rendezvous = new PostgresTransactionRendezvous(database!, 2);
     const competingStorage = new RendezvousControlPlaneDatabase(
       storage,
       rendezvous,
-      (statement) => statement.includes("WITH candidates AS ("),
+      (statement) => statement.includes("candidates AS ("),
     );
     const sweepNow = new Date(now.getTime() + 31_000);
     const recovered = await Promise.all([
-      new ControlPlaneJobLeaseSweeper(competingStorage, { now: () => sweepNow }).sweep(),
-      new ControlPlaneJobLeaseSweeper(competingStorage, { now: () => sweepNow }).sweep(),
+      new ControlPlaneJobLeaseSweeper(competingStorage).sweep(),
+      new ControlPlaneJobLeaseSweeper(competingStorage).sweep(),
     ]);
 
     expectTwoBackends(rendezvous);
@@ -570,9 +647,14 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     }]);
   });
 
-  it.each(["heartbeat", "complete"] as const)(
-    "%s and an expired-lease sweep produce one legal winner",
-    async (operation) => {
+  it.each([
+    { operation: "heartbeat", leaseState: "active" },
+    { operation: "heartbeat", leaseState: "expired" },
+    { operation: "complete", leaseState: "active" },
+    { operation: "complete", leaseState: "expired" },
+  ] as const)(
+    "$operation and a sweep respect an $leaseState lease",
+    async ({ operation, leaseState }) => {
       const storage = new PostgresControlPlaneDatabase(database!);
       const now = await databaseClock(database!);
       const jobs = new ControlPlaneJobService(storage, { now: () => now });
@@ -584,17 +666,19 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
       );
       const claim = await jobs.claimNext(fixtureWorker);
       if (claim === null) throw new Error("The competing PostgreSQL Job was not claimed.");
-      if (operation === "heartbeat") {
-        await database!.query(`
-          UPDATE job_leases SET heartbeat_deadline = $2 WHERE id = $1
-        `, [claim.lease.id, new Date(now.getTime() + 10_000)]);
-      }
+      await database!.query(`
+        UPDATE job_leases
+        SET claimed_at = clock_timestamp() - interval '2 minutes',
+          heartbeat_at = clock_timestamp() - interval '2 minutes',
+          heartbeat_deadline = clock_timestamp() + make_interval(secs => $2)
+        WHERE id = $1
+      `, [claim.lease.id, leaseState === "expired" ? -1 : 60]);
 
       const rendezvous = new PostgresTransactionRendezvous(database!, 2);
       const competingStorage = new RendezvousControlPlaneDatabase(
         storage,
         rendezvous,
-        (statement) => statement.includes("WITH candidates AS (") ||
+        (statement) => statement.includes("candidates AS (") ||
           (operation === "heartbeat"
             ? statement.includes("UPDATE job_leases AS leases")
             : statement.includes("UPDATE job_leases AS leases SET status = 'completed'")),
@@ -609,9 +693,7 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
           resultCompleteness: "complete",
           errorCode: null,
         });
-      const sweepOperation = new ControlPlaneJobLeaseSweeper(competingStorage, {
-        now: () => new Date(now.getTime() + (operation === "heartbeat" ? 11_000 : 31_000)),
-      }).sweep();
+      const sweepOperation = new ControlPlaneJobLeaseSweeper(competingStorage).sweep();
       const [workerOutcome, sweepOutcome] = await Promise.allSettled([
         workerOperation,
         sweepOperation,
@@ -620,11 +702,18 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
       expectTwoBackends(rendezvous);
       expect(sweepOutcome).toMatchObject({ status: "fulfilled" });
       if (sweepOutcome.status !== "fulfilled") throw sweepOutcome.reason;
-      if (workerOutcome.status === "fulfilled") {
+      if (leaseState === "active") {
+        expect(workerOutcome).toMatchObject({ status: "fulfilled" });
         expect(sweepOutcome.value).toBe(0);
       } else {
+        expect(workerOutcome).toMatchObject({ status: "rejected" });
+        if (workerOutcome.status === "fulfilled") {
+          throw new Error("An expired lease unexpectedly won the Worker operation race.");
+        }
         expect(workerOutcome.reason).toBeInstanceOf(LeaseFencedError);
-        expect(sweepOutcome.value).toBe(1);
+        expect([0, 1]).toContain(sweepOutcome.value);
+        const followUpRecovered = await new ControlPlaneJobLeaseSweeper(storage).sweep();
+        expect(sweepOutcome.value + followUpRecovered).toBe(1);
       }
       const state = await database!.query<{ job_status: string; lease_status: string }>(`
         SELECT jobs.status AS job_status, job_leases.status AS lease_status

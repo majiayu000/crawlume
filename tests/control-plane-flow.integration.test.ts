@@ -118,8 +118,8 @@ class FlowDatabase implements ControlPlaneDatabase {
     }
 
     if (sql.startsWith("SELECT EXISTS(")) return [{ active: true }];
-    if (sql.startsWith("WITH candidates AS (") ||
-        sql.startsWith("UPDATE jobs SET status = 'failed', error_code = 'JOB_DEADLINE_EXCEEDED'")) {
+    if (sql.includes("candidates AS (") ||
+        sql.includes("UPDATE jobs SET status = 'failed', error_code = 'JOB_DEADLINE_EXCEEDED'")) {
       return [];
     }
 

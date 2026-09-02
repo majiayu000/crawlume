@@ -711,18 +711,16 @@ describe("control-plane Job lease recovery", () => {
       { rows: [{ id: "job-a" }, { id: "job-b" }] },
       { rows: [] },
     ]);
-    const sweeper = new ControlPlaneJobLeaseSweeper(database, {
-      now: () => new Date(jobNow),
-    });
+    const sweeper = new ControlPlaneJobLeaseSweeper(database);
 
     await expect(sweeper.sweep()).resolves.toBe(2);
 
     expect(database.transactions).toBe(1);
     expect(database.calls).toHaveLength(2);
-    expect(database.calls[0]?.parameters).toEqual([null, jobNow]);
+    expect(database.calls[0]?.parameters).toEqual([null]);
     expect(database.calls[0]?.statement).toContain("leases.status = 'active'");
     expect(database.calls[0]?.statement).toContain(
-      "leases.heartbeat_deadline <= $2 OR leases.lease_deadline <= $2",
+      "leases.heartbeat_deadline <= execution_clock.now",
     );
     expect(database.calls[0]?.statement).toContain("FOR UPDATE OF leases SKIP LOCKED");
     expect(database.calls[0]?.statement).toContain(
@@ -736,7 +734,13 @@ describe("control-plane Job lease recovery", () => {
       "jobs.id = expired.job_id AND jobs.project_id = expired.project_id",
     );
     expect(database.calls[0]?.statement).toContain("jobs.status IN ('assigned', 'running')");
-    expect(database.calls[1]?.parameters).toEqual([null, jobNow]);
+    expect(database.calls[0]?.statement).toContain(
+      "leases.lease_deadline <= execution_clock.now",
+    );
+    expect(database.calls[1]?.parameters).toEqual([null]);
+    expect(database.calls[1]?.statement).toContain(
+      "jobs.deadline_at <= execution_clock.now",
+    );
   });
 });
 

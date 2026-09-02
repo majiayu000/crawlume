@@ -260,7 +260,7 @@ async function waitForSweepBlock(
         SELECT 1 FROM pg_stat_activity
         WHERE datname = current_database()
           AND application_name = $1
-          AND query LIKE '%WITH candidates AS (%'
+          AND query LIKE '%candidates AS (%'
           AND wait_event_type = 'Lock'
           AND cardinality(pg_blocking_pids(pid)) > 0
       ) AS waiting
@@ -403,6 +403,13 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
       );
       const claim = await jobs.claimNext(worker);
       if (claim === null) throw new Error("The PostgreSQL Job was not claimed.");
+      await database!.query(`
+        UPDATE job_leases
+        SET claimed_at = clock_timestamp() - interval '2 minutes',
+          heartbeat_at = clock_timestamp() - interval '2 minutes',
+          heartbeat_deadline = clock_timestamp() - interval '1 second'
+        WHERE id = $1
+      `, [claim.lease.id]);
 
       const gate = transition === "pause" ? 1 : 2;
       await installJobUpdateGate(database!, created.id, gate);
@@ -415,9 +422,7 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
           : jobs.cancel(projectKey, created.id);
         await waitForAdvisoryWaiter(monitor!, gate);
 
-        const sweepOperation = new ControlPlaneJobLeaseSweeper(storage, {
-          now: () => new Date(now.getTime() + 31_000),
-        }).sweep();
+        const sweepOperation = new ControlPlaneJobLeaseSweeper(storage).sweep();
         const observationController = new AbortController();
         const sweepBlocked = waitForSweepBlock(monitor!, observationController.signal);
         await Promise.race([sweepOperation.then(() => "settled" as const), sweepBlocked]);
@@ -652,9 +657,7 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
         rows: [{ leases: "0", status: "queued" }],
       });
 
-      await new ControlPlaneJobLeaseSweeper(storage, {
-        now: () => new Date(deadline.getTime() + 1),
-      }).sweep();
+      await new ControlPlaneJobLeaseSweeper(storage).sweep();
       await expect(database!.query<{ status: string; error_code: string }>(`
         SELECT status, error_code FROM jobs WHERE id = $1
       `, [created.id])).resolves.toMatchObject({

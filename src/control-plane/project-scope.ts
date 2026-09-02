@@ -547,7 +547,7 @@ export class ControlPlaneJobService {
     const now = this.now();
     return this.database.transaction(async (transaction) => {
       await this.requireActiveWorkerSession(transaction, identity);
-      await recoverExpiredJobLeases(transaction, identity.projectId, now);
+      await recoverExpiredJobLeases(transaction, identity.projectId);
 
       const selected = await transaction.query<ControlPlaneJobRow>(`
         WITH execution_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
