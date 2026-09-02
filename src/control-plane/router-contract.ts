@@ -73,11 +73,6 @@ export const projectApiKeyRouteDefinitions = [
   },
 ] as const;
 
-export const projectApiKeyRouterOperations = [
-  ...projectApiKeyRouteDefinitions[0].operations,
-  ...projectApiKeyRouteDefinitions[1].operations,
-];
-
 export const workerRouteDefinitions = [
   {
     pattern: new RegExp(`^/v1/workers/${uuidPath}/claims$`, "u"),
@@ -119,3 +114,8 @@ export const workerRouteDefinitions = [
 export const workerRouterOperations = workerRouteDefinitions.map(
   ({ method, operationId, path }) => ({ method, operationId, path }),
 );
+
+export const controlPlaneRouterOperations = Object.freeze([
+  ...projectJobRouterOperations,
+  ...workerRouterOperations,
+]);

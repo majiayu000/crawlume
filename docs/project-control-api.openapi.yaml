@@ -281,6 +281,7 @@ paths:
   /projects/{project_id}/api-keys:
     post:
       operationId: createProjectApiKey
+      x-status: Planned
       summary: Create a Project API Key and reveal its Secret once
       security:
         - HumanAccessToken: []
@@ -336,6 +337,7 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
     get:
       operationId: listProjectApiKeys
+      x-status: Planned
       summary: List API Key metadata without Secrets
       security:
         - HumanAccessToken: []
@@ -384,6 +386,7 @@ paths:
   /projects/{project_id}/api-keys/{key_id}:
     delete:
       operationId: revokeProjectApiKey
+      x-status: Planned
       summary: Revoke one API Key in the authenticated user's Project
       security:
         - HumanAccessToken: []

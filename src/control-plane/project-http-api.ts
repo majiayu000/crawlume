@@ -28,7 +28,10 @@ import {
   type CreateControlPlaneJobInput,
   type ControlPlaneJobService,
 } from "./project-scope.js";
-import { projectJobRouteDefinitions } from "./router-contract.js";
+import {
+  controlPlaneRouterOperations,
+  projectJobRouteDefinitions,
+} from "./router-contract.js";
 
 type ProjectJobHttpServices = Readonly<{
   authenticate(rawKey: string, context: AuditContext): Promise<AuthenticatedProjectApiKey>;
@@ -465,6 +468,8 @@ export class ProjectJobHttpApi {
 }
 
 export class ControlPlaneHttpApi {
+  static readonly routerOperations = controlPlaneRouterOperations;
+
   constructor(
     private readonly projects: Pick<ProjectJobHttpApi, "handle">,
     private readonly workers: Readonly<{
