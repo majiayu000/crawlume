@@ -2,8 +2,9 @@
 
 日期：2026-09-02
 范围：对照 `docs/spec.md`、专项规范和当前代码，只记录实现错误，不评价架构选型。
-基线：`fix/crawl-recovery-ssrf-boundaries`（`7f0b3f0`）+ 当前未提交控制面与 Wave 0 工作树。
-方法：原始问题来自静态合同对照；2026-09-03 的状态复核以当前源码和 Wave 0 fresh Gate 为准。
+原始基线：`fix/crawl-recovery-ssrf-boundaries`（`7f0b3f0`）+ 当时未提交的控制面与 Wave 0 工作树。
+当前复核基线：Wave 1 内容 checkpoint `2b74175df3be3ed08555d497b2a06d1a066147c6`。
+方法：原始问题来自静态合同对照；2026-09-03 的状态复核以当前源码、真实 PostgreSQL Gate 和全量 fresh Gate 为准。
 
 状态标签：
 
@@ -26,11 +27,11 @@
 
 1. 把 Frontier 页 UUID 当成 Attempt Ledger 的 `requestId`，优雅停机后把「中断」重放成「这页已经失败」。
 2. 直连 HTTP 在 connect 时钉住公网 IP，代理和浏览器只在发请求前做一次 DNS，连接时再解析。
-3. 未提交控制面把 `assigned` 和 `running` 拆开，claim 之后不能直接 complete；challenge 先消耗再验签。
+3. Wave 0 前的控制面把 `assigned` 和 `running` 拆开，claim 之后不能直接 complete；challenge 先消耗再验签。
 
 SIGKILL 那条 E2E 是绿的，所以「重启可恢复」容易被当成已经证明。它只覆盖进程被杀、来不及写 Ledger 的路径，不覆盖正常停 MCP。
 
-2026-09-03 复核：L1、L2、L3、L5 已在当前工作树解决；L4 与 C1–C4 仍开放。下文保留已解决问题的原始分析，作为修复依据和历史记录。
+2026-09-03 Wave 1 集成复核：L1、L2、L3、L5 与 C1–C4 已解决；L4 仍开放。C1–C4 已有真实 PostgreSQL 生命周期、并发、锁和回滚证据。下文保留已解决问题的原始分析，作为修复依据和历史记录。
 
 ---
 
@@ -43,12 +44,12 @@ SIGKILL 那条 E2E 是绿的，所以「重启可恢复」容易被当成已经�
 | L3 | High | Resolved | 浏览器 SSRF | Browser 已统一经由 policy proxy，授权重定向边界已有回归测试 |
 | L4 | Medium | Confirmed | robots | `robots.txt` 任意 200 body 都当规则，软 404 HTML 等于全放行 |
 | L5 | Medium | Resolved | RSL 审计 | 成功审计已移动到 cache/index/terminal commit 之前 |
-| C1 | High | Confirmed | 控制面 Job | `claim` 写成 `assigned`，`complete` 要求 `running` |
-| C2 | High | Confirmed | 控制面 Job | 过期 lease 只在下一次 `claimNext` 回收 |
-| C3 | Medium | Confirmed | Worker 会话 | challenge 先 `consumed_at` 再验签，失败也烧掉一次性挑战 |
-| C4 | Medium | Confirmed | OIDC | 并发 refresh 被当成 token 重用，撤销该用户全部 family |
+| C1 | High | Resolved | 控制面 Job | claim 在同一事务进入 running，可不经 heartbeat 直接提交 |
+| C2 | High | Resolved | 控制面 Job | 独立 sweeper 已接入 runtime，过期 lease 不再依赖下一次 claim |
+| C3 | Medium | Resolved | Worker 会话 | challenge 验签、消费和 Session 创建已原子化 |
+| C4 | Medium | Resolved | OIDC | 并发 refresh 返回 conflict，真实 reuse 只撤销对应 family |
 
-控制面已有 `pg`、PostgreSQL Pool 适配器、独立 HTTP/HTTPS listener、Project Job/Worker Router，以及尚未接入总 Router 的 API Key HTTP 模块。仍缺 migration runner、schema-version gate、真实 PostgreSQL migration/concurrency harness，以及 OIDC、Organization、API Key 管理和 Worker bootstrap 的总 Router 接线。当前脚本数据库测试不能证明 C1–C4 的真实 PostgreSQL 行为。
+控制面现已有 migration runner、schema version/checksum gate、正式启动前迁移，以及 PostgreSQL 16 migration/concurrency harness。Project Job/Worker Router 已接线；API Key HTTP operation 仍明确标为 Planned，OIDC、Organization、API Key 管理和 Worker bootstrap 的总 Router 接线仍未完成。
 
 ---
 
@@ -282,11 +283,13 @@ HTML 软 404、JSON 错误页、WAF 挑战页被当成规则。parser 通常解�
 
 ---
 
-## 4. 未提交控制面
+## 4. 控制面（Wave 1）
 
-以下文件目前不在 `main`：`src/control-plane/`、`migrations/control-plane/`、`tests/control-plane-*.ts`。领域模型本身不差；问题是生命周期和测试方式。
+这些路径已提交到当前功能分支。以下代码和分析描述修复前行为，保留作历史依据。
 
-### C1 · High · Worker 必须先 heartbeat 才能 complete
+### C1 · High · Resolved · Worker 必须先 heartbeat 才能 complete
+
+当前状态：claim 在同一事务把 Job 置为 running；真实 PostgreSQL 生命周期覆盖无 heartbeat 的 publication/complete。以下保留修复前分析。
 
 `claimNext` 把 Job 写成 `assigned`：
 
@@ -312,7 +315,9 @@ claim 时写成 `running`，或 complete/结果提交允许 `status IN ('assigne
 
 ---
 
-### C2 · High · 过期 lease 只在下一次 claim 时回收
+### C2 · High · Resolved · 过期 lease 只在下一次 claim 时回收
+
+当前状态：独立非重叠 sweeper 已接入 runtime；启动首轮失败不监听，周期失败进入 fatal shutdown，真实 PostgreSQL 覆盖恢复、重领和竞态。以下保留修复前分析。
 
 `recoverExpiredJobLeases` 只从 `claimNext` 调用。heartbeat、complete、pause、独立 sweeper 都不会跑它。该 Project 若没有下一次 claim，Job 会停在 `assigned`/`running`，lease 行已过期。ADR 要求过期 lease 自行按原 placement 重新入队。
 
@@ -322,7 +327,9 @@ heartbeat/complete 前回收；或短周期 sweeper。pause/cancel 已在同事�
 
 ---
 
-### C3 · Medium · 一次性 challenge 在验签前就被消耗
+### C3 · Medium · Resolved · 一次性 challenge 在验签前就被消耗
+
+当前状态：challenge 行在事务内锁定，验签后原子消费并创建 Session；坏签名、写失败和并发只成功一次均有真实 PostgreSQL 证据。以下保留修复前分析。
 
 ```596:620:src/control-plane/api-key-service.ts
     const consumed = await this.database.query<...>(`
@@ -341,7 +348,9 @@ heartbeat/complete 前回收；或短周期 sweeper。pause/cancel 已在同事�
 
 ---
 
-### C4 · Medium · 并发 refresh 被当成盗用
+### C4 · Medium · Resolved · 并发 refresh 被当成盗用
+
+当前状态：5 秒窄窗口内的重叠请求返回 rotation conflict，不签发也不撤销；窗口外 reuse 只撤销对应 family。真实 PostgreSQL 覆盖并发、reuse 和回滚。以下保留修复前分析。
 
 `rotateRefreshToken` 在 `used_at !== null` 时撤销该用户全部 refresh family：
 
@@ -373,7 +382,7 @@ heartbeat/complete 前回收；或短周期 sweeper。pause/cancel 已在同事�
 | 用户取消 crawl | `commitStopped`，页不重新入队 |
 | SIGKILL 恢复 | 来不及写 Ledger，页可重新领取；E2E 覆盖此路径 |
 | HTTP→Browser 升级 | `after-invalid` 仅对 `SHELL_ONLY` / `INCOMPLETE_CONTENT`，与 spec 一致 |
-| 控制面 HTTP / `pg` | 已有 `pg` Pool、listener 和 Project Job/Worker Router；其余 Router 接线及真实 PostgreSQL Gate 仍未完成 |
+| 控制面 HTTP / `pg` | 已有 migration runner、PostgreSQL 16 Gate、listener 和 Project Job/Worker Router；API Key/OIDC/Organization/Worker bootstrap 总 Router 接线仍未完成 |
 
 Frontier 本地 lease 在 complete 时不检查 `lease_expires_at_ms`。测试把过期后仍可 heartbeat/commit 写成允许，单数据目录单 worker 下可解释为抖动容忍。不单独开编号；若以后多 worker 共库，应再审。
 
@@ -381,28 +390,26 @@ Frontier 本地 lease 在 complete 时不检查 `lease_expires_at_ms`。测试�
 
 ## 6. 建议处理
 
-L1、L2、L3、L5 已完成；当前剩余处理顺序如下。
+L1、L2、L3、L5 与 C1–C4 已完成；当前唯一仍开放的编号问题是 L4。
 
 | 阶段 | 项 | 依赖 | 完成标准 |
 |---|---|---|---|
 | 1 | L4 | 无 | robots 非文本 200 失败关闭 |
-| 2 | C1、C2 | 最好有真 PostgreSQL | claim→complete 不强制中间 heartbeat；过期 lease 不依赖下一次 claim |
-| 3 | C3、C4 | C1 之后即可 | 坏签名不消耗 challenge；并发 refresh 不全局登出 |
 
-Wave 0 已完成 L1/L2/L3/L5 的聚焦回归；最终全量 Gate 由 W0-05 串行执行。相关聚焦命令包括：
+Wave 0 已完成 L1/L2/L3/L5 的聚焦回归；Wave 1 又完成 C1–C4、真实 PostgreSQL 与合同 Gate。相关聚焦命令包括：
 
 ```text
 pnpm check
 pnpm test -- tests/e2e/crawl-recovery.e2e.test.ts tests/frontier-store.test.ts tests/attempt-ledger.test.ts
 ```
 
-现有单元和脚本数据库测试无法证明真实 PostgreSQL 的 migration、锁和并发行为；C1–C4 仍需真实 PostgreSQL integration harness。
+`pnpm test:postgres` 已覆盖 migration、Job 全生命周期与锁序、应用时钟偏移下的数据库时钟 fencing，以及 Auth 并发和回滚；Wave 1 checkpoint 的专用 PostgreSQL Gate 为 35/35。
 
 ---
 
 ## 7. 本文不覆盖
 
 - 架构是否该上云、要不要多租户、垂直搜索是否算搜索引擎。
-- 历史 Nightly 280/280 是否仍绑定当前 HEAD（证据过期，不是代码 bug）；当前发现集为 68 个测试文件、637 个用例。
+- 历史 Nightly 280/280 是否仍绑定当前 HEAD（证据过期，不是代码 bug）；当前全量 Gate 为 76 个测试文件，其中 72 个文件、690 个用例通过，4 个 PostgreSQL 文件、35 个用例由专用 `test:postgres` Gate 另行真实执行并通过。
 - 未跑的 flaky、性能、30 万页容量。
 - 完整的控制面 OpenAPI/Router 字段级 parity；Project Job 和 Worker HTTP 已接线，API Key HTTP 模块尚未进入总 Router，其余控制面 HTTP 仍未完成。

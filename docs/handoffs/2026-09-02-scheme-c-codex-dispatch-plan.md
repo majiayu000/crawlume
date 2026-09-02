@@ -69,8 +69,9 @@
 
 - 当前分支：`fix/crawl-recovery-ssrf-boundaries`
 - Wave 0 内容 checkpoint：`354f0217c7e47cc9394f1efd988b786e158021cf`
-- 控制面主体、Wave 0 修复和测试已进入该 checkpoint，可从该 SHA 创建独立 Worker worktree。
-- 该 checkpoint 的 Node 25.9 `check`、`build` 和串行 637-test Gate 已通过。
+- Wave 1 内容 checkpoint：`2b74175df3be3ed08555d497b2a06d1a066147c6`
+- 控制面主体、Wave 0 修复和 Wave 1 基础修复均已进入对应 checkpoint，可从最新 SHA 创建下一波独立 Worker worktree。
+- Wave 1 checkpoint 的 Node 25.9 `test:postgres` 35/35、`check`、`build` 和串行全量 690 passed Gate 已通过；全量中的 35 个条件式 PostgreSQL 用例已由专用 Gate 真实执行。
 
 ### 3.2 已存在能力
 
@@ -79,8 +80,11 @@
 - Job、Lease、Event、Publication、Artifact metadata、Audit 服务。
 - Project Job HTTP API 和 Worker HTTP API。
 - PostgreSQL Pool 适配器和 `start:control-plane`。
+- migration runner、schema checksum/version gate 和 PostgreSQL 16 integration harness。
+- 独立 Lease sweeper、pause/resume、数据库时钟 fencing 和真实并发/恢复测试。
+- OpenAPI YAML 语义解析与实际挂载 Router parity Gate。
 - 两份 OpenAPI 文档。
-- 118 个控制面专项测试。
+- 171 个非 PostgreSQL 控制面专项测试和 35 个真实 PostgreSQL 测试。
 
 ### 3.3 当前 Wave 0 Gate 状态
 
@@ -97,12 +101,18 @@
 
 - API Key HTTP 模块已实现，但尚未接入 `ControlPlaneHttpApi` 和 server 总 Router。
 - OIDC、Organization、API Key 管理和 Worker bootstrap HTTP 未接线。
-- 没有真实 PostgreSQL migration/concurrency 测试。
-- 没有 migration runner 或 schema version gate。
 - 没有 Remote Worker 客户端和现有 Reader Runtime 适配。
-- Claim 后必须 heartbeat 才能 complete。
-- 过期 Lease 依赖下一次 claim 才回收。
 - Public Worker、Object Store、SDK、Webhook、C 端产品和运营闭环尚未形成。
+
+### 3.5 当前 Wave 1 Gate 状态
+
+| ID | 当前证据 | 状态 |
+|---|---|---|
+| W1-PG | PostgreSQL 16 专用 Gate：Job 18、DB 8、Auth 9，共 35/35 | Passing |
+| W1-CONTROL | 非 PostgreSQL 控制面专项 171/171 | Passing |
+| W1-TS | Node 25.9 `pnpm check` | Passing |
+| W1-BUILD | Node 25.9 `pnpm build` | Passing |
+| W1-FULL | 76 files：72 passed、4 条件式 PG files skipped；690 passed、35 PG tests 由 W1-PG 覆盖 | Passing |
 
 ## 4. 协作角色
 
@@ -158,7 +168,7 @@ Reviewer 默认只读，不与实现 Worker 共用任务上下文。
 
 ### 5.1 Wave 0 之前
 
-当前未提交控制面代码是所有后续任务的共同输入。不得立即创建多个 Agent 在同一目录写文件。
+Wave 0 开始前，未提交控制面代码是所有后续任务的共同输入，因此当时不得立即创建多个 Agent 在同一目录写文件。该限制已通过 Wave 0 checkpoint 满足；后续 Wave 仍必须使用独立 worktree。
 
 必须串行完成：
 
@@ -706,12 +716,13 @@ Reviewer 对每个提交至少核对：
 ```bash
 git status --short --branch
 git diff --check
+fnm exec --using=25.9.0 pnpm test:postgres
 fnm exec --using=25.9.0 pnpm check
 fnm exec --using=25.9.0 pnpm build
 fnm exec --using=25.9.0 pnpm vitest run --maxWorkers=1
 ```
 
-当真实 PostgreSQL harness 建立后，还必须增加该仓库实际提供的 migration/integration 命令。命令应由 DB-02 在 package scripts 或测试说明中固定，不能依赖口头步骤。
+`test:postgres` 由 DB-02 固定在 package scripts 中，启动隔离 PostgreSQL 16 容器并串行运行 DB、Auth 和 Job integration suites。
 
 Gate 失败时：
 
@@ -732,9 +743,17 @@ Coordinator 在自己的集成分支维护以下表。当前值如下：
 | W0-03 | Coordinator | 7f0b3f0 | Done | 1d | 2026-09-03 | 2026-09-03 | target 1.268s; browser 3/3; proxy 4/4; controlled case 1/1 | - | 354f021 | no-op verified; checkpoint Gate passed |
 | W0-04 | Coordinator | 7f0b3f0 | Done | 0.5d | 2026-09-03 | 2026-09-03 | stale audit and implementation claims corrected | - | 354f021 | reviewer accepted; checkpointed |
 | W0-05 | Coordinator | 7f0b3f0 | Done | 0.5d | 2026-09-03 | 2026-09-03 | check/build passed; serial full Gate 68 files, 637/637 | - | 354f021 | data/security review accepted; checkpointed |
-| DB-01 | unassigned | 354f021 | Ready | 1d | - | - | Wave 0 checkpoint available | - | - | - |
-| JOB-01 | unassigned | 354f021 | Ready | 1d | - | - | Wave 0 checkpoint available | - | - | - |
-| AUTH-01 | unassigned | 354f021 | Ready | 1d | - | - | Wave 0 checkpoint available | - | - | - |
+| DB-01 | DB Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | ordered/checksummed runner; startup failure does not listen | - | f337e5a, 55faed0 | accepted; checkpoint Gate passed |
+| DB-02 | DB Lane | 4908f1d | Done | 2d | 2026-09-03 | 2026-09-03 | PostgreSQL 16 migrations, composite FK, audit trigger, rollback | - | c72644c | accepted; checkpoint Gate passed |
+| DB-03 | DB Lane | c72644c | Done | 1d | 2026-09-03 | 2026-09-03 | real concurrent claim/sequence/idempotency and runtime restart | - | 6a5059b, 7f5a4e0 | accepted; checkpoint Gate passed |
+| JOB-01 | Job Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | claim enters running; complete without heartbeat; fencing retained | - | 70a6a97 | accepted; checkpoint Gate passed |
+| JOB-02 | Job Lane | 4908f1d | Done | 1.5d | 2026-09-03 | 2026-09-03 | independent serial sweeper; fatal and close lifecycle integrated | - | 2e7ff07, 362900d, c73b3fc, 76f85c0, dbede82 | accepted; checkpoint Gate passed |
+| JOB-03 | Job Lane | 74b1385 | Done | 1d | 2026-09-03 | 2026-09-03 | real lifecycle, lock order, DB clock, generation and placement fencing | - | 1e57894, 4e9a0cf, a3c1250, 371238a, 39cd086, 2b74175 | accepted; DB clock-skew follow-up passed |
+| AUTH-01 | Auth Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | atomic challenge verification, consumption and Session creation | - | 4908f1d | accepted; human security review still required |
+| AUTH-02 | Auth Lane | 4908f1d | Done | 1.5d | 2026-09-03 | 2026-09-03 | concurrent rotation conflict; replay revokes one family | - | 93ff8ca | accepted; human security review still required |
+| AUTH-03 | Auth Lane | 93ff8ca | Done | 1d | 2026-09-03 | 2026-09-03 | real PG Enrollment/challenge/refresh locks and rollback | - | 74b1385 | accepted; human security review still required |
+| API-01 | Contract Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | YAML parse; 15 operations = 12 integrated + 3 Planned | - | 88aa476, 5dbc359 | accepted; checkpoint Gate passed |
+| API-02 | Contract Lane | c72644c | Done | 1d | 2026-09-03 | 2026-09-03 | pause/resume and transport/status/safe-integer contracts aligned | - | fb54952, d798390, 7fa6d89 | accepted; checkpoint Gate passed |
 
 不要让所有 Worker 在各自分支修改这张表。Worker 使用 handoff 消息回报，Coordinator 统一更新。
 
