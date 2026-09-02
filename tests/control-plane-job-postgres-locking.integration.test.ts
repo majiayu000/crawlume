@@ -487,7 +487,7 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
           "SELECT id FROM job_leases",
           1,
         );
-        await waitUntilDatabaseTime(monitor!, deadline);
+        await waitUntilDatabaseTime(monitor!, new Date(deadline.getTime() + 1));
         await blocker.query("COMMIT");
         transactionOpen = false;
 
@@ -597,7 +597,7 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
       );
       const claimOperation = staleJobs.claimNext(worker);
       await waitForAdvisoryWaiter(monitor!, gate);
-      await waitUntilDatabaseTime(monitor!, deadline);
+      await waitUntilDatabaseTime(monitor!, new Date(deadline.getTime() + 1));
       await blocker.query("SELECT pg_advisory_unlock(9303, $1)", [gate]);
       unlocked = true;
 
@@ -639,7 +639,7 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
       );
       const claimOperation = boundaryJobs.claimNext(worker);
       await waitForAdvisoryWaiter(monitor!, gate);
-      await waitUntilDatabaseTime(monitor!, deadline);
+      await waitUntilDatabaseTime(monitor!, new Date(deadline.getTime() + 1));
       await blocker.query("SELECT pg_advisory_unlock(9303, $1)", [gate]);
       unlocked = true;
 
