@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ControlPlaneJobLeaseSweeper } from "../src/control-plane/job-lease-recovery.js";
 import {
   ControlPlaneJobService,
   getScopedProject,
@@ -689,6 +690,41 @@ describe("control-plane Worker claim", () => {
     await expect(service.heartbeat(workerIdentity(), "lease-a", 1))
       .rejects.toEqual(new LeaseFencedError());
     expect(database.calls).toHaveLength(2);
+  });
+});
+
+describe("control-plane Job lease recovery", () => {
+  it("recovers expired leases without requiring a new Worker claim", async () => {
+    const database = new JobDatabase([
+      { rows: [{ id: "job-a" }, { id: "job-b" }] },
+      { rows: [] },
+    ]);
+    const sweeper = new ControlPlaneJobLeaseSweeper(database, {
+      now: () => new Date(jobNow),
+    });
+
+    await expect(sweeper.sweep()).resolves.toBe(2);
+
+    expect(database.transactions).toBe(1);
+    expect(database.calls).toHaveLength(2);
+    expect(database.calls[0]?.parameters).toEqual([null, jobNow]);
+    expect(database.calls[0]?.statement).toContain("leases.status = 'active'");
+    expect(database.calls[0]?.statement).toContain(
+      "leases.heartbeat_deadline <= $2 OR leases.lease_deadline <= $2",
+    );
+    expect(database.calls[0]?.statement).toContain("FOR UPDATE OF leases SKIP LOCKED");
+    expect(database.calls[0]?.statement).toContain(
+      "leases.id = candidates.id AND leases.project_id = candidates.project_id",
+    );
+    expect(database.calls[0]?.statement).toContain(
+      "leases.job_id = candidates.job_id AND leases.generation = candidates.generation",
+    );
+    expect(database.calls[0]?.statement).toContain("newer.generation > leases.generation");
+    expect(database.calls[0]?.statement).toContain(
+      "jobs.id = expired.job_id AND jobs.project_id = expired.project_id",
+    );
+    expect(database.calls[0]?.statement).toContain("jobs.status IN ('assigned', 'running')");
+    expect(database.calls[1]?.parameters).toEqual([null, jobNow]);
   });
 });
 

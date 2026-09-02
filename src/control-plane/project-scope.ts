@@ -11,6 +11,7 @@ import {
   type AuditContext,
   recordAuditEvent,
 } from "./organization-authorization.js";
+import { recoverExpiredJobLeases } from "./job-lease-recovery.js";
 
 export { controlPlaneJobTypes } from "./job-input.js";
 export type {
@@ -765,34 +766,4 @@ export class ControlPlaneJobService {
       return controlPlaneJob(job);
     });
   }
-}
-
-async function recoverExpiredJobLeases(
-  transaction: ControlPlaneQuery,
-  projectId: string,
-  now: Date,
-): Promise<void> {
-  await transaction.query<{ id: string }>(`
-    WITH expired AS (
-      UPDATE job_leases SET status = 'expired', finished_at = $2
-      WHERE project_id = $1 AND status = 'active'
-        AND (heartbeat_deadline <= $2 OR lease_deadline <= $2)
-      RETURNING job_id, project_id
-    )
-    UPDATE jobs SET
-      status = CASE WHEN jobs.deadline_at <= $2 THEN 'failed' ELSE 'queued' END,
-      error_code = CASE WHEN jobs.deadline_at <= $2 THEN 'JOB_DEADLINE_EXCEEDED' ELSE NULL END,
-      completed_at = CASE WHEN jobs.deadline_at <= $2 THEN $2 ELSE NULL END,
-      updated_at = $2
-    FROM expired
-    WHERE jobs.id = expired.job_id AND jobs.project_id = expired.project_id
-      AND jobs.status IN ('assigned', 'running')
-    RETURNING jobs.id
-  `, [projectId, now]);
-  await transaction.query<{ id: string }>(`
-    UPDATE jobs SET status = 'failed', error_code = 'JOB_DEADLINE_EXCEEDED',
-      completed_at = $2, updated_at = $2
-    WHERE project_id = $1 AND status = 'queued' AND deadline_at <= $2
-    RETURNING id
-  `, [projectId, now]);
 }
