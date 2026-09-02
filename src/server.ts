@@ -1,14 +1,580 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
+import { constants, realpathSync } from "node:fs";
+import { open } from "node:fs/promises";
+import {
+  createServer as createHttpServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type RequestListener,
+  type ServerResponse,
+} from "node:http";
+import {
+  createServer as createHttpsServer,
+  type ServerOptions as HttpsServerOptions,
+} from "node:https";
+import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { importPKCS8, importSPKI } from "jose";
+import { Pool, type PoolConfig } from "pg";
 
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import {
+  authenticateProjectApiKey,
+  WorkerIdentityService,
+  type WorkerIdentityConfig,
+} from "./control-plane/api-key-service.js";
+import {
+  JobResultService,
+  listProjectAuditEvents,
+} from "./control-plane/organization-authorization.js";
+import { WorkerHttpApi, type WorkerHttpResponse } from "./control-plane/organization-service.js";
+import { ControlPlaneHttpApi, ProjectJobHttpApi } from "./control-plane/project-http-api.js";
+import {
+  ControlPlaneJobService,
+  type ControlPlaneDatabase,
+  type ControlPlaneQuery,
+} from "./control-plane/project-scope.js";
 import { createMcpServer } from "./mcp.js";
+
+const workerBodyLimitBytes = 64 * 1024;
+const workerHeaderLimitBytes = 16 * 1024;
+const workerReceiveTimeoutMs = 10_000;
+const projectQueryPath = /^\/v1\/projects\/[^/]+\/(?:jobs\/[^/]+\/publications|audit-events)$/u;
+
+type WorkerTlsConfig = Readonly<{
+  key: NonNullable<HttpsServerOptions["key"]>;
+  cert: NonNullable<HttpsServerOptions["cert"]>;
+  ca?: HttpsServerOptions["ca"];
+}>;
+
+export type WorkerControlServerConfig = Readonly<{
+  host: string;
+  port: number;
+  tls: WorkerTlsConfig | null;
+}>;
+
+export type WorkerControlListener = Readonly<{
+  origin: string;
+  close(): Promise<void>;
+}>;
+
+class WorkerTransportError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "WorkerTransportError";
+  }
+}
+
+function validateWorkerListener(config: WorkerControlServerConfig): void {
+  if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65_535) {
+    throw new Error("Worker control server port must be an integer from 0 to 65535.");
+  }
+  if (config.host.trim() !== config.host || config.host.length === 0) {
+    throw new Error("Worker control server host must be a non-empty exact address.");
+  }
+  if (config.tls === null && config.host !== "127.0.0.1" && config.host !== "::1") {
+    throw new Error("Worker control server requires TLS outside an exact loopback address.");
+  }
+  if (config.tls !== null && (config.tls.key === undefined || config.tls.cert === undefined)) {
+    throw new Error("Worker control server TLS requires a runtime key and certificate.");
+  }
+}
+
+function distinctWorkerHeaders(request: IncomingMessage): IncomingHttpHeaders {
+  const headers: IncomingHttpHeaders = {};
+  for (const [name, values] of Object.entries(request.headersDistinct)) {
+    if (values === undefined) continue;
+    headers[name] = values.length === 1 ? values[0] : values;
+  }
+  return headers;
+}
+
+function singleHeader(headers: IncomingHttpHeaders, name: string): string | null {
+  const value = headers[name];
+  if (Array.isArray(value)) {
+    throw new WorkerTransportError(400, "HEADER_DUPLICATED", `The ${name} header is duplicated.`);
+  }
+  return typeof value === "string" ? value : null;
+}
+
+function declaredBodyLength(headers: IncomingHttpHeaders): number | null {
+  const value = singleHeader(headers, "content-length");
+  if (value === null) return null;
+  if (!/^(0|[1-9][0-9]*)$/u.test(value)) {
+    throw new WorkerTransportError(400, "CONTENT_LENGTH_INVALID", "Content-Length is invalid.");
+  }
+  const length = Number(value);
+  if (!Number.isSafeInteger(length)) {
+    throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
+  }
+  return length;
+}
+
+function isJsonContent(headers: IncomingHttpHeaders): boolean {
+  return singleHeader(headers, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() ===
+    "application/json";
+}
+
+async function readWorkerJson(
+  request: IncomingMessage,
+  headers: IncomingHttpHeaders,
+): Promise<unknown> {
+  const encoding = singleHeader(headers, "content-encoding");
+  if (encoding !== null && encoding.trim().toLowerCase() !== "identity") {
+    throw new WorkerTransportError(
+      415,
+      "CONTENT_ENCODING_UNSUPPORTED",
+      "Compressed control-plane request bodies are not accepted.",
+    );
+  }
+  if ((declaredBodyLength(headers) ?? 0) > workerBodyLimitBytes) {
+    request.resume();
+    throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
+  }
+  const chunks: Buffer[] = [];
+  let received = 0;
+  for await (const chunk of request) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    received += bytes.byteLength;
+    if (received > workerBodyLimitBytes) {
+      request.resume();
+      throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
+    }
+    chunks.push(bytes);
+  }
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new WorkerTransportError(400, "JSON_INVALID", "The request body is not valid UTF-8 JSON.", {
+      cause: error,
+    });
+  }
+}
+
+function transportProblem(
+  request: IncomingMessage,
+  status: number,
+  code: string,
+  detail: string,
+): WorkerHttpResponse {
+  const requestId = crypto.randomUUID();
+  const title = status === 413 ? "Payload Too Large"
+    : status === 415 ? "Unsupported Media Type"
+    : status === 500 ? "Internal Server Error"
+    : "Bad Request";
+  return {
+    status,
+    headers: {
+      "content-type": "application/problem+json",
+      "x-request-id": requestId,
+      ...(status === 413 ? { connection: "close" } : {}),
+    },
+    body: {
+      type: `https://api.diaoyan.example/errors/${code.toLowerCase().replaceAll("_", "-")}`,
+      title,
+      status,
+      detail,
+      instance: request.url ?? "",
+      code,
+      request_id: requestId,
+      retryable: false,
+    },
+  };
+}
+
+function writeWorkerResponse(
+  response: ServerResponse,
+  result: WorkerHttpResponse,
+  directTls: boolean,
+): void {
+  if (response.destroyed || response.writableEnded) return;
+  const payload = result.body === null ? null : Buffer.from(JSON.stringify(result.body));
+  response.writeHead(result.status, {
+    ...result.headers,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    ...(directTls ? { "strict-transport-security": "max-age=31536000" } : {}),
+    ...(payload === null ? {} : { "content-length": String(payload.byteLength) }),
+  });
+  response.end(payload);
+}
+
+function workerRequestListener(
+  api: Pick<WorkerHttpApi, "handle">,
+  controllers: Set<AbortController>,
+  directTls: boolean,
+): RequestListener {
+  return (request, response) => {
+    const controller = new AbortController();
+    controllers.add(controller);
+    const abort = () => controller.abort();
+    const close = () => {
+      if (!response.writableEnded) abort();
+    };
+    request.once("aborted", abort);
+    response.once("close", close);
+    void (async () => {
+      try {
+        const headers = distinctWorkerHeaders(request);
+        const requestTarget = request.url ?? "";
+        if (!requestTarget.startsWith("/")) {
+          throw new WorkerTransportError(400, "REQUEST_TARGET_INVALID", "The request target is invalid.");
+        }
+        const target = new URL(requestTarget, "http://worker.invalid");
+        if (target.search !== "" && !projectQueryPath.test(target.pathname)) {
+          throw new WorkerTransportError(400, "QUERY_UNSUPPORTED", "Control-plane API routes do not accept query parameters.");
+        }
+        if ((declaredBodyLength(headers) ?? 0) > workerBodyLimitBytes) {
+          request.resume();
+          throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
+        }
+        const body = isJsonContent(headers) ? await readWorkerJson(request, headers) : null;
+        if (!isJsonContent(headers)) request.resume();
+        const result = await api.handle({
+          method: request.method ?? "",
+          path: target.pathname,
+          query: target.search,
+          headers,
+          body,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) writeWorkerResponse(response, result, directTls);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        request.resume();
+        const result = error instanceof WorkerTransportError
+          ? transportProblem(request, error.status, error.code, error.message)
+          : transportProblem(request, 500, "INTERNAL_ERROR", "The control-plane request could not be read.");
+        writeWorkerResponse(response, result, directTls);
+      } finally {
+        controllers.delete(controller);
+        request.off("aborted", abort);
+        response.off("close", close);
+      }
+    })();
+  };
+}
+
+export async function startWorkerControlServer(
+  api: Pick<WorkerHttpApi, "handle">,
+  config: WorkerControlServerConfig,
+): Promise<WorkerControlListener> {
+  validateWorkerListener(config);
+  const controllers = new Set<AbortController>();
+  const listener = workerRequestListener(api, controllers, config.tls !== null);
+  const server = config.tls === null
+    ? createHttpServer({ maxHeaderSize: workerHeaderLimitBytes }, listener)
+    : createHttpsServer({
+      ...config.tls,
+      minVersion: "TLSv1.2",
+      honorCipherOrder: true,
+      maxHeaderSize: workerHeaderLimitBytes,
+    }, listener);
+  server.maxHeadersCount = 32;
+  server.headersTimeout = workerReceiveTimeoutMs;
+  server.requestTimeout = workerReceiveTimeoutMs;
+  server.keepAliveTimeout = 5_000;
+  server.on("clientError", (_error, socket) => {
+    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    const failed = (error: Error) => rejectListen(error);
+    server.once("error", failed);
+    server.listen(config.port, config.host, () => {
+      server.off("error", failed);
+      resolveListen();
+    });
+  });
+  const address = server.address() as AddressInfo;
+  const host = address.family === "IPv6" ? `[${address.address}]` : address.address;
+  return Object.freeze({
+    origin: `${config.tls === null ? "http" : "https"}://${host}:${address.port}`,
+    close: async () => {
+      for (const controller of controllers) controller.abort();
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => error === undefined ? resolveClose() : rejectClose(error));
+      });
+    },
+  });
+}
+
+export class PostgresControlPlaneDatabase implements ControlPlaneDatabase {
+  constructor(private readonly pool: Pool) {
+    pool.on("error", () => {
+      process.stderr.write("Control-plane PostgreSQL discarded a failed idle connection.\n");
+    });
+  }
+
+  async query<Row>(statement: string, parameters: readonly unknown[]): Promise<{ rows: Row[] }> {
+    const result = await this.pool.query(statement, [...parameters]);
+    return { rows: result.rows as Row[] };
+  }
+
+  async transaction<Result>(
+    operation: (transaction: ControlPlaneQuery) => Promise<Result>,
+  ): Promise<Result> {
+    const client = await this.pool.connect();
+    let began = false;
+    let releaseError: Error | true | undefined;
+    try {
+      await client.query("BEGIN");
+      began = true;
+      const transaction: ControlPlaneQuery = {
+        query: async <Row>(statement: string, parameters: readonly unknown[]) => {
+          const result = await client.query(statement, [...parameters]);
+          return { rows: result.rows as Row[] };
+        },
+      };
+      const result = await operation(transaction);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      if (began) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          releaseError = rollbackError instanceof Error ? rollbackError : true;
+          throw new AggregateError(
+            [error, rollbackError],
+            "The control-plane transaction and rollback both failed.",
+          );
+        }
+      }
+      throw error;
+    } finally {
+      if (releaseError === undefined) {
+        client.release();
+      } else {
+        client.release(releaseError);
+      }
+    }
+  }
+
+  async assertReady(): Promise<void> {
+    await this.query("SELECT 1", []);
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
+  }
+}
+
+export type ControlPlaneRuntimeConfig = Readonly<{
+  database: PoolConfig;
+  identity: WorkerIdentityConfig;
+  listener: WorkerControlServerConfig;
+}>;
+
+export type ControlPlaneRuntime = Readonly<{
+  origin: string;
+  close(): Promise<void>;
+}>;
+
+function requiredRuntimeValue(environment: NodeJS.ProcessEnv, name: string): string {
+  const value = environment[name];
+  if (value === undefined || value.length === 0) {
+    throw new Error(`${name} is required.`);
+  }
+  return value;
+}
+
+async function readRuntimeFile(path: string, name: string, privateFile: boolean): Promise<string> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    throw new Error(`${name} could not be opened as a regular non-symlink file.`, { cause: error });
+  }
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error(`${name} must be a regular file.`);
+    if (privateFile && (metadata.mode & 0o077) !== 0) {
+      throw new Error(`${name} must not grant permissions to group or other users.`);
+    }
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function controlPlanePoolConfig(
+  environment: NodeJS.ProcessEnv,
+): Promise<PoolConfig> {
+  const connectionString = requiredRuntimeValue(environment, "DIAOYAN_CONTROL_DATABASE_URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(connectionString);
+  } catch (error) {
+    throw new Error("DIAOYAN_CONTROL_DATABASE_URL must be a PostgreSQL URL.", { cause: error });
+  }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new Error("DIAOYAN_CONTROL_DATABASE_URL must use postgres or postgresql.");
+  }
+  for (const option of ["sslcert", "sslkey", "sslrootcert", "sslmode"] as const) {
+    if (parsed.searchParams.has(option)) {
+      throw new Error(
+        `DIAOYAN_CONTROL_DATABASE_URL must not contain ${option}; TLS is configured by the runtime.`,
+      );
+    }
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/gu, "");
+  const loopback = hostname === "127.0.0.1" || hostname === "::1";
+  const caPath = environment.DIAOYAN_CONTROL_DATABASE_CA_PATH;
+  const ca = caPath === undefined ? undefined
+    : await readRuntimeFile(caPath, "DIAOYAN_CONTROL_DATABASE_CA_PATH", false);
+  return {
+    connectionString,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+    enableChannelBinding: true,
+    ssl: loopback && ca === undefined ? false : {
+      rejectUnauthorized: true,
+      ...(ca === undefined ? {} : { ca }),
+    },
+  };
+}
+
+function controlPlanePort(environment: NodeJS.ProcessEnv): number {
+  const value = environment.DIAOYAN_CONTROL_PORT ?? "8787";
+  if (!/^(0|[1-9][0-9]{0,4})$/u.test(value)) {
+    throw new Error("DIAOYAN_CONTROL_PORT must be an integer from 0 to 65535.");
+  }
+  const port = Number(value);
+  if (port > 65_535) throw new Error("DIAOYAN_CONTROL_PORT must be an integer from 0 to 65535.");
+  return port;
+}
+
+export async function loadControlPlaneRuntimeConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<ControlPlaneRuntimeConfig> {
+  const privateKeyPem = await readRuntimeFile(
+    requiredRuntimeValue(environment, "DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH"),
+    "DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH",
+    true,
+  );
+  const publicKeyPem = await readRuntimeFile(
+    requiredRuntimeValue(environment, "DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH"),
+    "DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH",
+    false,
+  );
+  const tlsKeyPath = environment.DIAOYAN_CONTROL_TLS_KEY_PATH;
+  const tlsCertPath = environment.DIAOYAN_CONTROL_TLS_CERT_PATH;
+  if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
+    throw new Error("DIAOYAN_CONTROL_TLS_KEY_PATH and DIAOYAN_CONTROL_TLS_CERT_PATH are required together.");
+  }
+  const tls = tlsKeyPath === undefined || tlsCertPath === undefined ? null : {
+    key: await readRuntimeFile(tlsKeyPath, "DIAOYAN_CONTROL_TLS_KEY_PATH", true),
+    cert: await readRuntimeFile(tlsCertPath, "DIAOYAN_CONTROL_TLS_CERT_PATH", false),
+  };
+  return Object.freeze({
+    database: await controlPlanePoolConfig(environment),
+    identity: {
+      sessionTokenIssuer: requiredRuntimeValue(environment, "DIAOYAN_WORKER_SESSION_ISSUER"),
+      sessionTokenAudience: requiredRuntimeValue(environment, "DIAOYAN_WORKER_SESSION_AUDIENCE"),
+      sessionTokenPrivateKey: await importPKCS8(privateKeyPem, "EdDSA"),
+      sessionTokenPublicKey: await importSPKI(publicKeyPem, "EdDSA"),
+    },
+    listener: {
+      host: environment.DIAOYAN_CONTROL_HOST ?? "127.0.0.1",
+      port: controlPlanePort(environment),
+      tls,
+    },
+  });
+}
+
+export async function startControlPlaneRuntime(
+  config: ControlPlaneRuntimeConfig,
+): Promise<ControlPlaneRuntime> {
+  const database = new PostgresControlPlaneDatabase(new Pool(config.database));
+  try {
+    await database.assertReady();
+    const identity = new WorkerIdentityService(database, config.identity);
+    const jobs = new ControlPlaneJobService(database);
+    const results = new JobResultService(database);
+    const projectApi = new ProjectJobHttpApi({
+      authenticate: (rawKey, context) => authenticateProjectApiKey(database, rawKey, context),
+      createJob: jobs.createJob.bind(jobs),
+      getJob: jobs.getJob.bind(jobs),
+      cancelJob: jobs.cancel.bind(jobs),
+      listPublications: results.listPublications.bind(results),
+      listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
+    });
+    const workerApi = new WorkerHttpApi({ identity, jobs, results });
+    const listener = await startWorkerControlServer(
+      new ControlPlaneHttpApi(projectApi, workerApi),
+      config.listener,
+    );
+    let closed = false;
+    return Object.freeze({
+      origin: listener.origin,
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        let listenerError: unknown;
+        try {
+          await listener.close();
+        } catch (error) {
+          listenerError = error;
+        }
+        try {
+          await database.close();
+        } catch (databaseError) {
+          if (listenerError !== undefined) {
+            throw new AggregateError(
+              [listenerError, databaseError],
+              "The Worker listener and PostgreSQL pool both failed to close.",
+            );
+          }
+          throw databaseError;
+        }
+        if (listenerError !== undefined) throw listenerError;
+      },
+    });
+  } catch (error) {
+    try {
+      await database.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        "Control-plane startup and PostgreSQL cleanup both failed.",
+      );
+    }
+    throw error;
+  }
+}
+
+export async function controlPlaneMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const runtime = await startControlPlaneRuntime(await loadControlPlaneRuntimeConfig(environment));
+  process.stderr.write(`Diaoyan Worker control server listening on ${runtime.origin}\n`);
+  let closing = false;
+  const close = async (): Promise<void> => {
+    if (closing) return;
+    closing = true;
+    await runtime.close();
+  };
+  const closeForSignal = (): void => {
+    void close().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Diaoyan Worker control server shutdown failed: ${message}\n`);
+      process.exitCode = 1;
+    });
+  };
+  process.once("SIGINT", closeForSignal);
+  process.once("SIGTERM", closeForSignal);
+}
 
 export async function main(): Promise<void> {
   const app = createApp(loadConfig(), { runCrawlWorker: true });
@@ -32,9 +598,11 @@ export async function main(): Promise<void> {
 
 const entry = process.argv[1] === undefined ? "" : resolve(process.argv[1]);
 if (entry !== "" && realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))) {
-  main().catch((error: unknown) => {
+  const operation = process.argv[2] === "--control-plane" ? controlPlaneMain : main;
+  operation().catch((error: unknown) => {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    process.stderr.write(`diaoyan-web-reader failed: ${message}\n`);
+    const processName = operation === controlPlaneMain ? "diaoyan-control-plane" : "diaoyan-web-reader";
+    process.stderr.write(`${processName} failed: ${message}\n`);
     process.exitCode = 1;
   });
 }

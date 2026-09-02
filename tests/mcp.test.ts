@@ -2,16 +2,23 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DiaoyanApp } from "../src/app.js";
+import type { WorkerHttpApi, WorkerHttpResponse } from "../src/control-plane/organization-service.js";
 import { ReadError } from "../src/errors.js";
 import { createMcpServer } from "../src/mcp.js";
+import {
+  startWorkerControlServer,
+  type WorkerControlListener,
+} from "../src/server.js";
 import type { ReadPageResult } from "../src/types.js";
 
 const openClients: Client[] = [];
 const openServers: ReturnType<typeof createMcpServer>[] = [];
+const openWorkerListeners: WorkerControlListener[] = [];
 
 afterEach(async () => {
   await Promise.all(openClients.splice(0).map(async (client) => client.close()));
   await Promise.all(openServers.splice(0).map(async (server) => server.close()));
+  await Promise.all(openWorkerListeners.splice(0).map(async (listener) => listener.close()));
 });
 
 function result(): ReadPageResult {
@@ -556,5 +563,115 @@ describe("MCP server", () => {
     expect(searchStats.content).toEqual([
       expect.objectContaining({ type: "text", text: expect.stringContaining("INTERNAL_ERROR") }),
     ]);
+  });
+});
+
+function workerOk(body: unknown = { ok: true }): WorkerHttpResponse {
+  return {
+    status: 200,
+    headers: { "content-type": "application/json", "x-request-id": "request-a" },
+    body,
+  };
+}
+
+async function openWorkerServer(api: Pick<WorkerHttpApi, "handle">): Promise<WorkerControlListener> {
+  const listener = await startWorkerControlServer(api, {
+    host: "127.0.0.1",
+    port: 0,
+    tls: null,
+  });
+  openWorkerListeners.push(listener);
+  return listener;
+}
+
+describe("Worker control HTTP transport", () => {
+  it("refuses a non-loopback plaintext listener before binding", async () => {
+    const api = { handle: vi.fn(async () => workerOk()) };
+    await expect(startWorkerControlServer(api, {
+      host: "0.0.0.0",
+      port: 0,
+      tls: null,
+    })).rejects.toThrow("requires TLS outside an exact loopback address");
+    expect(api.handle).not.toHaveBeenCalled();
+  });
+
+  it("passes bounded JSON into the Worker API over a real loopback socket", async () => {
+    const handle = vi.fn(async (request: Parameters<WorkerHttpApi["handle"]>[0]) =>
+      workerOk({ path: request.path, body: request.body }));
+    const listener = await openWorkerServer({ handle });
+    const response = await fetch(`${listener.origin}/v1/workers/00000000-0000-4000-8000-000000000031/claims`, {
+      method: "POST",
+      headers: { authorization: "Bearer aaa.bbb.ccc", "content-type": "application/json" },
+      body: JSON.stringify({ wait_ms: 0 }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    await expect(response.json()).resolves.toEqual({
+      path: "/v1/workers/00000000-0000-4000-8000-000000000031/claims",
+      body: { wait_ms: 0 },
+    });
+    expect(handle.mock.calls[0]?.[0].signal?.aborted).toBe(false);
+  });
+
+  it("rejects malformed, compressed, query-bearing, and oversized requests before dispatch", async () => {
+    const handle = vi.fn(async () => workerOk());
+    const listener = await openWorkerServer({ handle });
+    const post = (suffix: string, body: string, headers: Record<string, string> = {}) => fetch(
+      `${listener.origin}/v1/job-leases/00000000-0000-4000-8000-000000000071/events${suffix}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body,
+      },
+    );
+
+    const malformed = await post("", "{");
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ code: "JSON_INVALID" });
+    const compressed = await post("", "{}", { "content-encoding": "gzip" });
+    expect(compressed.status).toBe(415);
+    await expect(compressed.json()).resolves.toMatchObject({ code: "CONTENT_ENCODING_UNSUPPORTED" });
+    const query = await post("?project_id=forged", "{}");
+    expect(query.status).toBe(400);
+    await expect(query.json()).resolves.toMatchObject({ code: "QUERY_UNSUPPORTED" });
+    const oversized = await post("", "x".repeat(65_537));
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toMatchObject({ code: "REQUEST_BODY_TOO_LARGE" });
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("propagates client disconnect to the long-poll AbortSignal", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolveStarted) => {
+      markStarted = resolveStarted;
+    });
+    let markAborted: (() => void) | undefined;
+    const aborted = new Promise<void>((resolveAborted) => {
+      markAborted = resolveAborted;
+    });
+    const handle = vi.fn(async (request: Parameters<WorkerHttpApi["handle"]>[0]) => {
+      receivedSignal = request.signal;
+      markStarted?.();
+      await new Promise<void>((resolveAbort) => request.signal?.addEventListener("abort", () => {
+        markAborted?.();
+        resolveAbort();
+      }, { once: true }));
+      return workerOk();
+    });
+    const listener = await openWorkerServer({ handle });
+    const controller = new AbortController();
+    const response = fetch(`${listener.origin}/v1/workers/00000000-0000-4000-8000-000000000031/claims`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort();
+    await expect(response).rejects.toMatchObject({ name: "AbortError" });
+    await aborted;
+    expect(receivedSignal?.aborted).toBe(true);
   });
 });

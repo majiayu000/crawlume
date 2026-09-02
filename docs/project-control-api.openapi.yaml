@@ -1,0 +1,911 @@
+openapi: 3.2.0
+info:
+  title: Diaoyan Project Control API
+  version: 1.0.0
+  description: Project-scoped API for server integrations and authenticated human administrators.
+servers:
+  - url: https://control.example/v1
+security:
+  - ProjectApiKey: []
+x-max-body-bytes: 65536
+paths:
+  /projects/{project_id}/jobs:
+    post:
+      operationId: createProjectJob
+      summary: Create or idempotently replay a Project Job
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+      responses:
+        '201':
+          description: The newly created Job or the original Job for an identical replay
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, job]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/jobs/{job_id}:
+    get:
+      operationId: getProjectJob
+      summary: Read one Job from the API Key's Project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: The Project-scoped Job
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, job]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/JobNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/jobs/{job_id}/cancel:
+    post:
+      operationId: cancelProjectJob
+      summary: Idempotently cancel a non-terminal Project Job and its active Lease
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: The cancelled Job, including an idempotent replay
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, job]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/JobTransitionConflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/jobs/{job_id}/publications:
+    get:
+      operationId: listProjectJobPublications
+      summary: List Artifact publications for one Project Job
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: after_sequence
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Sequence-ordered Project publications
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, publications, pagination]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  publications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Publication'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    required: [next_sequence, has_more, limit]
+                    properties:
+                      next_sequence:
+                        oneOf:
+                          - type: integer
+                            minimum: 1
+                          - type: 'null'
+                      has_more:
+                        type: boolean
+                      limit:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/JobNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/audit-events:
+    get:
+      operationId: listProjectAuditEvents
+      summary: List append-only audit events for one Project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Reverse-chronological Project audit events
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, audit_events, pagination]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  audit_events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    required: [next_cursor, has_more, limit]
+                    properties:
+                      next_cursor:
+                        oneOf:
+                          - type: string
+                          - type: 'null'
+                      has_more: { type: boolean }
+                      limit: { type: integer }
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/api-keys:
+    post:
+      operationId: createProjectApiKey
+      summary: Create a Project API Key and reveal its Secret once
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scopes, expires_at]
+              properties:
+                scopes:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    $ref: '#/components/schemas/ProjectApiKeyScope'
+                expires_at:
+                  oneOf:
+                    - type: string
+                      format: date-time
+                    - type: 'null'
+      responses:
+        '201':
+          description: The new metadata and its one-time Secret
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, api_key, secret]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  api_key: { $ref: '#/components/schemas/ProjectApiKeyMetadata' }
+                  secret:
+                    type: string
+                    writeOnly: true
+                    description: Returned only by this successful creation response.
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ApiKeyValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: listProjectApiKeys
+      summary: List API Key metadata without Secrets
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Reverse-chronological API Key metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, api_keys, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  api_keys:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProjectApiKeyMetadata' }
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    required: [next_cursor, has_more, limit]
+                    properties:
+                      next_cursor:
+                        oneOf:
+                          - type: string
+                          - type: 'null'
+                      has_more: { type: boolean }
+                      limit: { type: integer }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/api-keys/{key_id}:
+    delete:
+      operationId: revokeProjectApiKey
+      summary: Revoke one API Key in the authenticated user's Project
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+        - name: key_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      responses:
+        '204':
+          description: The API Key was revoked
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '404': { $ref: '#/components/responses/ApiKeyNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    ProjectApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: dya_live
+      description: Project API Key with the tasks:write scope.
+    HumanAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived human Access Token issued after OIDC Authorization Code + PKCE.
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+    JsonObject:
+      type: object
+      additionalProperties: true
+    PublicHttpUrl:
+      type: string
+      format: uri
+      pattern: '^https?://[^/?#@\s]+(?:[/?#][^\s]*)?$'
+      description: Exact lowercase HTTP or HTTPS URL without whitespace or user information.
+    BrowserReadiness:
+      type: object
+      additionalProperties: false
+      required: [target]
+      properties:
+        target:
+          type: object
+          additionalProperties: false
+          required: [selector]
+          properties:
+            selector: { type: string, minLength: 1, maxLength: 512, pattern: '\S' }
+            state: { type: string, enum: [attached, visible] }
+            minCount: { type: integer, minimum: 1, maximum: 10000 }
+        interaction:
+          type: object
+          additionalProperties: false
+          required: [type, maxSteps]
+          properties:
+            type: { type: string, const: scroll-to-end }
+            maxSteps: { type: integer, minimum: 1, maximum: 100 }
+            stepDelayMs: { type: integer, minimum: 0, maximum: 5000 }
+        timeoutMs: { type: integer, minimum: 100, maximum: 120000 }
+    ReadJobInput:
+      type: object
+      additionalProperties: false
+      required: [url]
+      not:
+        required: [browserAllowed, browserReadiness]
+        properties:
+          browserAllowed: { const: false }
+      properties:
+        url: { $ref: '#/components/schemas/PublicHttpUrl' }
+        browserAllowed: { type: boolean }
+        cacheMode: { type: string, enum: [prefer-cache, live, cache-only] }
+        maxAgeSeconds: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        browserReadiness: { $ref: '#/components/schemas/BrowserReadiness' }
+    MapJobInput:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url: { $ref: '#/components/schemas/PublicHttpUrl' }
+        browserAllowed: { type: boolean }
+        maxPages: { type: integer, minimum: 1, maximum: 500 }
+        maxDepth: { type: integer, minimum: 0, maximum: 10 }
+        includeSubdomains: { type: boolean }
+        ignoreQueryParameters: { type: boolean }
+    CrawlJobInput:
+      type: object
+      additionalProperties: false
+      required: [url]
+      not:
+        required: [browserAllowed, browserReadiness]
+        properties:
+          browserAllowed: { const: false }
+      properties:
+        url: { $ref: '#/components/schemas/PublicHttpUrl' }
+        browserAllowed: { type: boolean }
+        cacheMode: { type: string, enum: [prefer-cache, live, cache-only] }
+        maxAgeSeconds: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        browserReadiness: { $ref: '#/components/schemas/BrowserReadiness' }
+        maxPages: { type: integer, minimum: 1, maximum: 10000 }
+        maxDepth: { type: integer, minimum: 0, maximum: 10 }
+        includeSubdomains: { type: boolean }
+        ignoreQueryParameters: { type: boolean }
+        concurrency: { type: integer, minimum: 1, maximum: 32 }
+    SearchJobInput:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 512, pattern: '\S' }
+        limit: { type: integer, minimum: 1, maximum: 20 }
+        page: { type: integer, minimum: 1, maximum: 100 }
+        language:
+          type: string
+          pattern: '^(?:all|[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?)$'
+        safeSearch: { type: integer, enum: [0, 1, 2] }
+        timeRange: { type: string, enum: [day, month, year] }
+        source: { type: string, enum: [auto, local, web] }
+    ControlPlaneRequiredCapabilities:
+      type: object
+      additionalProperties: false
+      properties:
+        http: { type: boolean, const: true }
+        browser: { type: boolean, const: true }
+        pdf: { type: boolean, const: true }
+        feed: { type: boolean, const: true }
+    ProjectApiKeyScope:
+      type: string
+      enum: ['tasks:write', 'results:read', 'project:admin']
+    ProjectApiKeyMetadata:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - display_prefix
+        - scopes
+        - created_by_user_id
+        - created_at
+        - last_used_at
+        - expires_at
+        - revoked_at
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        display_prefix: { type: string }
+        scopes:
+          type: array
+          items: { $ref: '#/components/schemas/ProjectApiKeyScope' }
+        created_by_user_id: { $ref: '#/components/schemas/Uuid' }
+        created_at: { type: string, format: date-time }
+        last_used_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        revoked_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+    CreateJobRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - input
+        - data_class
+        - placement
+        - required_capabilities
+        - budget
+        - policy_version
+        - upload_private_artifact
+      properties:
+        type:
+          type: string
+          enum: [read, inspect, map, crawl, search]
+        input:
+          $ref: '#/components/schemas/JsonObject'
+        data_class:
+          type: string
+          enum: [public, authorized, intranet]
+        placement:
+          type: object
+          additionalProperties: false
+          required: [class, pinned_worker_id]
+          properties:
+            class:
+              type: string
+              enum: [public, private]
+            pinned_worker_id:
+              oneOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+        required_capabilities:
+          $ref: '#/components/schemas/ControlPlaneRequiredCapabilities'
+        budget:
+          type: object
+          additionalProperties: false
+          required:
+            - deadline_ms
+            - max_provider_attempts
+            - max_document_bytes
+            - max_browser_ms
+            - max_browser_contexts
+          properties:
+            deadline_ms:
+              type: integer
+              minimum: 1
+              maximum: 86400000
+            max_provider_attempts:
+              type: integer
+              minimum: 1
+              maximum: 1000000
+            max_document_bytes:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            max_browser_ms:
+              type: integer
+              minimum: 0
+              maximum: 86400000
+            max_browser_contexts:
+              type: integer
+              minimum: 0
+              maximum: 100000
+        policy_version:
+          type: string
+          minLength: 1
+          maxLength: 256
+        upload_private_artifact:
+          type: boolean
+        priority:
+          type: integer
+          minimum: -100
+          maximum: 100
+          default: 0
+        not_before:
+          type: string
+          format: date-time
+      allOf:
+        - oneOf:
+            - properties:
+                type: { const: read }
+                input: { $ref: '#/components/schemas/ReadJobInput' }
+            - properties:
+                type: { const: inspect }
+                input: { $ref: '#/components/schemas/ReadJobInput' }
+            - properties:
+                type: { const: map }
+                input: { $ref: '#/components/schemas/MapJobInput' }
+            - properties:
+                type: { const: crawl }
+                input: { $ref: '#/components/schemas/CrawlJobInput' }
+            - properties:
+                type: { const: search }
+                input: { $ref: '#/components/schemas/SearchJobInput' }
+    Job:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - input
+        - data_class
+        - placement
+        - required_capabilities
+        - budget
+        - policy_version
+        - upload_private_artifact
+        - priority
+        - not_before
+        - deadline_at
+        - status
+        - result_completeness
+        - error_code
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          type: string
+          enum: [read, inspect, map, crawl, search]
+        input:
+          $ref: '#/components/schemas/JsonObject'
+        data_class:
+          type: string
+          enum: [public, authorized, intranet]
+        placement:
+          type: object
+          additionalProperties: false
+          required: [class, pinned_worker_id]
+          properties:
+            class:
+              type: string
+              enum: [public, private]
+            pinned_worker_id:
+              oneOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+        required_capabilities:
+          $ref: '#/components/schemas/ControlPlaneRequiredCapabilities'
+        budget:
+          type: object
+          additionalProperties: false
+          required:
+            - deadline_ms
+            - max_provider_attempts
+            - max_document_bytes
+            - max_browser_ms
+            - max_browser_contexts
+          properties:
+            deadline_ms: { type: integer, minimum: 1, maximum: 86400000 }
+            max_provider_attempts: { type: integer, minimum: 1, maximum: 1000000 }
+            max_document_bytes: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            max_browser_ms: { type: integer, minimum: 0, maximum: 86400000 }
+            max_browser_contexts: { type: integer, minimum: 0, maximum: 100000 }
+        policy_version:
+          type: string
+        upload_private_artifact:
+          type: boolean
+        priority:
+          type: integer
+        not_before:
+          type: string
+          format: date-time
+        deadline_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [accepted, queued, assigned, running, paused, completed, failed, cancelled]
+        result_completeness:
+          oneOf:
+            - type: string
+              enum: [complete, partial]
+            - type: 'null'
+        error_code:
+          oneOf:
+            - type: string
+            - type: 'null'
+      allOf:
+        - oneOf:
+            - properties:
+                type: { const: read }
+                input: { $ref: '#/components/schemas/ReadJobInput' }
+            - properties:
+                type: { const: inspect }
+                input: { $ref: '#/components/schemas/ReadJobInput' }
+            - properties:
+                type: { const: map }
+                input: { $ref: '#/components/schemas/MapJobInput' }
+            - properties:
+                type: { const: crawl }
+                input: { $ref: '#/components/schemas/CrawlJobInput' }
+            - properties:
+                type: { const: search }
+                input: { $ref: '#/components/schemas/SearchJobInput' }
+    Publication:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - job_id
+        - lease_id
+        - lease_generation
+        - local_sequence
+        - sequence
+        - completeness
+        - recorded_at
+        - artifact
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        job_id: { $ref: '#/components/schemas/Uuid' }
+        lease_id: { $ref: '#/components/schemas/Uuid' }
+        lease_generation: { type: integer, minimum: 1 }
+        local_sequence: { type: integer, minimum: 1 }
+        sequence: { type: integer, minimum: 1 }
+        completeness: { type: string, enum: [complete, partial] }
+        recorded_at: { type: string, format: date-time }
+        artifact:
+          type: object
+          additionalProperties: false
+          required: [id, version, content_hash, byte_count, media_type, storage, object_key, created_at]
+          properties:
+            id: { $ref: '#/components/schemas/Uuid' }
+            version: { type: integer, minimum: 1 }
+            content_hash: { type: string }
+            byte_count: { type: integer, minimum: 0 }
+            media_type: { type: string }
+            storage: { type: string, enum: [worker_local, cloud_object] }
+            object_key:
+              oneOf:
+                - type: string
+                - type: 'null'
+            created_at: { type: string, format: date-time }
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - actor_type
+        - actor_id
+        - action
+        - target_type
+        - target_id
+        - outcome
+        - correlation_id
+        - occurred_at
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        actor_type: { type: string, enum: [user, api_key, worker] }
+        actor_id: { type: string }
+        action: { type: string }
+        target_type: { type: string }
+        target_id: { type: string }
+        outcome: { type: string, enum: [succeeded, failed] }
+        correlation_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, detail, instance, code, request_id, retryable]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string }
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        retryable: { type: boolean }
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+  responses:
+    MalformedRequest:
+      description: A required header or request syntax is malformed
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: The Project API Key is missing, invalid, expired, or revoked
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: The API Key lacks scope or is bound to a different Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanUnauthorized:
+      description: The human Access Token is missing, invalid, expired, or revoked
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanForbidden:
+      description: The authenticated user is not an owner or admin of this Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ApiKeyNotFound:
+      description: The API Key does not exist in the authenticated Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ApiKeyValidationFailed:
+      description: The API Key creation request violates the contract
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    IdempotencyConflict:
+      description: The Idempotency-Key is bound to a different request
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    JobNotFound:
+      description: The Job does not exist in the authenticated Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    JobTransitionConflict:
+      description: The Job is missing from the Project or cannot transition to cancelled
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: The request body exceeds 65536 bytes
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnsupportedMediaType:
+      description: The request is not application/json
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationFailed:
+      description: The Job request body violates the contract
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InternalError:
+      description: The request could not be completed
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
