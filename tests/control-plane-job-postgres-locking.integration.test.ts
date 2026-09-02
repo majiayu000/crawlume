@@ -543,7 +543,7 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
       );
       const resultOutcomes = Promise.allSettled([eventOperation, publicationOperation]);
       await waitForBlockedStatements(monitor!, "SELECT job_id FROM job_leases", 2);
-      await waitUntilDatabaseTime(monitor!, deadline);
+      await waitUntilDatabaseTime(monitor!, new Date(deadline.getTime() + 1));
       await blocker.query("COMMIT");
       transactionOpen = false;
 
