@@ -39,6 +39,10 @@ import {
   type ControlPlaneDatabase,
   type ControlPlaneQuery,
 } from "./control-plane/project-scope.js";
+import {
+  runControlPlaneMigrations,
+  type ControlPlaneMigrationClient,
+} from "./control-plane/migrations.js";
 import { createMcpServer } from "./mcp.js";
 
 const workerBodyLimitBytes = 64 * 1024;
@@ -317,9 +321,20 @@ export class PostgresControlPlaneDatabase implements ControlPlaneDatabase {
     });
   }
 
-  async query<Row>(statement: string, parameters: readonly unknown[]): Promise<{ rows: Row[] }> {
+  async query<Row>(statement: string, parameters: readonly unknown[] = []): Promise<{ rows: Row[] }> {
     const result = await this.pool.query(statement, [...parameters]);
     return { rows: result.rows as Row[] };
+  }
+
+  async connect(): Promise<ControlPlaneMigrationClient> {
+    const client = await this.pool.connect();
+    return {
+      query: async <Row>(statement: string, parameters: readonly unknown[] = []) => {
+        const result = await client.query(statement, [...parameters]);
+        return { rows: result.rows as Row[] };
+      },
+      release: (error?: Error | true) => client.release(error),
+    };
   }
 
   async transaction<Result>(
@@ -500,6 +515,7 @@ export async function startControlPlaneRuntime(
 ): Promise<ControlPlaneRuntime> {
   const database = new PostgresControlPlaneDatabase(new Pool(config.database));
   try {
+    await runControlPlaneMigrations(database);
     await database.assertReady();
     const identity = new WorkerIdentityService(database, config.identity);
     const jobs = new ControlPlaneJobService(database);
