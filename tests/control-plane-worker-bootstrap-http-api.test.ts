@@ -4,6 +4,7 @@ import {
   WorkerAuthenticationError,
   WorkerEnrollmentAuthenticationError,
   WorkerNotFoundError,
+  WorkerPublicKeyError,
   type CreatedWorkerEnrollment,
   type WorkerChallenge,
   type WorkerRecord,
@@ -176,11 +177,21 @@ describe("Worker bootstrap HTTP API", () => {
   it("creates a Project-bound enrollment through a human Access Token", async () => {
     const { api, authenticateAccessToken, resolveScope, createEnrollment, projectScope } =
       await harness();
-    const result = await api.handle(request({ body: { worker_name: " private-mac " } }));
+    const result = await api.handle(request({
+      headers: {
+        authorization: `bEaReR ${humanToken}`,
+        "content-type": "application/json",
+      },
+      body: { worker_name: " private-mac " },
+    }));
 
     expect(result).toEqual({
       status: 201,
-      headers: { "content-type": "application/json", "x-request-id": requestId },
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+        "x-request-id": requestId,
+      },
       body: {
         request_id: requestId,
         enrollment: {
@@ -212,7 +223,7 @@ describe("Worker bootstrap HTTP API", () => {
     const result = await api.handle(request({
       path: "/v1/worker-enrollments",
       headers: {
-        authorization: `Bearer ${enrollmentToken}`,
+        authorization: `bEaReR ${enrollmentToken}`,
         "content-type": "application/json",
       },
       body,
@@ -265,7 +276,11 @@ describe("Worker bootstrap HTTP API", () => {
     }));
     expect(challenged).toEqual({
       status: 201,
-      headers: { "content-type": "application/json", "x-request-id": requestId },
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+        "x-request-id": requestId,
+      },
       body: {
         request_id: requestId,
         challenge: {
@@ -285,7 +300,11 @@ describe("Worker bootstrap HTTP API", () => {
     }));
     expect(created).toEqual({
       status: 201,
-      headers: { "content-type": "application/json", "x-request-id": requestId },
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+        "x-request-id": requestId,
+      },
       body: {
         request_id: requestId,
         session: { token: sessionToken, expires_at: sessionExpiresAt.toISOString() },
@@ -357,6 +376,7 @@ describe("Worker bootstrap HTTP API", () => {
     }));
     expect(enrollmentResult).toMatchObject({
       status: 401,
+      headers: { "www-authenticate": "Bearer" },
       body: { code: "WORKER_ENROLLMENT_INVALID" },
     });
     expect(JSON.stringify(enrollmentResult)).not.toContain(enrollmentToken);
@@ -383,8 +403,20 @@ describe("Worker bootstrap HTTP API", () => {
     expect(JSON.stringify(malformedResult)).not.toContain(enrollmentToken);
 
     const invalidWorker = await harness({
+      createChallenge: vi.fn(async () => { throw new WorkerAuthenticationError(); }),
       createSession: vi.fn(async () => { throw new WorkerAuthenticationError(); }),
     });
+    const challengeResult = await invalidWorker.api.handle(request({
+      path: "/v1/worker-sessions/challenges",
+      headers: { "content-type": "application/json" },
+      body: { worker_id: workerId },
+    }));
+    expect(challengeResult).toMatchObject({
+      status: 401,
+      body: { code: "WORKER_AUTHENTICATION_FAILED" },
+    });
+    expect(challengeResult.headers).not.toHaveProperty("www-authenticate");
+
     const sessionResult = await invalidWorker.api.handle(request({
       path: "/v1/worker-sessions",
       headers: { "content-type": "application/json" },
@@ -394,6 +426,7 @@ describe("Worker bootstrap HTTP API", () => {
       status: 401,
       body: { code: "WORKER_AUTHENTICATION_FAILED" },
     });
+    expect(sessionResult.headers).not.toHaveProperty("www-authenticate");
     const serialized = JSON.stringify(sessionResult);
     expect(serialized).not.toContain(challengeValue);
     expect(serialized).not.toContain(signature);
@@ -428,6 +461,43 @@ describe("Worker bootstrap HTTP API", () => {
       });
     expect(createEnrollment).not.toHaveBeenCalled();
     expect(createChallenge).not.toHaveBeenCalled();
+  });
+
+  it("maps invalid Worker public keys and oversized capabilities to redacted validation errors", async () => {
+    const invalidKey = "not-a-canonical-worker-public-key";
+    const rejectedKey = await harness({
+      enroll: vi.fn(async () => { throw new WorkerPublicKeyError(); }),
+    });
+    const keyResult = await rejectedKey.api.handle(request({
+      path: "/v1/worker-enrollments",
+      headers: {
+        authorization: `Bearer ${enrollmentToken}`,
+        "content-type": "application/json",
+      },
+      body: { public_key_spki: invalidKey, version: "1", capabilities: {} },
+    }));
+    expect(keyResult).toMatchObject({
+      status: 422,
+      body: { code: "WORKER_PUBLIC_KEY_INVALID", retryable: false },
+    });
+    expect(JSON.stringify(keyResult)).not.toContain(invalidKey);
+
+    const oversized = await harness();
+    const capabilities = { value: "x".repeat(16 * 1_024) };
+    const capabilityResult = await oversized.api.handle(request({
+      path: "/v1/worker-enrollments",
+      headers: {
+        authorization: `Bearer ${enrollmentToken}`,
+        "content-type": "application/json",
+      },
+      body: { public_key_spki: "key", version: "1", capabilities },
+    }));
+    expect(capabilityResult).toMatchObject({
+      status: 422,
+      body: { code: "WORKER_BOOTSTRAP_REQUEST_INVALID", retryable: false },
+    });
+    expect(oversized.enroll).not.toHaveBeenCalled();
+    expect(JSON.stringify(capabilityResult)).not.toContain(capabilities.value);
   });
 
   it("turns unexpected failures into redacted Problem Details", async () => {

@@ -6,6 +6,7 @@ import {
   WorkerAuthenticationError,
   WorkerEnrollmentAuthenticationError,
   WorkerNotFoundError,
+  WorkerPublicKeyError,
   type CreatedWorkerEnrollment,
   type WorkerChallenge,
   type WorkerIdentityService,
@@ -64,6 +65,7 @@ type WorkerBootstrapRoute =
 
 const uuidPath =
   "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})";
+const maximumCapabilityManifestBytes = 16 * 1_024;
 
 const workerBootstrapRouteDefinitions = [
   {
@@ -117,7 +119,14 @@ const createEnrollmentBodySchema = z.object({
 const enrollBodySchema = z.object({
   public_key_spki: z.string().min(1).max(512),
   version: z.string().trim().min(1).max(128),
-  capabilities: z.record(z.string(), z.unknown()),
+  capabilities: z.record(z.string(), z.unknown()).refine((capabilities) => {
+    try {
+      const json = JSON.stringify(capabilities);
+      return json !== undefined && Buffer.byteLength(json) <= maximumCapabilityManifestBytes;
+    } catch {
+      return false;
+    }
+  }, "Capabilities must be valid JSON no larger than 16 KiB."),
 }).strict();
 const challengeBodySchema = z.object({ worker_id: z.uuid() }).strict();
 const sessionBodySchema = z.object({
@@ -150,19 +159,26 @@ function matchRoute(path: string): WorkerBootstrapRoute | null {
 }
 
 function humanAccessToken(request: WorkerHttpRequest): string {
-  const authorization = controlPlaneHeader(request, "authorization");
-  const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u.exec(
-    authorization ?? "",
-  );
-  if (match?.[1] === undefined) throw new AccessTokenAuthenticationError();
-  return match[1];
+  const credential = bearerCredential(request);
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(credential)) {
+    throw new AccessTokenAuthenticationError();
+  }
+  return credential;
 }
 
 function workerEnrollmentToken(request: WorkerHttpRequest): string {
+  const credential = bearerCredential(request);
+  if (!/^dya_we_[A-Za-z0-9_-]{43}$/u.test(credential)) {
+    throw new WorkerEnrollmentAuthenticationError();
+  }
+  return credential;
+}
+
+function bearerCredential(request: WorkerHttpRequest): string {
   const authorization = controlPlaneHeader(request, "authorization");
-  const match = /^Bearer (dya_we_[A-Za-z0-9_-]{43})$/u.exec(authorization ?? "");
-  if (match?.[1] === undefined) throw new WorkerEnrollmentAuthenticationError();
-  return match[1];
+  const match = /^([A-Za-z]+) ([^\s]+)$/u.exec(authorization ?? "");
+  if (match?.[1]?.toLowerCase() !== "bearer" || match[2] === undefined) return "";
+  return match[2];
 }
 
 function wireWorker(worker: WorkerRecord): Record<string, unknown> {
@@ -207,6 +223,7 @@ function response(status: number, requestId: string, body: unknown): WorkerHttpR
   return {
     status,
     headers: Object.freeze({
+      "cache-control": "no-store",
       "content-type": "application/json",
       "x-request-id": requestId,
     }),
@@ -222,6 +239,7 @@ function problem(
   title: string,
   detail: string,
   errors?: WorkerBootstrapProblem["errors"],
+  authenticateBearer = false,
 ): WorkerHttpResponse {
   const body: WorkerBootstrapProblem = {
     type: `https://api.diaoyan.example/errors/${code.toLowerCase().replaceAll("_", "-")}`,
@@ -239,7 +257,7 @@ function problem(
     headers: Object.freeze({
       "content-type": "application/problem+json",
       "x-request-id": requestId,
-      ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
+      ...(authenticateBearer ? { "www-authenticate": "Bearer" } : {}),
     }),
     body,
   };
@@ -352,14 +370,36 @@ export class WorkerBootstrapHttpApi {
     error: unknown,
   ): WorkerHttpResponse {
     if (error instanceof AccessTokenAuthenticationError) {
-      return problem(request, requestId, 401, error.code, "Access Token Invalid", error.message);
+      return problem(
+        request,
+        requestId,
+        401,
+        error.code,
+        "Access Token Invalid",
+        error.message,
+        undefined,
+        true,
+      );
     }
     if (error instanceof WorkerEnrollmentAuthenticationError) {
-      return problem(request, requestId, 401, error.code, "Worker Enrollment Invalid", error.message);
+      return problem(
+        request,
+        requestId,
+        401,
+        error.code,
+        "Worker Enrollment Invalid",
+        error.message,
+        undefined,
+        true,
+      );
     }
     if (error instanceof WorkerAuthenticationError) {
       return problem(request, requestId, 401, error.code, "Worker Authentication Failed",
         "The Worker identity, challenge, signature, or session is invalid.");
+    }
+    if (error instanceof WorkerPublicKeyError) {
+      return problem(request, requestId, 422, error.code, "Worker Public Key Invalid",
+        "The Worker public key must be a canonical Ed25519 SPKI key.");
     }
     if (error instanceof ProjectAccessDeniedError || error instanceof OrganizationAccessDeniedError) {
       return problem(request, requestId, 403, "WORKER_MANAGEMENT_FORBIDDEN", "Forbidden",
