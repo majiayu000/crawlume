@@ -642,6 +642,9 @@ describe("control-plane Worker claim", () => {
     expect(database.calls[5]?.parameters.slice(1, 4)).toEqual([
       "project-a", "job-a", "worker-a",
     ]);
+    expect(database.calls[5]?.parameters).toHaveLength(5);
+    expect(database.calls[5]?.statement).toContain("FROM jobs");
+    expect(database.calls[5]?.statement).toContain("jobs.deadline_at > execution_clock.now");
     expect(database.calls[6]?.statement).toContain("status = 'running'");
   });
 
@@ -657,6 +660,14 @@ describe("control-plane Worker claim", () => {
     ]);
     const empty = new ControlPlaneJobService(emptyDatabase);
     await expect(empty.claimNext(workerIdentity())).resolves.toBeNull();
+
+    const expiredBeforeInsertDatabase = new JobDatabase([
+      { rows: [{ active: true }] }, { rows: [] }, { rows: [] }, { rows: [jobRow()] },
+      { rows: [{ generation: "1" }] }, { rows: [] },
+    ]);
+    const expiredBeforeInsert = new ControlPlaneJobService(expiredBeforeInsertDatabase);
+    await expect(expiredBeforeInsert.claimNext(workerIdentity())).resolves.toBeNull();
+    expect(expiredBeforeInsertDatabase.calls).toHaveLength(6);
   });
 
   it("heartbeats only the exact active generation and transitions assigned to running", async () => {

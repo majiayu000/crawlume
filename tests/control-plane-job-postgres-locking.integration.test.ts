@@ -300,6 +300,35 @@ class AdvisoryGateDatabase implements ControlPlaneDatabase {
   }
 }
 
+class LeaseInsertAdvisoryGateDatabase implements ControlPlaneDatabase {
+  constructor(
+    private readonly delegate: ControlPlaneDatabase,
+    private readonly gate: number,
+  ) {}
+
+  query<Row>(statement: string, parameters: readonly unknown[]): Promise<{ rows: Row[] }> {
+    return this.delegate.query<Row>(statement, parameters);
+  }
+
+  transaction<Result>(
+    operation: (transaction: ControlPlaneQuery) => Promise<Result>,
+  ): Promise<Result> {
+    return this.delegate.transaction(async (transaction) => {
+      let gated = false;
+      const controlled: ControlPlaneQuery = {
+        query: async <Row>(statement: string, parameters: readonly unknown[]) => {
+          if (!gated && statement.includes("INSERT INTO job_leases(")) {
+            gated = true;
+            await transaction.query("SELECT pg_advisory_xact_lock(9303, $1)", [this.gate]);
+          }
+          return transaction.query<Row>(statement, parameters);
+        },
+      };
+      return operation(controlled);
+    });
+  }
+}
+
 function postgresCode(result: PromiseSettledResult<unknown>): string | undefined {
   if (result.status !== "rejected" || typeof result.reason !== "object" || result.reason === null) {
     return undefined;
@@ -576,6 +605,61 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
       await expect(database!.query<{ leases: string }>(`
         SELECT count(*) AS leases FROM job_leases WHERE job_id = $1
       `, [created.id])).resolves.toMatchObject({ rows: [{ leases: "0" }] });
+    } finally {
+      if (!unlocked) await blocker.query("SELECT pg_advisory_unlock_all()");
+      blocker.release();
+    }
+  });
+
+  it("returns no work when a selected Job expires before its lease insert", async () => {
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const start = await databaseClock(monitor!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => start });
+    const created = await jobs.createJob(
+      projectKey,
+      "job-03-insert-boundary",
+      jobInput("https://example.com/insert-boundary"),
+      { correlationId: "job-03-insert-boundary" },
+    );
+    const deadlineResult = await database!.query<{ deadline: Date }>(`
+      UPDATE jobs SET deadline_at = clock_timestamp() + interval '2 seconds'
+      WHERE id = $1 RETURNING deadline_at AS deadline
+    `, [created.id]);
+    const deadline = deadlineResult.rows[0]?.deadline;
+    if (!(deadline instanceof Date)) throw new Error("The Job deadline was not returned.");
+
+    const gate = 5;
+    const blocker = await monitor!.connect();
+    let unlocked = false;
+    try {
+      await blocker.query("SELECT pg_advisory_lock(9303, $1)", [gate]);
+      const boundaryJobs = new ControlPlaneJobService(
+        new LeaseInsertAdvisoryGateDatabase(storage, gate),
+        { now: () => new Date(deadline.getTime() - 1) },
+      );
+      const claimOperation = boundaryJobs.claimNext(worker);
+      await waitForAdvisoryWaiter(monitor!, gate);
+      await waitUntilDatabaseTime(monitor!, deadline);
+      await blocker.query("SELECT pg_advisory_unlock(9303, $1)", [gate]);
+      unlocked = true;
+
+      await expect(claimOperation).resolves.toBeNull();
+      await expect(database!.query<{ leases: string; status: string }>(`
+        SELECT
+          (SELECT count(*) FROM job_leases WHERE job_id = $1) AS leases,
+          (SELECT status FROM jobs WHERE id = $1) AS status
+      `, [created.id])).resolves.toMatchObject({
+        rows: [{ leases: "0", status: "queued" }],
+      });
+
+      await new ControlPlaneJobLeaseSweeper(storage, {
+        now: () => new Date(deadline.getTime() + 1),
+      }).sweep();
+      await expect(database!.query<{ status: string; error_code: string }>(`
+        SELECT status, error_code FROM jobs WHERE id = $1
+      `, [created.id])).resolves.toMatchObject({
+        rows: [{ status: "failed", error_code: "JOB_DEADLINE_EXCEEDED" }],
+      });
     } finally {
       if (!unlocked) await blocker.query("SELECT pg_advisory_unlock_all()");
       blocker.release();

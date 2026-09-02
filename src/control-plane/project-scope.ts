@@ -550,14 +550,16 @@ export class ControlPlaneJobService {
       await recoverExpiredJobLeases(transaction, identity.projectId, now);
 
       const selected = await transaction.query<ControlPlaneJobRow>(`
+        WITH execution_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
         SELECT jobs.*
         FROM jobs
         INNER JOIN workers
           ON workers.id = $1 AND workers.project_id = jobs.project_id
           AND workers.status = 'active' AND workers.capability_hash = $3
+        CROSS JOIN execution_clock
         WHERE jobs.project_id = $2 AND jobs.status = 'queued'
-          AND jobs.not_before <= clock_timestamp()
-          AND jobs.deadline_at > clock_timestamp()
+          AND jobs.not_before <= execution_clock.now
+          AND jobs.deadline_at > execution_clock.now
           AND (jobs.pinned_worker_id IS NULL OR jobs.pinned_worker_id = workers.id)
           AND (jobs.placement_class = 'public' OR workers.kind = 'private')
           AND workers.capability_manifest @> jobs.required_capabilities
@@ -590,16 +592,20 @@ export class ControlPlaneJobService {
           claimed_at, heartbeat_at, heartbeat_deadline, lease_deadline
         ) SELECT $1, $2, $3, $4, $5, 'active', execution_clock.now,
           execution_clock.now,
-          LEAST(execution_clock.now + interval '30 seconds', $6), $6
-        FROM execution_clock
+          LEAST(execution_clock.now + interval '30 seconds', jobs.deadline_at),
+          jobs.deadline_at
+        FROM jobs
+        CROSS JOIN execution_clock
+        WHERE jobs.id = $3 AND jobs.project_id = $2 AND jobs.status = 'queued'
+          AND jobs.not_before <= execution_clock.now
+          AND jobs.deadline_at > execution_clock.now
         RETURNING id, project_id, job_id, worker_id, generation,
           heartbeat_deadline, lease_deadline
       `, [
         leaseId, identity.projectId, job.id, identity.workerId, generation,
-        job.deadline_at,
       ]);
       const lease = insertedLease.rows[0];
-      if (lease === undefined) throw new Error("The Job lease insert returned no record.");
+      if (lease === undefined) return null;
       const running = await transaction.query<ControlPlaneJobRow>(`
         UPDATE jobs SET status = 'running', updated_at = $3
         WHERE id = $1 AND project_id = $2 AND status = 'queued'

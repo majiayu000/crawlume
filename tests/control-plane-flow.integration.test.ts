@@ -123,7 +123,7 @@ class FlowDatabase implements ControlPlaneDatabase {
       return [];
     }
 
-    if (sql.startsWith("SELECT jobs.* FROM jobs INNER JOIN workers")) {
+    if (sql.includes("SELECT jobs.* FROM jobs INNER JOIN workers")) {
       return this.job?.status === "queued" ? [this.job] : [];
     }
     if (sql.startsWith("SELECT COALESCE(MAX(generation), 0) + 1 AS generation")) {
@@ -134,7 +134,7 @@ class FlowDatabase implements ControlPlaneDatabase {
     }
     if (sql.includes("INSERT INTO job_leases(")) {
       const claimedAt = this.job?.updated_at as Date;
-      const leaseDeadline = parameters[5] as Date;
+      const leaseDeadline = this.job?.deadline_at as Date;
       this.lease = {
         id: parameters[0],
         project_id: parameters[1],
