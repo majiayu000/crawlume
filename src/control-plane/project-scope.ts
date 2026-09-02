@@ -580,21 +580,23 @@ export class ControlPlaneJobService {
       if (!Number.isSafeInteger(generation) || generation < 1) {
         throw new Error("The next Job lease generation is invalid.");
       }
-      const heartbeatDeadline = new Date(Math.min(
-        now.getTime() + 30_000,
-        job.deadline_at.getTime(),
-      ));
       const leaseId = randomUUID();
       const insertedLease = await transaction.query<JobLeaseRow>(`
+        WITH execution_clock AS MATERIALIZED (
+          SELECT clock_timestamp() AS now
+        )
         INSERT INTO job_leases(
           id, project_id, job_id, worker_id, generation, status,
           claimed_at, heartbeat_at, heartbeat_deadline, lease_deadline
-        ) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6, $7, $8)
+        ) SELECT $1, $2, $3, $4, $5, 'active', execution_clock.now,
+          execution_clock.now,
+          LEAST(execution_clock.now + interval '30 seconds', $6), $6
+        FROM execution_clock
         RETURNING id, project_id, job_id, worker_id, generation,
           heartbeat_deadline, lease_deadline
       `, [
         leaseId, identity.projectId, job.id, identity.workerId, generation,
-        now, heartbeatDeadline, job.deadline_at,
+        job.deadline_at,
       ]);
       const lease = insertedLease.rows[0];
       if (lease === undefined) throw new Error("The Job lease insert returned no record.");
@@ -617,7 +619,6 @@ export class ControlPlaneJobService {
     requireIdentifier(leaseId, "leaseId");
     requireJobInteger(generation, "generation");
     const now = this.now();
-    const nextHeartbeat = new Date(now.getTime() + 30_000);
     return this.database.transaction(async (transaction) => {
       await this.requireActiveWorkerSession(transaction, identity);
       const locked = await transaction.query<{ id: string }>(`
@@ -628,20 +629,25 @@ export class ControlPlaneJobService {
       `, [leaseId, identity.workerId, identity.projectId, generation]);
       if (locked.rows[0] === undefined) throw new LeaseFencedError();
       const updated = await transaction.query<JobLeaseRow>(`
+        WITH execution_clock AS MATERIALIZED (
+          SELECT clock_timestamp() AS now
+        )
         UPDATE job_leases AS leases
-        SET heartbeat_at = $5,
-          heartbeat_deadline = LEAST($6, leases.lease_deadline)
-        FROM jobs
+        SET heartbeat_at = execution_clock.now,
+          heartbeat_deadline = LEAST(
+            execution_clock.now + interval '30 seconds', leases.lease_deadline
+          )
+        FROM jobs, execution_clock
         WHERE leases.id = $1 AND leases.worker_id = $2
           AND leases.project_id = $3 AND leases.generation = $4
           AND leases.status = 'active'
-          AND leases.heartbeat_deadline > clock_timestamp()
-          AND leases.lease_deadline > clock_timestamp()
+          AND leases.heartbeat_deadline > execution_clock.now
+          AND leases.lease_deadline > execution_clock.now
           AND jobs.id = leases.job_id AND jobs.project_id = leases.project_id
           AND jobs.status IN ('assigned', 'running')
         RETURNING leases.id, leases.project_id, leases.job_id, leases.worker_id,
           leases.generation, leases.heartbeat_deadline, leases.lease_deadline
-      `, [leaseId, identity.workerId, identity.projectId, generation, now, nextHeartbeat]);
+      `, [leaseId, identity.workerId, identity.projectId, generation]);
       const lease = updated.rows[0];
       if (lease === undefined) throw new LeaseFencedError();
       const running = await transaction.query<{ id: string }>(`

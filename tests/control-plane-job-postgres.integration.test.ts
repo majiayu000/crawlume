@@ -431,7 +431,17 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
       errorCode: null,
     });
 
-    expect(heartbeat.heartbeatDeadline).toEqual(new Date(now.getTime() + 40_000));
+    const persistedHeartbeat = await database!.query<{
+      heartbeat_at: Date;
+      heartbeat_deadline: Date;
+    }>(`
+      SELECT heartbeat_at, heartbeat_deadline FROM job_leases WHERE id = $1
+    `, [claim.lease.id]);
+    expect(heartbeat.heartbeatDeadline).toEqual(persistedHeartbeat.rows[0]?.heartbeat_deadline);
+    expect(
+      persistedHeartbeat.rows[0]!.heartbeat_deadline.getTime() -
+        persistedHeartbeat.rows[0]!.heartbeat_at.getTime(),
+    ).toBe(30_000);
     expect(event).toMatchObject({ jobId: created.id, sequence: 1, leaseGeneration: 1 });
     expect(publication).toMatchObject({
       jobId: created.id,
@@ -574,6 +584,11 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
       );
       const claim = await jobs.claimNext(fixtureWorker);
       if (claim === null) throw new Error("The competing PostgreSQL Job was not claimed.");
+      if (operation === "heartbeat") {
+        await database!.query(`
+          UPDATE job_leases SET heartbeat_deadline = $2 WHERE id = $1
+        `, [claim.lease.id, new Date(now.getTime() + 10_000)]);
+      }
 
       const rendezvous = new PostgresTransactionRendezvous(database!, 2);
       const competingStorage = new RendezvousControlPlaneDatabase(
@@ -595,7 +610,7 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
           errorCode: null,
         });
       const sweepOperation = new ControlPlaneJobLeaseSweeper(competingStorage, {
-        now: () => new Date(now.getTime() + 31_000),
+        now: () => new Date(now.getTime() + (operation === "heartbeat" ? 11_000 : 31_000)),
       }).sweep();
       const [workerOutcome, sweepOutcome] = await Promise.allSettled([
         workerOperation,

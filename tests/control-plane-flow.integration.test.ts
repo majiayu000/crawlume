@@ -132,7 +132,9 @@ class FlowDatabase implements ControlPlaneDatabase {
     if (sql.startsWith("SELECT id FROM job_leases")) {
       return this.lease?.status === "active" ? [{ id: this.lease.id }] : [];
     }
-    if (sql.startsWith("INSERT INTO job_leases(")) {
+    if (sql.includes("INSERT INTO job_leases(")) {
+      const claimedAt = this.job?.updated_at as Date;
+      const leaseDeadline = parameters[5] as Date;
       this.lease = {
         id: parameters[0],
         project_id: parameters[1],
@@ -140,8 +142,12 @@ class FlowDatabase implements ControlPlaneDatabase {
         worker_id: parameters[3],
         generation: parameters[4],
         status: "active",
-        heartbeat_deadline: parameters[6],
-        lease_deadline: parameters[7],
+        heartbeat_at: claimedAt,
+        heartbeat_deadline: new Date(Math.min(
+          claimedAt.getTime() + 30_000,
+          leaseDeadline.getTime(),
+        )),
+        lease_deadline: leaseDeadline,
       };
       return [this.lease];
     }
@@ -151,9 +157,16 @@ class FlowDatabase implements ControlPlaneDatabase {
       this.job = { ...this.job, status: "running", updated_at: parameters[2] };
       return [this.job];
     }
-    if (sql.startsWith("UPDATE job_leases AS leases SET heartbeat_at")) {
+    if (sql.includes("UPDATE job_leases AS leases SET heartbeat_at")) {
       if (this.lease === null) return [];
-      this.lease = { ...this.lease, heartbeat_deadline: parameters[5] };
+      this.lease = {
+        ...this.lease,
+        heartbeat_at: now,
+        heartbeat_deadline: new Date(Math.min(
+          now.getTime() + 30_000,
+          (this.lease.lease_deadline as Date).getTime(),
+        )),
+      };
       return [this.lease];
     }
     if (sql.startsWith("UPDATE jobs SET status = 'running'")) {

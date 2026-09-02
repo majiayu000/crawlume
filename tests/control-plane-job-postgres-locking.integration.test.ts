@@ -581,4 +581,104 @@ describeWithPostgres("control-plane Job PostgreSQL lock and clock fencing", () =
       blocker.release();
     }
   });
+
+  it("starts a claimed lease's heartbeat window after the claim wait completes", async () => {
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const sampledNow = await databaseClock(monitor!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => sampledNow });
+    const created = await jobs.createJob(
+      projectKey,
+      "job-03-claim-window",
+      jobInput("https://example.com/claim-window"),
+      { correlationId: "job-03-claim-window" },
+    );
+
+    const gate = 4;
+    const blocker = await monitor!.connect();
+    let unlocked = false;
+    try {
+      await blocker.query("SELECT pg_advisory_lock(9303, $1)", [gate]);
+      const claimOperation = new ControlPlaneJobService(
+        new AdvisoryGateDatabase(storage, gate),
+        { now: () => sampledNow },
+      ).claimNext(worker);
+      await waitForAdvisoryWaiter(monitor!, gate);
+      const releaseThreshold = new Date(sampledNow.getTime() + 2_000);
+      await waitUntilDatabaseTime(monitor!, releaseThreshold);
+      await blocker.query("SELECT pg_advisory_unlock(9303, $1)", [gate]);
+      unlocked = true;
+
+      const claim = await claimOperation;
+      if (claim === null) throw new Error("The delayed PostgreSQL claim did not succeed.");
+      const persisted = await database!.query<{
+        claimed_at: Date;
+        heartbeat_at: Date;
+        heartbeat_deadline: Date;
+      }>(`
+        SELECT claimed_at, heartbeat_at, heartbeat_deadline
+        FROM job_leases WHERE id = $1
+      `, [claim.lease.id]);
+      const lease = persisted.rows[0];
+      if (lease === undefined) throw new Error("The delayed lease was not persisted.");
+      expect(lease.claimed_at.getTime()).toBeGreaterThanOrEqual(releaseThreshold.getTime());
+      expect(lease.heartbeat_at).toEqual(lease.claimed_at);
+      expect(lease.heartbeat_deadline.getTime() - lease.claimed_at.getTime()).toBe(30_000);
+      expect(claim.lease.heartbeatDeadline).toEqual(lease.heartbeat_deadline);
+      expect(claim.job.id).toBe(created.id);
+    } finally {
+      if (!unlocked) await blocker.query("SELECT pg_advisory_unlock_all()");
+      blocker.release();
+    }
+  });
+
+  it("starts a renewed heartbeat window after the lease lock wait completes", async () => {
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const start = await databaseClock(monitor!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => start });
+    await jobs.createJob(
+      projectKey,
+      "job-03-heartbeat-window",
+      jobInput("https://example.com/heartbeat-window"),
+      { correlationId: "job-03-heartbeat-window" },
+    );
+    const claim = await jobs.claimNext(worker);
+    if (claim === null) throw new Error("The heartbeat-window Job was not claimed.");
+
+    const blocker = await monitor!.connect();
+    let transactionOpen = false;
+    try {
+      await blocker.query("BEGIN");
+      transactionOpen = true;
+      await blocker.query(`
+        UPDATE job_leases
+        SET heartbeat_deadline = clock_timestamp() + interval '10 seconds'
+        WHERE id = $1
+      `, [claim.lease.id]);
+      const sampledNow = await databaseClock(monitor!);
+      const heartbeatOperation = new ControlPlaneJobService(storage, {
+        now: () => sampledNow,
+      }).heartbeat(worker, claim.lease.id, claim.lease.generation);
+      await waitForBlockedStatements(monitor!, "SELECT id FROM job_leases", 1);
+      const releaseThreshold = new Date(sampledNow.getTime() + 2_000);
+      await waitUntilDatabaseTime(monitor!, releaseThreshold);
+      await blocker.query("COMMIT");
+      transactionOpen = false;
+
+      const heartbeat = await heartbeatOperation;
+      const persisted = await database!.query<{
+        heartbeat_at: Date;
+        heartbeat_deadline: Date;
+      }>(`
+        SELECT heartbeat_at, heartbeat_deadline FROM job_leases WHERE id = $1
+      `, [claim.lease.id]);
+      const lease = persisted.rows[0];
+      if (lease === undefined) throw new Error("The renewed lease was not persisted.");
+      expect(lease.heartbeat_at.getTime()).toBeGreaterThanOrEqual(releaseThreshold.getTime());
+      expect(lease.heartbeat_deadline.getTime() - lease.heartbeat_at.getTime()).toBe(30_000);
+      expect(heartbeat.heartbeatDeadline).toEqual(lease.heartbeat_deadline);
+    } finally {
+      if (transactionOpen) await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+  });
 });
