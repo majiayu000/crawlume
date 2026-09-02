@@ -139,6 +139,8 @@ function harness(options: Readonly<{
   authenticated?: AuthenticatedProjectApiKey | Error;
   created?: ControlPlaneJob | Error;
   found?: ControlPlaneJob | Error;
+  paused?: ControlPlaneJob | Error;
+  resumed?: ControlPlaneJob | Error;
   cancelled?: ControlPlaneJob | Error;
   publications?: Readonly<{
     items: readonly JobPublication[];
@@ -159,6 +161,14 @@ function harness(options: Readonly<{
     if (options.found instanceof Error) throw options.found;
     return options.found ?? job;
   });
+  const pauseJob = vi.fn(async () => {
+    if (options.paused instanceof Error) throw options.paused;
+    return options.paused ?? Object.freeze({ ...job, status: "paused" as const });
+  });
+  const resumeJob = vi.fn(async () => {
+    if (options.resumed instanceof Error) throw options.resumed;
+    return options.resumed ?? Object.freeze({ ...job, status: "queued" as const });
+  });
   const cancelJob = vi.fn(async () => {
     if (options.cancelled instanceof Error) throw options.cancelled;
     return options.cancelled ?? Object.freeze({ ...job, status: "cancelled" as const });
@@ -173,12 +183,17 @@ function harness(options: Readonly<{
   });
   return {
     api: new ProjectJobHttpApi(
-      { authenticate, createJob, getJob, cancelJob, listPublications, listAuditEvents },
+      {
+        authenticate, createJob, getJob, pauseJob, resumeJob, cancelJob,
+        listPublications, listAuditEvents,
+      },
       { requestId: () => requestId },
     ),
     authenticate,
     createJob,
     getJob,
+    pauseJob,
+    resumeJob,
     cancelJob,
     listPublications,
     listAuditEvents,
@@ -260,6 +275,103 @@ describe("Project Job HTTP API", () => {
     });
     expect(cancelJob).toHaveBeenCalledWith(identity, jobId);
   });
+
+  it.each([
+    ["pause", "paused", "pauseJob"],
+    ["resume", "queued", "resumeJob"],
+  ] as const)("%ss a Project Job and returns its wire status", async (
+    action,
+    status,
+    serviceName,
+  ) => {
+    const context = harness();
+    const response = await context.api.handle(request({
+      path: `/v1/projects/${projectId}/jobs/${jobId}/${action}`,
+      headers: { authorization: `Bearer ${rawKey}`, "content-type": "application/json" },
+      body: {},
+    }));
+
+    expect(response).toMatchObject({
+      status: 200,
+      headers: { "content-type": "application/json", "x-request-id": requestId },
+      body: { request_id: requestId, job: { id: jobId, status } },
+    });
+    expect(context[serviceName]).toHaveBeenCalledWith(identity, jobId);
+  });
+
+  it.each(["pause", "resume"] as const)(
+    "returns a complete Problem Details contract for invalid %s transitions",
+    async (action) => {
+      const context = harness({
+        ...(action === "pause"
+          ? { paused: new JobTransitionError() }
+          : { resumed: new JobTransitionError() }),
+      });
+      const path = `/v1/projects/${projectId}/jobs/${jobId}/${action}`;
+      const response = await context.api.handle(request({ path, body: {} }));
+
+      expect(response).toEqual({
+        status: 409,
+        headers: {
+          "content-type": "application/problem+json",
+          "x-request-id": requestId,
+        },
+        body: {
+          type: "https://api.diaoyan.example/errors/job-transition-invalid",
+          title: "Job Transition Invalid",
+          status: 409,
+          detail: "The requested Job state transition is not valid.",
+          instance: path,
+          code: "JOB_TRANSITION_INVALID",
+          request_id: requestId,
+          retryable: false,
+        },
+      });
+    },
+  );
+
+  it.each(["pause", "resume"] as const)(
+    "denies %s without tasks:write",
+    async (action) => {
+      const readable = Object.freeze({ ...identity, scopes: ["results:read"] as const });
+      const context = harness({ authenticated: readable });
+      const response = await context.api.handle(request({
+        path: `/v1/projects/${projectId}/jobs/${jobId}/${action}`,
+        body: {},
+      }));
+
+      expect(response).toMatchObject({
+        status: 403,
+        headers: { "content-type": "application/problem+json" },
+        body: { status: 403, code: "API_KEY_SCOPE_DENIED" },
+      });
+      expect(context[action === "pause" ? "pauseJob" : "resumeJob"]).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["pause", "resume"] as const)(
+    "validates %s media type and strict empty JSON body",
+    async (action) => {
+      const context = harness();
+      const path = `/v1/projects/${projectId}/jobs/${jobId}/${action}`;
+      expect(await context.api.handle(request({
+        path,
+        headers: { authorization: `Bearer ${rawKey}` },
+        body: {},
+      }))).toMatchObject({
+        status: 415,
+        headers: { "content-type": "application/problem+json" },
+        body: { status: 415, code: "PROJECT_MEDIA_TYPE_UNSUPPORTED" },
+      });
+      expect(await context.api.handle(request({ path, body: { reason: "unused" } })))
+        .toMatchObject({
+          status: 422,
+          headers: { "content-type": "application/problem+json" },
+          body: { status: 422, code: "JOB_REQUEST_INVALID" },
+        });
+      expect(context[action === "pause" ? "pauseJob" : "resumeJob"]).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects cancel without tasks:write or with an invalid transition", async () => {
     const readable = Object.freeze({ ...identity, scopes: ["results:read"] as const });

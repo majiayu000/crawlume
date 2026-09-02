@@ -694,13 +694,13 @@ export class ControlPlaneJobService {
     });
   }
 
-  async pause(scope: ProjectScope, jobId: string): Promise<ControlPlaneJob> {
+  async pause(scope: Pick<ProjectScope, "projectId">, jobId: string): Promise<ControlPlaneJob> {
     return this.controlTransition(scope, jobId, "paused", [
       "queued", "assigned", "running", "paused",
     ]);
   }
 
-  async resume(scope: ProjectScope, jobId: string): Promise<ControlPlaneJob> {
+  async resume(scope: Pick<ProjectScope, "projectId">, jobId: string): Promise<ControlPlaneJob> {
     return this.controlTransition(scope, jobId, "queued", ["paused", "queued"]);
   }
 

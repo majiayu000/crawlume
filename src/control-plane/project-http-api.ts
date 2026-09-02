@@ -37,6 +37,8 @@ type ProjectJobHttpServices = Readonly<{
   authenticate(rawKey: string, context: AuditContext): Promise<AuthenticatedProjectApiKey>;
   createJob: ControlPlaneJobService["createJob"];
   getJob: ControlPlaneJobService["getJob"];
+  pauseJob: ControlPlaneJobService["pause"];
+  resumeJob: ControlPlaneJobService["resume"];
   cancelJob: ControlPlaneJobService["cancel"];
   listPublications: JobResultService["listPublications"];
   listAuditEvents(
@@ -94,6 +96,8 @@ class ProjectQueryError extends Error {
 type ProjectJobRoute =
   | Readonly<{ kind: "create"; method: "POST"; projectId: string }>
   | Readonly<{ kind: "get"; method: "GET"; projectId: string; jobId: string }>
+  | Readonly<{ kind: "pause"; method: "POST"; projectId: string; jobId: string }>
+  | Readonly<{ kind: "resume"; method: "POST"; projectId: string; jobId: string }>
   | Readonly<{ kind: "cancel"; method: "POST"; projectId: string; jobId: string }>
   | Readonly<{ kind: "publications"; method: "GET"; projectId: string; jobId: string }>
   | Readonly<{ kind: "audit"; method: "GET"; projectId: string }>;
@@ -121,7 +125,7 @@ const createJobBodySchema = z.object({
   priority: z.number().int().min(-100).max(100).optional(),
   not_before: z.string().datetime({ offset: true }).optional(),
 }).strict();
-const cancelJobBodySchema = z.object({}).strict();
+const controlJobBodySchema = z.object({}).strict();
 const auditCursorSchema = z.object({
   occurred_at: z.string().datetime({ offset: true }),
   id: z.uuid(),
@@ -143,7 +147,8 @@ function matchProjectJobRoute(path: string): ProjectJobRoute | null {
     if (definition.kind === "get") {
       return { kind: definition.kind, method: definition.method, projectId, jobId };
     }
-    if (definition.kind === "cancel") {
+    if (definition.kind === "pause" || definition.kind === "resume" ||
+        definition.kind === "cancel") {
       return { kind: definition.kind, method: definition.method, projectId, jobId };
     }
     return { kind: definition.kind, method: definition.method, projectId, jobId };
@@ -358,17 +363,21 @@ export class ProjectJobHttpApi {
           },
         });
       }
-      if (route.kind === "cancel") {
+      if (route.kind === "pause" || route.kind === "resume" || route.kind === "cancel") {
         requireProjectApiKeyScope(identity, "tasks:write");
         if (!isJsonControlPlaneRequest(request)) {
           return projectProblem(request, requestId, 415, "PROJECT_MEDIA_TYPE_UNSUPPORTED",
             "Unsupported Media Type", "Project requests must use application/json.");
         }
-        cancelJobBodySchema.parse(request.body);
-        const cancelled = await this.services.cancelJob(identity, route.jobId);
+        controlJobBodySchema.parse(request.body);
+        const controlled = route.kind === "pause"
+          ? await this.services.pauseJob(identity, route.jobId)
+          : route.kind === "resume"
+            ? await this.services.resumeJob(identity, route.jobId)
+            : await this.services.cancelJob(identity, route.jobId);
         return projectResponse(200, requestId, {
           request_id: requestId,
-          job: wireJob(cancelled),
+          job: wireJob(controlled),
         });
       }
       requireProjectApiKeyScope(identity, "tasks:write");

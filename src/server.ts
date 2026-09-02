@@ -552,6 +552,8 @@ export async function startControlPlaneRuntime(
       authenticate: (rawKey, context) => authenticateProjectApiKey(database, rawKey, context),
       createJob: jobs.createJob.bind(jobs),
       getJob: jobs.getJob.bind(jobs),
+      pauseJob: jobs.pause.bind(jobs),
+      resumeJob: jobs.resume.bind(jobs),
       cancelJob: jobs.cancel.bind(jobs),
       listPublications: results.listPublications.bind(results),
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),

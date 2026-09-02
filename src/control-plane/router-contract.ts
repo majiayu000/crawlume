@@ -17,6 +17,20 @@ export const projectJobRouteDefinitions = [
     pattern: new RegExp(`^/v1/projects/${uuidPath}/jobs/${uuidPath}$`, "u"),
   },
   {
+    kind: "pause",
+    method: "POST",
+    path: "/projects/{project_id}/jobs/{job_id}/pause",
+    operationId: "pauseProjectJob",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/jobs/${uuidPath}/pause$`, "u"),
+  },
+  {
+    kind: "resume",
+    method: "POST",
+    path: "/projects/{project_id}/jobs/{job_id}/resume",
+    operationId: "resumeProjectJob",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/jobs/${uuidPath}/resume$`, "u"),
+  },
+  {
     kind: "cancel",
     method: "POST",
     path: "/projects/{project_id}/jobs/{job_id}/cancel",

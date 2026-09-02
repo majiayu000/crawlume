@@ -103,6 +103,110 @@ paths:
           $ref: '#/components/responses/JobNotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/jobs/{job_id}/pause:
+    post:
+      operationId: pauseProjectJob
+      summary: Idempotently pause a queued or active Project Job
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: The paused Job, including an idempotent replay
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, job]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  job:
+                    allOf:
+                      - $ref: '#/components/schemas/Job'
+                      - type: object
+                        properties:
+                          status: { const: paused }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/JobTransitionConflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/jobs/{job_id}/resume:
+    post:
+      operationId: resumeProjectJob
+      summary: Idempotently return a paused Project Job to the queue
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: The queued Job, including an idempotent replay
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, job]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  job:
+                    allOf:
+                      - $ref: '#/components/schemas/Job'
+                      - type: object
+                        properties:
+                          status: { const: queued }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/JobTransitionConflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /projects/{project_id}/jobs/{job_id}/cancel:
     post:
       operationId: cancelProjectJob
@@ -888,10 +992,15 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     JobTransitionConflict:
-      description: The Job is missing from the Project or cannot transition to cancelled
+      description: The Job is missing from the Project or cannot perform the requested transition
       content:
         application/problem+json:
-          schema: { $ref: '#/components/schemas/Problem' }
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Problem'
+              - type: object
+                properties:
+                  status: { const: 409 }
     PayloadTooLarge:
       description: The request body exceeds 65536 bytes
       content:
