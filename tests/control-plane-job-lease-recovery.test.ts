@@ -36,6 +36,44 @@ describe("ControlPlaneJobLeaseSweepRunner", () => {
     await runner.close();
   });
 
+  it("rejects an initial failure through the fatal channel without scheduling", async () => {
+    vi.useFakeTimers();
+    const failure = new Error("initial lease sweep failed");
+    const sweep = vi.fn().mockRejectedValue(failure);
+    const onFatalError = vi.fn();
+    const runner = new ControlPlaneJobLeaseSweepRunner(
+      { sweep },
+      { intervalMs: 100, onFatalError },
+    );
+
+    await expect(runner.start()).rejects.toBe(failure);
+    expect(onFatalError).toHaveBeenCalledOnce();
+    expect(onFatalError).toHaveBeenCalledWith(failure);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sweep).toHaveBeenCalledOnce();
+    await runner.close();
+  });
+
+  it("close clears a pending sweep timer before it can run", async () => {
+    vi.useFakeTimers();
+    const sweep = vi.fn().mockResolvedValue(0);
+    const runner = new ControlPlaneJobLeaseSweepRunner(
+      { sweep },
+      { intervalMs: 100, onFatalError: vi.fn() },
+    );
+
+    await runner.start();
+    expect(sweep).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await runner.close();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sweep).toHaveBeenCalledOnce();
+  });
+
   it("does not schedule another sweep until the current sweep settles", async () => {
     vi.useFakeTimers();
     const firstSweep = deferred<number>();
