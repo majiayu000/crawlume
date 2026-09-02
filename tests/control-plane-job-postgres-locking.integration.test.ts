@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { Pool, type PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -183,13 +184,38 @@ async function databaseClock(database: Pool): Promise<Date> {
 }
 
 async function waitUntilDatabaseTime(database: Pool, deadline: Date): Promise<void> {
-  for (let attempt = 0; attempt < 20_000; attempt += 1) {
-    const result = await database.query<{ reached: boolean }>(`
-      SELECT clock_timestamp() >= $1 AS reached
-    `, [deadline]);
-    if (result.rows[0]?.reached === true) return;
+  const maximumWaitMs = 4_000;
+  const waitSliceSeconds = 0.05;
+  const timeoutAt = performance.now() + maximumWaitMs;
+  let observedAt: Date | undefined;
+
+  while (performance.now() < timeoutAt) {
+    const result = await database.query<{ reached: boolean; observed_at: Date }>(`
+      WITH wait AS MATERIALIZED (
+        SELECT pg_sleep(LEAST(
+          GREATEST(
+            EXTRACT(EPOCH FROM ($1::timestamptz - clock_timestamp()))::double precision,
+            0
+          ),
+          $2::double precision
+        ))
+      )
+      SELECT
+        clock_timestamp() >= $1::timestamptz AS reached,
+        clock_timestamp() AS observed_at
+      FROM wait
+    `, [deadline, waitSliceSeconds]);
+    const observation = result.rows[0];
+    if (!(observation?.observed_at instanceof Date)) {
+      throw new Error("PostgreSQL did not return its clock while waiting for the deadline.");
+    }
+    observedAt = observation.observed_at;
+    if (observation.reached === true) return;
   }
-  throw new Error("PostgreSQL did not reach the fenced lease deadline.");
+  throw new Error(
+    `PostgreSQL did not reach ${deadline.toISOString()} within ${maximumWaitMs}ms; `
+      + `last observed database time was ${observedAt?.toISOString() ?? "unavailable"}.`,
+  );
 }
 
 async function waitForBlockedStatements(
