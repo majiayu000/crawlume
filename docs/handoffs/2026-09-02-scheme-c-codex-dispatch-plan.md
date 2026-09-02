@@ -41,7 +41,7 @@
 
 把所有任务立即分给多个 Codex，同时修改当前工作区。
 
-看起来最快，实际风险最高。当前控制面有大量未提交文件，`server.ts` 和三个接近 800 行的控制面文件又是共享热点。最大并行会造成覆盖、重复实现、OpenAPI 漂移和无法归因的测试失败。
+看起来最快，实际风险最高。Wave 0 开始时控制面有大量未提交文件，`server.ts` 和三个接近 800 行的控制面文件又是共享热点。最大并行会造成覆盖、重复实现、OpenAPI 漂移和无法归因的测试失败。
 
 ### 2.3 方案 C：波次式混合派发，推荐
 
@@ -68,9 +68,9 @@
 ### 3.1 Git 状态
 
 - 当前分支：`fix/crawl-recovery-ssrf-boundaries`
-- 当前提交：`7f0b3f04191cb443bfb44287575d125a6f5aa312`
-- 控制面主体仍未提交，不能直接从当前提交创建独立 Worker worktree 并获得这些文件。
-- 开始多人派发前，必须先完成 Wave 0 并形成一个受保护的控制面 checkpoint。
+- Wave 0 内容 checkpoint：`354f0217c7e47cc9394f1efd988b786e158021cf`
+- 控制面主体、Wave 0 修复和测试已进入该 checkpoint，可从该 SHA 创建独立 Worker worktree。
+- 该 checkpoint 的 Node 25.9 `check`、`build` 和串行 637-test Gate 已通过。
 
 ### 3.2 已存在能力
 
@@ -595,7 +595,8 @@ B 端 Beta 不要求正式收费，但 Usage、预算和审计必须可查询且
 
 ## 12. 初始可直接派发的任务
 
-当前还不能开启三个写入 Agent，因为 Wave 0 未完成。第一个 Coordinator 应先派发以下串行任务：
+以下提示保留为 Wave 0 执行记录。Wave 0 已完成，不应重复派发；后续 Worker 从记录的 checkpoint
+创建独立 branch/worktree，并按 Wave 1 的依赖和文件所有权执行。
 
 ```markdown
 # Task W0-01: 恢复 TypeScript Gate
@@ -722,18 +723,18 @@ Gate 失败时：
 
 ## 15. 状态账本模板
 
-Coordinator 在自己的集成分支维护以下表。初始值如下：
+Coordinator 在自己的集成分支维护以下表。当前值如下：
 
 | Task | Owner | Base SHA | Status | Timebox | Started | Target | Last evidence | Blocked since | Commit | Verification |
 |---|---|---|---|---:|---|---|---|---|---|---|
-| W0-01 | Coordinator | 7f0b3f0 | Verification | 0.5d | 2026-09-03 | 2026-09-03 | readonly scope fix; focused 22/22; check passed | - | - | reviewer accepted; awaiting checkpoint |
-| W0-02 | Coordinator | 7f0b3f0 | Verification | 1d | 2026-09-03 | 2026-09-03 | recovery E2E 2/2; related tests 26/26; check/build passed | - | - | reviewer accepted; awaiting checkpoint |
-| W0-03 | Coordinator | 7f0b3f0 | Verification | 1d | 2026-09-03 | 2026-09-03 | target 1.268s; browser 3/3; proxy 4/4; controlled case 1/1 | - | - | no-op reviewer accepted; awaiting checkpoint |
-| W0-04 | Coordinator | 7f0b3f0 | Verification | 0.5d | 2026-09-03 | 2026-09-03 | stale audit and implementation claims corrected | - | - | reviewer accepted; awaiting checkpoint |
-| W0-05 | Coordinator | 7f0b3f0 | Verification | 0.5d | 2026-09-03 | 2026-09-03 | check/build passed; serial full Gate 68 files, 637/637 | - | - | data/security review accepted; awaiting checkpoint |
-| DB-01 | unassigned | W0 checkpoint | Backlog | 1d | - | - | dependency unmet | - | - | - |
-| JOB-01 | unassigned | W0 checkpoint | Backlog | 1d | - | - | dependency unmet | - | - | - |
-| AUTH-01 | unassigned | W0 checkpoint | Backlog | 1d | - | - | dependency unmet | - | - | - |
+| W0-01 | Coordinator | 7f0b3f0 | Done | 0.5d | 2026-09-03 | 2026-09-03 | readonly scope fix; focused 22/22; check passed | - | 354f021 | checkpoint Gate passed |
+| W0-02 | Coordinator | 7f0b3f0 | Done | 1d | 2026-09-03 | 2026-09-03 | recovery E2E 2/2; related tests 26/26; check/build passed | - | 354f021 | checkpoint Gate passed |
+| W0-03 | Coordinator | 7f0b3f0 | Done | 1d | 2026-09-03 | 2026-09-03 | target 1.268s; browser 3/3; proxy 4/4; controlled case 1/1 | - | 354f021 | no-op verified; checkpoint Gate passed |
+| W0-04 | Coordinator | 7f0b3f0 | Done | 0.5d | 2026-09-03 | 2026-09-03 | stale audit and implementation claims corrected | - | 354f021 | reviewer accepted; checkpointed |
+| W0-05 | Coordinator | 7f0b3f0 | Done | 0.5d | 2026-09-03 | 2026-09-03 | check/build passed; serial full Gate 68 files, 637/637 | - | 354f021 | data/security review accepted; checkpointed |
+| DB-01 | unassigned | 354f021 | Ready | 1d | - | - | Wave 0 checkpoint available | - | - | - |
+| JOB-01 | unassigned | 354f021 | Ready | 1d | - | - | Wave 0 checkpoint available | - | - | - |
+| AUTH-01 | unassigned | 354f021 | Ready | 1d | - | - | Wave 0 checkpoint available | - | - | - |
 
 不要让所有 Worker 在各自分支修改这张表。Worker 使用 handoff 消息回报，Coordinator 统一更新。
 
