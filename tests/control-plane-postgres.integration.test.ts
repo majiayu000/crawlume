@@ -6,7 +6,22 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import type {
+  AuthenticatedProjectApiKey,
+  AuthenticatedWorker,
+} from "../src/control-plane/api-key-service.js";
 import { runControlPlaneMigrations } from "../src/control-plane/migrations.js";
+import {
+  JobResultIdempotencyConflictError,
+  JobResultService,
+  type JobEventInput,
+} from "../src/control-plane/organization-authorization.js";
+import {
+  ControlPlaneJobService,
+  JobIdempotencyConflictError,
+  type CreateControlPlaneJobInput,
+} from "../src/control-plane/project-scope.js";
+import { PostgresControlPlaneDatabase } from "../src/server.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
 const describeWithPostgres = configuredDatabaseUrl === undefined ? describe.skip : describe;
@@ -47,6 +62,117 @@ async function expectPostgresError(operation: () => Promise<unknown>, code: stri
 }
 
 const temporaryDirectories: string[] = [];
+
+const fixture = Object.freeze({
+  userId: "00000000-0000-4000-8000-000000000001",
+  organizationId: "00000000-0000-4000-8000-000000000101",
+  projectId: "00000000-0000-4000-8000-000000000201",
+  workerId: "00000000-0000-4000-8000-000000000401",
+  publicKeyId: "00000000-0000-4000-8000-000000000402",
+  sessionId: "00000000-0000-4000-8000-000000000403",
+  apiKeyId: "00000000-0000-4000-8000-000000000501",
+});
+const fixtureNow = new Date("2030-01-01T00:00:00.000Z");
+const fixtureCapabilityHash = Buffer.alloc(32, 3);
+const fixtureWorker: AuthenticatedWorker = Object.freeze({
+  workerId: fixture.workerId,
+  projectId: fixture.projectId,
+  sessionId: fixture.sessionId,
+  capabilityHash: fixtureCapabilityHash.toString("base64url"),
+});
+const fixtureProjectKey: AuthenticatedProjectApiKey = Object.freeze({
+  apiKeyId: fixture.apiKeyId,
+  projectId: fixture.projectId,
+  organizationId: fixture.organizationId,
+  createdByUserId: fixture.userId,
+  scopes: Object.freeze(["tasks:write"] as const),
+});
+
+async function seedRuntimeFixture(database: Pool): Promise<void> {
+  await database.query(`
+    INSERT INTO users(id, oidc_issuer, oidc_subject)
+    VALUES ($1, $2, $3)
+  `, [fixture.userId, "https://issuer.example", "db-03-user"]);
+  await database.query(`
+    INSERT INTO organizations(id, slug, name, kind)
+    VALUES ($1, $2, $3, 'business')
+  `, [fixture.organizationId, "db-03-organization", "DB-03 Organization"]);
+  await database.query(`
+    INSERT INTO projects(id, organization_id, slug, name)
+    VALUES ($1, $2, $3, $4)
+  `, [fixture.projectId, fixture.organizationId, "db-03-project", "DB-03 Project"]);
+  await database.query(`
+    INSERT INTO workers(
+      id, project_id, name, kind, version, capability_manifest,
+      capability_hash, created_by_user_id
+    ) VALUES ($1, $2, $3, 'public', $4, $5::jsonb, $6, $7)
+  `, [
+    fixture.workerId,
+    fixture.projectId,
+    "db-03-worker",
+    "1.0.0",
+    JSON.stringify({ http: true }),
+    fixtureCapabilityHash,
+    fixture.userId,
+  ]);
+  await database.query(`
+    INSERT INTO worker_public_keys(
+      id, project_id, worker_id, algorithm, public_key_spki, fingerprint
+    ) VALUES ($1, $2, $3, 'Ed25519', $4, $5)
+  `, [
+    fixture.publicKeyId,
+    fixture.projectId,
+    fixture.workerId,
+    Buffer.from("db-03-public-key"),
+    Buffer.alloc(32, 4),
+  ]);
+  await database.query(`
+    INSERT INTO worker_sessions(
+      id, project_id, worker_id, public_key_id, capability_hash, expires_at
+    ) VALUES ($1, $2, $3, $4, $5, $6)
+  `, [
+    fixture.sessionId,
+    fixture.projectId,
+    fixture.workerId,
+    fixture.publicKeyId,
+    fixtureCapabilityHash,
+    new Date("2031-01-01T00:00:00.000Z"),
+  ]);
+}
+
+function jobInput(url: string): CreateControlPlaneJobInput {
+  return Object.freeze({
+    type: "read" as const,
+    input: Object.freeze({ url }),
+    dataClass: "public" as const,
+    placement: Object.freeze({ class: "public" as const, pinnedWorkerId: null }),
+    requiredCapabilities: Object.freeze({ http: true as const }),
+    budget: Object.freeze({
+      deadlineMs: 300_000,
+      maxProviderAttempts: 2,
+      maxDocumentBytes: 1_000_000,
+      maxBrowserMs: 0,
+      maxBrowserContexts: 0,
+    }),
+    policyVersion: "db-03-v1",
+    uploadPrivateArtifact: false,
+  });
+}
+
+function eventInput(localSequence: number, eventType: string): JobEventInput {
+  return Object.freeze({
+    localSequence,
+    eventType,
+    pageStatus: 200,
+    errorCode: null,
+    provider: "http",
+    byteCount: 1_024 * localSequence,
+    durationMs: 10 * localSequence,
+    contentHash: Buffer.alloc(32, localSequence).toString("base64url"),
+    usage: Object.freeze({ requests: 1 }),
+    occurredAt: new Date(fixtureNow.getTime() + localSequence),
+  });
+}
 
 describeWithPostgres("control-plane migrations on PostgreSQL", () => {
   let administration: Pool;
@@ -214,5 +340,190 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       SELECT version FROM control_plane_schema_migrations ORDER BY version
     `);
     expect(applied.rows).toEqual([{ version: 1 }]);
+  });
+
+  it("allows exactly one concurrent claim of a queued Job", async () => {
+    await runControlPlaneMigrations(database!);
+    await seedRuntimeFixture(database!);
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => fixtureNow });
+    const created = await jobs.createJob(
+      fixtureProjectKey,
+      "db-03-concurrent-claim",
+      jobInput("https://example.com/claim"),
+      { correlationId: "db-03-concurrent-claim" },
+    );
+
+    const attempts = await Promise.all([
+      jobs.claimNext(fixtureWorker),
+      jobs.claimNext(fixtureWorker),
+    ]);
+    const claims = attempts.filter((attempt) => attempt !== null);
+
+    expect(claims).toHaveLength(1);
+    expect(claims[0]).toMatchObject({
+      job: { id: created.id, status: "running" },
+      lease: { jobId: created.id, generation: 1 },
+    });
+    const state = await database!.query<{
+      job_status: string;
+      active_leases: string;
+      generations: string[];
+    }>(`
+      SELECT jobs.status AS job_status,
+        count(job_leases.id) FILTER (WHERE job_leases.status = 'active') AS active_leases,
+        array_agg(job_leases.generation ORDER BY job_leases.generation) AS generations
+      FROM jobs
+      LEFT JOIN job_leases ON job_leases.job_id = jobs.id
+      WHERE jobs.id = $1
+      GROUP BY jobs.status
+    `, [created.id]);
+    expect(state.rows).toEqual([{
+      job_status: "running",
+      active_leases: "1",
+      generations: ["1"],
+    }]);
+  });
+
+  it("serializes concurrent event sequences and preserves local idempotency", async () => {
+    await runControlPlaneMigrations(database!);
+    await seedRuntimeFixture(database!);
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => fixtureNow });
+    const results = new JobResultService(storage);
+    await jobs.createJob(
+      fixtureProjectKey,
+      "db-03-event-sequence",
+      jobInput("https://example.com/events"),
+      { correlationId: "db-03-event-sequence" },
+    );
+    const claim = await jobs.claimNext(fixtureWorker);
+    if (claim === null) throw new Error("The DB-03 event Job was not claimed.");
+    const firstInput = eventInput(10, "page-fetched");
+    const secondInput = eventInput(20, "page-parsed");
+
+    const events = await Promise.all([
+      results.appendEvent(fixtureWorker, claim.lease.id, claim.lease.generation, firstInput),
+      results.appendEvent(fixtureWorker, claim.lease.id, claim.lease.generation, secondInput),
+    ]);
+
+    expect(events.map((event) => event.sequence).sort((left, right) => left - right))
+      .toEqual([1, 2]);
+    const stored = await database!.query<{
+      id: string;
+      local_sequence: string;
+      sequence: string;
+      event_type: string;
+    }>(`
+      SELECT id, local_sequence, sequence, event_type
+      FROM job_events
+      WHERE job_id = $1
+      ORDER BY sequence
+    `, [claim.job.id]);
+    expect(stored.rows.map((row) => ({
+      localSequence: Number(row.local_sequence),
+      sequence: Number(row.sequence),
+      eventType: row.event_type,
+    }))).toEqual(events
+      .slice()
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((event) => ({
+        localSequence: event.localSequence,
+        sequence: event.sequence,
+        eventType: event.eventType,
+      })));
+
+    const replay = await results.appendEvent(
+      fixtureWorker,
+      claim.lease.id,
+      claim.lease.generation,
+      firstInput,
+    );
+    expect(replay.id).toBe(events[0]!.localSequence === firstInput.localSequence
+      ? events[0]!.id
+      : events[1]!.id);
+    await expect(results.appendEvent(
+      fixtureWorker,
+      claim.lease.id,
+      claim.lease.generation,
+      { ...firstInput, eventType: "conflicting-event" },
+    )).rejects.toBeInstanceOf(JobResultIdempotencyConflictError);
+    await expect(database!.query<{ count: string }>(`
+      SELECT count(*) AS count FROM job_events WHERE job_id = $1
+    `, [claim.job.id])).resolves.toMatchObject({ rows: [{ count: "2" }] });
+  });
+
+  it("deduplicates concurrent Job creation and rejects conflicting key reuse", async () => {
+    await runControlPlaneMigrations(database!);
+    await seedRuntimeFixture(database!);
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => fixtureNow });
+    const input = jobInput("https://example.com/idempotent");
+
+    const created = await Promise.all([
+      jobs.createJob(fixtureProjectKey, "db-03-idempotent", input, {
+        correlationId: "db-03-idempotent-a",
+      }),
+      jobs.createJob(fixtureProjectKey, "db-03-idempotent", input, {
+        correlationId: "db-03-idempotent-b",
+      }),
+    ]);
+
+    expect(created[0]!.id).toBe(created[1]!.id);
+    await expect(jobs.createJob(
+      fixtureProjectKey,
+      "db-03-idempotent",
+      jobInput("https://example.com/conflict"),
+      { correlationId: "db-03-idempotent-conflict" },
+    )).rejects.toBeInstanceOf(JobIdempotencyConflictError);
+    await expect(database!.query<{ count: string }>(`
+      SELECT count(*) AS count FROM jobs WHERE project_id = $1 AND idempotency_key = $2
+    `, [fixture.projectId, "db-03-idempotent"])).resolves.toMatchObject({
+      rows: [{ count: "1" }],
+    });
+  });
+
+  it("retains claimed Job and event state after the connection pool is rebuilt", async () => {
+    await runControlPlaneMigrations(database!);
+    await seedRuntimeFixture(database!);
+    const initialStorage = new PostgresControlPlaneDatabase(database!);
+    const initialJobs = new ControlPlaneJobService(initialStorage, { now: () => fixtureNow });
+    const initialResults = new JobResultService(initialStorage);
+    const created = await initialJobs.createJob(
+      fixtureProjectKey,
+      "db-03-restart",
+      jobInput("https://example.com/restart"),
+      { correlationId: "db-03-restart" },
+    );
+    const claim = await initialJobs.claimNext(fixtureWorker);
+    if (claim === null) throw new Error("The DB-03 restart Job was not claimed.");
+    const input = eventInput(1, "checkpoint-created");
+    const event = await initialResults.appendEvent(
+      fixtureWorker,
+      claim.lease.id,
+      claim.lease.generation,
+      input,
+    );
+
+    await database!.end();
+    database = new Pool({ connectionString: databaseUrl(databaseName!), max: 2 });
+    await database.query("SELECT 1");
+    const restartedStorage = new PostgresControlPlaneDatabase(database);
+    const restartedJobs = new ControlPlaneJobService(restartedStorage, { now: () => fixtureNow });
+    const restartedResults = new JobResultService(restartedStorage);
+
+    await expect(restartedJobs.getJob(fixtureProjectKey, created.id)).resolves.toMatchObject({
+      id: created.id,
+      status: "running",
+    });
+    await expect(restartedResults.appendEvent(
+      fixtureWorker,
+      claim.lease.id,
+      claim.lease.generation,
+      input,
+    )).resolves.toMatchObject({ id: event.id, sequence: event.sequence });
+    await expect(database.query<{ count: string }>(`
+      SELECT count(*) AS count FROM job_events WHERE job_id = $1
+    `, [created.id])).resolves.toMatchObject({ rows: [{ count: "1" }] });
   });
 });
