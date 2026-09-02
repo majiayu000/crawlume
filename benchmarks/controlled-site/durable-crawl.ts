@@ -77,13 +77,13 @@ function closeServer(server: Server, sockets: Set<Socket>): Promise<void> {
 
 function forwardedHeaders(
   headers: IncomingHttpHeaders,
-  destination: URL,
+  originalOrigin: URL,
 ): IncomingHttpHeaders {
   const copied = { ...headers };
   delete copied["proxy-authorization"];
   delete copied["proxy-connection"];
-  copied.host = destination.host;
-  copied["x-durable-request-origin"] = destination.origin;
+  copied.host = originalOrigin.host;
+  copied["x-durable-request-origin"] = originalOrigin.origin;
   return copied;
 }
 
@@ -272,8 +272,16 @@ export async function createDurableCrawlSite(
       response.end("forward proxy requires an absolute request target");
       return;
     }
-    const controlledHostname = destination.hostname === "example.com" ||
-      destination.hostname.endsWith(".example.com");
+    let originalOrigin: URL;
+    try {
+      originalOrigin = new URL(`http://${request.headers.host ?? ""}`);
+    } catch {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("forward proxy requires an original Host header");
+      return;
+    }
+    const controlledHostname = originalOrigin.hostname === "example.com" ||
+      originalOrigin.hostname.endsWith(".example.com");
     if (destination.protocol !== "http:" || destination.port !== "" || !controlledHostname) {
       response.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
       response.end("forward proxy target is outside the controlled origin");
@@ -285,7 +293,7 @@ export async function createDurableCrawlSite(
       port: targetPort,
       method: request.method,
       path: `${destination.pathname}${destination.search}`,
-      headers: forwardedHeaders(request.headers, destination),
+      headers: forwardedHeaders(request.headers, originalOrigin),
     }, (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
       upstreamResponse.pipe(response);

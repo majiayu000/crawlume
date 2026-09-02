@@ -505,7 +505,7 @@ export class DurableCrawlService {
           !this.store.markOriginStarted(lease, this.config.crawlMinHostIntervalMs)) return;
       const artifact = await this.reader.crawlPageArtifact({
         url: lease.page.normalizedUrl,
-        requestId: lease.page.id,
+        requestId: `${lease.page.id}:${lease.generation}`,
         cacheMode: input.cacheMode ?? "prefer-cache",
         maxAgeSeconds: input.maxAgeSeconds ?? this.config.defaultCacheSeconds,
         browserAllowed: input.browserAllowed ?? true,

@@ -23,6 +23,7 @@ import type { PageFetchOptions, PageFetcher, RawPage } from "../types.js";
 import type { UrlRedirect } from "../types.js";
 import { ProfileManager } from "../profiles.js";
 import { UrlPolicy } from "../security/url-policy.js";
+import { PolicyEgressProxy } from "../security/policy-egress-proxy.js";
 import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
 import { BrowserPool, type BrowserLease } from "../browser-pool.js";
@@ -212,6 +213,7 @@ export class BrowserPageFetcher implements PageFetcher {
       async (proxy) => chromium.launch(browserLaunchOptions(config, true, proxy)),
     ),
     private readonly traceStore = new BrowserFailureTraceStore(config.dataDir),
+    private readonly policyProxy = new PolicyEgressProxy(urlPolicy),
   ) {}
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
@@ -262,16 +264,17 @@ export class BrowserPageFetcher implements PageFetcher {
         url,
         await this.robots.licenseUrls(url),
       )).evidence;
+      const browserProxy = await this.policyProxy.endpoint(proxy);
 
       tracePhase = "context";
       if (profilePath !== null) {
         context = await chromium.launchPersistentContext(profilePath, {
-          ...browserLaunchOptions(this.config, true, proxy),
+          ...browserLaunchOptions(this.config, true, browserProxy),
           acceptDownloads: false,
           userAgent: this.config.userAgent,
         });
       } else {
-        lease = await this.browserPool.acquire(proxy, signal);
+        lease = await this.browserPool.acquire(browserProxy, signal);
         context = await lease.browser.newContext({
           acceptDownloads: false,
           userAgent: this.config.userAgent,
@@ -585,6 +588,15 @@ export class BrowserPageFetcher implements PageFetcher {
   }
 
   async close(): Promise<void> {
-    await this.browserPool.close();
+    const results = await Promise.allSettled([
+      this.browserPool.close(),
+      this.policyProxy.close(),
+    ]);
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "The browser pool and policy proxy failed to close.");
+    }
   }
 }

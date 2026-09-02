@@ -71,6 +71,11 @@ function failureTerminalState(error: ReadError):
 
 type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
 
+type PreparedPageArtifact = {
+  result: PageReadArtifact;
+  commit(): void;
+};
+
 export class ReaderService {
   private readonly backgroundRevalidations = new Map<string, Promise<void>>();
   private readonly backgroundFailures: unknown[] = [];
@@ -114,9 +119,13 @@ export class ReaderService {
     operation: "read" | "map" | "crawl",
   ): Promise<PageReadArtifact> {
     const startedAt = Date.now();
-    let result: PageReadArtifact;
+    let prepared: PreparedPageArtifact;
+    let successAudited = false;
     try {
-      result = await this.executePageArtifact(options, operation);
+      prepared = await this.preparePageArtifact(options, operation);
+      this.rslAudit?.recordSuccess(prepared.result);
+      successAudited = true;
+      prepared.commit();
     } catch (error) {
       const normalized = normalizeError(error);
       if (normalized.execution !== null) {
@@ -135,7 +144,7 @@ export class ReaderService {
           },
         });
       }
-      this.rslAudit?.recordFailure(options.url, normalized);
+      if (!successAudited) this.rslAudit?.recordFailure(options.url, normalized);
       this.metrics?.recordFailure(
         normalized,
         Date.now() - startedAt,
@@ -143,15 +152,14 @@ export class ReaderService {
       );
       throw error;
     }
-    this.rslAudit?.recordSuccess(result);
-    this.metrics?.recordSuccess(result, Date.now() - startedAt);
-    return result;
+    this.metrics?.recordSuccess(prepared.result, Date.now() - startedAt);
+    return prepared.result;
   }
 
-  private async executePageArtifact(
+  private async preparePageArtifact(
     options: ReadExecutionOptions,
     operation: "read" | "map" | "crawl",
-  ): Promise<PageReadArtifact> {
+  ): Promise<PreparedPageArtifact> {
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
     const {
@@ -193,18 +201,20 @@ export class ReaderService {
           details: { requestId, artifactKey: terminal.artifactKey },
         });
       }
-      return {
+      const result: PageReadArtifact = {
         ...replayed,
         cached: true,
         evidence: { ...replayed.evidence, cacheStatus: "replayed" },
       };
+      return { result, commit: () => undefined };
     }
     const stale = cacheMode === "prefer-cache" && staleWhileRevalidateSeconds > 0
       ? this.cache.getStale(key, maxAgeSeconds, staleWhileRevalidateSeconds)
       : null;
     let execution: StageExecutionResult;
+    let scheduleRevalidation = false;
     if (stale !== null) {
-      this.scheduleBackgroundRevalidation(key, options, operation);
+      scheduleRevalidation = true;
       execution = {
         artifact: {
           ...stale,
@@ -277,35 +287,40 @@ export class ReaderService {
       },
     };
 
-    let artifactKey = executionArtifactKey;
-    if (operation !== "map" && publication !== null) {
-      artifactKey = this.cache.put(key, result, {
-        intent,
-        approvalContextHash,
-        rawRef: publication.rawRef,
-        extractorVersion: publication.extractorVersion,
-      }, {
-        ...(publication.etag === undefined ? {} : { etag: publication.etag }),
-        ...(publication.lastModified === undefined
-          ? {}
-          : { lastModified: publication.lastModified }),
-      });
-      if (artifactKey !== null) {
-        this.localIndex?.put(result, { artifactKey, rawRef: publication.rawRef });
-      }
-    }
-    if (operation !== "map" && artifactKey !== null) {
-      this.attemptLedger?.commitTerminal({
-        requestId,
-        planId: plan.id,
-        state: result.completeness === "complete" ? "completed" : "completed_uncertain",
-        artifactKey,
-        contentHash: result.contentHash,
-        validatorVersion: result.validation.validatorVersion,
-        error: null,
-      });
-    }
-    return result;
+    return {
+      result,
+      commit: () => {
+        if (scheduleRevalidation) this.scheduleBackgroundRevalidation(key, options, operation);
+        let artifactKey = executionArtifactKey;
+        if (operation !== "map" && publication !== null) {
+          artifactKey = this.cache.put(key, result, {
+            intent,
+            approvalContextHash,
+            rawRef: publication.rawRef,
+            extractorVersion: publication.extractorVersion,
+          }, {
+            ...(publication.etag === undefined ? {} : { etag: publication.etag }),
+            ...(publication.lastModified === undefined
+              ? {}
+              : { lastModified: publication.lastModified }),
+          });
+          if (artifactKey !== null) {
+            this.localIndex?.put(result, { artifactKey, rawRef: publication.rawRef });
+          }
+        }
+        if (operation !== "map" && artifactKey !== null) {
+          this.attemptLedger?.commitTerminal({
+            requestId,
+            planId: plan.id,
+            state: result.completeness === "complete" ? "completed" : "completed_uncertain",
+            artifactKey,
+            contentHash: result.contentHash,
+            validatorVersion: result.validation.validatorVersion,
+            error: null,
+          });
+        }
+      },
+    };
   }
 
   async inspectPage(options: ReadPageOptions): Promise<InspectPageResult> {

@@ -8,7 +8,8 @@ import { errorForHttpStatus, parseRetryAfterMs, ReadError } from "../errors.js";
 import type { PageFetchOptions, PageFetcher, RawPage } from "../types.js";
 import { UrlPolicy } from "../security/url-policy.js";
 import type { RobotsPolicy } from "../security/robots.js";
-import { ProxyPool } from "../proxy.js";
+import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
+import { PolicyEgressProxy } from "../security/policy-egress-proxy.js";
 import type { RslPolicy } from "../rsl.js";
 
 export type TransportResponse = {
@@ -150,6 +151,7 @@ export class HttpTransport {
     private readonly config: AppConfig,
     private readonly urlPolicy: UrlPolicy,
     private readonly proxyPool = new ProxyPool(config.proxyEndpoints),
+    private readonly policyProxy = new PolicyEgressProxy(urlPolicy),
   ) {
     this.identity = new AgentIdentity(config);
     this.directDispatcher = new Agent({
@@ -172,7 +174,7 @@ export class HttpTransport {
     const redirectChain: NonNullable<TransportResponse["redirects"]> = [];
     const maxBytes = Math.min(options.maxBytes ?? this.config.maxResponseBytes, this.config.maxResponseBytes);
     const proxy = this.proxyPool.acquire();
-    const dispatcher = this.dispatcherFor(proxy?.uri ?? null);
+    const dispatcher = await this.dispatcherFor(proxy);
 
     for (let redirectCount = 0; redirectCount <= this.config.maxRedirects; redirectCount += 1) {
       await this.urlPolicy.assertPublic(current);
@@ -322,19 +324,21 @@ export class HttpTransport {
     await Promise.all([
       this.directDispatcher.close(),
       ...[...this.proxyDispatchers.values()].map(async (dispatcher) => dispatcher.close()),
+      this.policyProxy.close(),
     ]);
   }
 
-  private dispatcherFor(proxyUri: string | null): Dispatcher {
-    if (proxyUri === null) {
+  private async dispatcherFor(proxy: ProxyEndpoint | null): Promise<Dispatcher> {
+    if (proxy === null) {
       return this.directDispatcher;
     }
-    const existing = this.proxyDispatchers.get(proxyUri);
+    const existing = this.proxyDispatchers.get(proxy.uri);
     if (existing !== undefined) {
       return existing;
     }
-    const dispatcher = new ProxyAgent(proxyUri);
-    this.proxyDispatchers.set(proxyUri, dispatcher);
+    const endpoint = await this.policyProxy.endpoint(proxy);
+    const dispatcher = new ProxyAgent(endpoint.uri);
+    this.proxyDispatchers.set(proxy.uri, dispatcher);
     return dispatcher;
   }
 }
