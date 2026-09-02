@@ -18,6 +18,75 @@ export class ControlPlaneJobLeaseSweeper {
   }
 }
 
+type JobLeaseSweeper = Pick<ControlPlaneJobLeaseSweeper, "sweep">;
+
+export type ControlPlaneJobLeaseSweepRunnerOptions = Readonly<{
+  intervalMs: number;
+  onFatalError(error: unknown): void;
+}>;
+
+export class ControlPlaneJobLeaseSweepRunner {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private inFlight: Promise<void> | null = null;
+  private started = false;
+  private closing = false;
+  private failed = false;
+
+  constructor(
+    private readonly sweeper: JobLeaseSweeper,
+    private readonly options: ControlPlaneJobLeaseSweepRunnerOptions,
+  ) {
+    if (!Number.isSafeInteger(options.intervalMs) ||
+        options.intervalMs < 1 || options.intervalMs > 2_147_483_647) {
+      throw new TypeError("intervalMs must be a positive timer-safe integer.");
+    }
+  }
+
+  async start(): Promise<number> {
+    if (this.started) throw new Error("The Job lease sweep runner has already started.");
+    if (this.closing) throw new Error("The Job lease sweep runner is closed.");
+    this.started = true;
+    return this.launch(true);
+  }
+
+  async close(): Promise<void> {
+    this.closing = true;
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    await this.inFlight;
+  }
+
+  private launch(propagateFailure: boolean): Promise<number> {
+    const operation = this.runSweep(propagateFailure);
+    this.inFlight = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async runSweep(propagateFailure: boolean): Promise<number> {
+    try {
+      const recovered = await this.sweeper.sweep();
+      if (!this.closing && !this.failed) this.scheduleNext();
+      return recovered;
+    } catch (error: unknown) {
+      this.failed = true;
+      this.options.onFatalError(error);
+      if (propagateFailure) throw error;
+      return 0;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  private scheduleNext(): void {
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      if (!this.closing && !this.failed) void this.launch(false);
+    }, this.options.intervalMs);
+  }
+}
+
 export async function recoverExpiredJobLeases(
   transaction: ControlPlaneQuery,
   projectId: string | null,
