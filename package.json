@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:postgres": "sh scripts/test-control-plane-postgres.sh",
     "test:watch": "vitest",
     "start": "node dist/server.js",
     "start:control-plane": "node dist/server.js --control-plane",
