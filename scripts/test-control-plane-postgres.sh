@@ -54,6 +54,10 @@ if [ -z "$postgres_port" ]; then
   exit 1
 fi
 
-DIAOYAN_TEST_POSTGRES_URL="postgresql://postgres:$test_password@127.0.0.1:$postgres_port/postgres" \
-  PGCONNECT_TIMEOUT=5 \
+test_database_url="postgresql://postgres:$test_password@127.0.0.1:$postgres_port/postgres"
+
+DIAOYAN_TEST_POSTGRES_URL="$test_database_url" PGCONNECT_TIMEOUT=5 \
   pnpm exec vitest run tests/control-plane-postgres.integration.test.ts --maxWorkers=1
+
+DIAOYAN_TEST_POSTGRES_URL="$test_database_url" PGCONNECT_TIMEOUT=5 \
+  pnpm exec vitest run tests/control-plane-auth-postgres.integration.test.ts --maxWorkers=1
