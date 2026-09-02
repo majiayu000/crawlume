@@ -607,8 +607,8 @@ describe("control-plane Job creation", () => {
 });
 
 describe("control-plane Worker claim", () => {
-  it("revalidates the Worker session and claims with SKIP LOCKED and generation fencing", async () => {
-    const assigned = jobRow({ status: "assigned" });
+  it("revalidates the Worker session and claims a running Job with generation fencing", async () => {
+    const running = jobRow({ status: "running" });
     const database = new JobDatabase([
       { rows: [{ active: true }] },
       { rows: [] },
@@ -624,12 +624,12 @@ describe("control-plane Worker claim", () => {
         heartbeat_deadline: new Date(jobNow.getTime() + 30_000),
         lease_deadline: new Date(jobNow.getTime() + 300_000),
       }] },
-      { rows: [assigned] },
+      { rows: [running] },
     ]);
     const service = new ControlPlaneJobService(database, { now: () => new Date(jobNow) });
     const claimed = await service.claimNext(workerIdentity());
 
-    expect(claimed?.job.status).toBe("assigned");
+    expect(claimed?.job.status).toBe("running");
     expect(claimed?.lease).toMatchObject({ generation: 2, projectId: "project-a" });
     expect(database.calls[3]?.statement).toContain("FOR UPDATE OF jobs SKIP LOCKED");
     expect(database.calls[3]?.statement).toContain("capability_manifest @>");
@@ -641,6 +641,7 @@ describe("control-plane Worker claim", () => {
     expect(database.calls[5]?.parameters.slice(1, 4)).toEqual([
       "project-a", "job-a", "worker-a",
     ]);
+    expect(database.calls[6]?.statement).toContain("status = 'running'");
   });
 
   it("returns no work without weakening authentication failures into an empty queue", async () => {
@@ -735,6 +736,25 @@ describe("control-plane Job completion and controls", () => {
       errorCode: " ",
     })).rejects.toThrow("terminal payload is inconsistent");
     expect(database.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["old generation", workerIdentity(), 1],
+    ["wrong Worker", workerIdentity({ workerId: "worker-b" }), 2],
+    ["wrong Project", workerIdentity({ projectId: "project-b" }), 2],
+  ])("fences completion for the %s", async (_case, identity, generation) => {
+    const database = new JobDatabase([{ rows: [{ active: true }] }, { rows: [] }]);
+    const service = new ControlPlaneJobService(database, { now: () => new Date(jobNow) });
+
+    await expect(service.complete(identity, "lease-b", generation, {
+      status: "completed",
+      resultCompleteness: "complete",
+      errorCode: null,
+    })).rejects.toEqual(new LeaseFencedError());
+    expect(database.calls[1]?.parameters.slice(0, 4)).toEqual([
+      "lease-b", identity.workerId, identity.projectId, generation,
+    ]);
+    expect(database.calls).toHaveLength(2);
   });
 
   it("pauses, resumes, and cancels only inside the trusted Project", async () => {

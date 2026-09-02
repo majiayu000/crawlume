@@ -597,14 +597,14 @@ export class ControlPlaneJobService {
       ]);
       const lease = insertedLease.rows[0];
       if (lease === undefined) throw new Error("The Job lease insert returned no record.");
-      const assigned = await transaction.query<ControlPlaneJobRow>(`
-        UPDATE jobs SET status = 'assigned', updated_at = $3
+      const running = await transaction.query<ControlPlaneJobRow>(`
+        UPDATE jobs SET status = 'running', updated_at = $3
         WHERE id = $1 AND project_id = $2 AND status = 'queued'
         RETURNING *
       `, [job.id, identity.projectId, now]);
-      const assignedJob = assigned.rows[0];
-      if (assignedJob === undefined) throw new Error("The claimed Job could not be assigned.");
-      return Object.freeze({ job: controlPlaneJob(assignedJob), lease: jobLease(lease) });
+      const runningJob = running.rows[0];
+      if (runningJob === undefined) throw new Error("The claimed Job could not start running.");
+      return Object.freeze({ job: controlPlaneJob(runningJob), lease: jobLease(lease) });
     });
   }
 

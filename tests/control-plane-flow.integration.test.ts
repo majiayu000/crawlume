@@ -136,14 +136,16 @@ class FlowDatabase implements ControlPlaneDatabase {
         job_id: parameters[2],
         worker_id: parameters[3],
         generation: parameters[4],
+        status: "active",
         heartbeat_deadline: parameters[6],
         lease_deadline: parameters[7],
       };
       return [this.lease];
     }
-    if (sql.startsWith("UPDATE jobs SET status = 'assigned'")) {
+    if (sql.startsWith("UPDATE jobs SET status = 'running'") &&
+        sql.includes("status = 'queued'")) {
       if (this.job === null || this.job.status !== "queued") return [];
-      this.job = { ...this.job, status: "assigned", updated_at: parameters[2] };
+      this.job = { ...this.job, status: "running", updated_at: parameters[2] };
       return [this.job];
     }
     if (sql.startsWith("UPDATE job_leases AS leases SET heartbeat_at")) {
@@ -155,6 +157,30 @@ class FlowDatabase implements ControlPlaneDatabase {
       if (this.job === null) return [];
       this.job = { ...this.job, status: "running", updated_at: parameters[2] };
       return [{ id: String(this.job.id) }];
+    }
+    if (sql.startsWith("UPDATE job_leases SET status = 'completed'")) {
+      if (this.lease === null || this.lease.status !== "active" ||
+          this.lease.id !== parameters[0] || this.lease.worker_id !== parameters[1] ||
+          this.lease.project_id !== parameters[2] || this.lease.generation !== parameters[3]) {
+        return [];
+      }
+      this.lease = { ...this.lease, status: "completed", finished_at: parameters[4] };
+      return [this.lease];
+    }
+    if (sql.startsWith("UPDATE jobs SET status = $3")) {
+      if (this.job === null || this.job.status !== "running" ||
+          this.job.id !== parameters[0] || this.job.project_id !== parameters[1]) {
+        return [];
+      }
+      this.job = {
+        ...this.job,
+        status: parameters[2],
+        result_completeness: parameters[3],
+        error_code: parameters[4],
+        completed_at: parameters[5],
+        updated_at: parameters[5],
+      };
+      return [this.job];
     }
 
     if (sql.startsWith("SELECT worker_sessions.id FROM worker_sessions")) {
@@ -239,7 +265,7 @@ class FlowDatabase implements ControlPlaneDatabase {
 }
 
 describe("control-plane Project and Worker integration", () => {
-  it("carries one Project-scoped Job from API Key creation through Worker publication", async () => {
+  it("carries one Project-scoped Job from claim through publication and completion", async () => {
     const database = new FlowDatabase();
     const jobs = new ControlPlaneJobService(database, { now: () => now });
     const results = new JobResultService(database);
@@ -313,15 +339,8 @@ describe("control-plane Project and Worker integration", () => {
       };
       expect(claim.job).toMatchObject({
         id: created.job.id,
-        status: "assigned",
+        status: "running",
       });
-
-      const heartbeatResponse = await fetch(`${listener.origin}/v1/job-leases/${claim.lease.id}`, {
-        method: "PATCH",
-        headers: { authorization: `Bearer ${workerToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ generation: claim.lease.generation }),
-      });
-      expect(heartbeatResponse.status).toBe(200);
 
       const publicationResponse = await fetch(
         `${listener.origin}/v1/job-leases/${claim.lease.id}/publications`,
@@ -340,6 +359,24 @@ describe("control-plane Project and Worker integration", () => {
         },
       );
       expect(publicationResponse.status).toBe(200);
+
+      const completionResponse = await fetch(
+        `${listener.origin}/v1/job-leases/${claim.lease.id}/complete`,
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${workerToken}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            generation: claim.lease.generation,
+            status: "completed",
+            result_completeness: "complete",
+            error_code: null,
+          }),
+        },
+      );
+      expect(completionResponse.status).toBe(200);
+      await expect(completionResponse.json()).resolves.toMatchObject({
+        job: { id: created.job.id, status: "completed" },
+      });
 
       const listedResponse = await fetch(
         `${listener.origin}/v1/projects/${projectId}/jobs/${created.job.id}/publications?limit=10`,
