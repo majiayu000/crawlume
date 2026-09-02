@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import {
   WorkerAuthenticationError,
+  WorkerChallengeRateLimitedError,
   WorkerEnrollmentAuthenticationError,
   WorkerIdentityService,
   type WorkerIdentityConfig,
@@ -19,6 +20,7 @@ import {
 import { runControlPlaneMigrations } from "../src/control-plane/migrations.js";
 import {
   OidcSessionService,
+  OidcLoginRateLimitedError,
   RefreshTokenRotationConflictError,
   RefreshTokenReuseError,
   type OidcSessionConfig,
@@ -309,6 +311,85 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
     return { workerId: worker.id, keys };
   }
 
+  it("bounds concurrent OIDC login starts to one database-clock attempt per client", async () => {
+    const firstDatabase = observedDatabase();
+    const secondDatabase = observedDatabase();
+    const gate = firstDatabase.holdAfterQuery((statement) =>
+      statement.includes("pg_try_advisory_xact_lock"));
+
+    const first = oidcService(firstDatabase).beginLogin();
+    await gate.entered.promise;
+    let secondResult;
+    try {
+      secondResult = await outcome(oidcService(secondDatabase).beginLogin());
+    } finally {
+      gate.release.resolve();
+    }
+
+    await expect(first).resolves.toMatchObject({ expiresAt: expect.any(Date) });
+    expect(secondResult).toEqual({
+      status: "rejected",
+      reason: new OidcLoginRateLimitedError(),
+    });
+    await expect(oidcService(fixtureDatabase).beginLogin()).rejects.toEqual(
+      new OidcLoginRateLimitedError(),
+    );
+    const attempts = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM oidc_login_attempts
+    `, []);
+    expect(attempts.rows[0]?.count).toBe("1");
+  });
+
+  it("cleans expired and old consumed OIDC attempts before admitting the next start", async () => {
+    await oidcService(fixtureDatabase).beginLogin();
+    await fixtureDatabase.query(`
+      UPDATE oidc_login_attempts
+      SET created_at = clock_timestamp() - INTERVAL '2 minutes',
+        expires_at = clock_timestamp() + INTERVAL '8 minutes',
+        consumed_at = clock_timestamp() - INTERVAL '2 seconds'
+    `, []);
+
+    await expect(oidcService(fixtureDatabase).beginLogin()).resolves.toBeDefined();
+    let attempts = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM oidc_login_attempts
+    `, []);
+    expect(attempts.rows[0]?.count).toBe("1");
+
+    await fixtureDatabase.query(`
+      UPDATE oidc_login_attempts
+      SET created_at = clock_timestamp() - INTERVAL '11 minutes',
+        expires_at = clock_timestamp() - INTERVAL '1 minute',
+        consumed_at = NULL
+    `, []);
+    await expect(oidcService(fixtureDatabase).beginLogin()).resolves.toBeDefined();
+    attempts = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM oidc_login_attempts
+    `, []);
+    expect(attempts.rows[0]?.count).toBe("1");
+  });
+
+  it("isolates OIDC begin budgets by issuer and client identity", async () => {
+    const first = await oidcService(fixtureDatabase).beginLogin();
+    const otherClient = new OidcSessionService(fixtureDatabase, {
+      ...oidcConfig,
+      clientId: "diaoyan-other-client",
+    }, { now: () => new Date(now) });
+    const second = await otherClient.beginLogin();
+    const otherIssuer = new OidcSessionService(fixtureDatabase, {
+      ...oidcConfig,
+      issuer: "https://other-issuer.example",
+    }, { now: () => new Date(now) });
+    const third = await otherIssuer.beginLogin();
+
+    expect(first.authorizationUrl).toContain("client_id=diaoyan-web");
+    expect(second.authorizationUrl).toContain("client_id=diaoyan-other-client");
+    expect(third.authorizationUrl).toContain("client_id=diaoyan-web");
+    const attempts = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM oidc_login_attempts
+    `, []);
+    expect(attempts.rows[0]?.count).toBe("3");
+  });
+
   function oidcService(
     database: ControlPlaneDatabase,
     decisionTime = now,
@@ -440,6 +521,163 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
       challenge: challenge.challenge,
       signature: signChallenge(challenge.challenge, worker.keys.privateKey),
     })).resolves.toMatchObject({ token: expect.any(String) });
+  });
+
+  it("bounds concurrent anonymous challenge creation to one row per Worker", async () => {
+    const worker = await enrollWorker();
+    const firstDatabase = observedDatabase();
+    const secondDatabase = observedDatabase();
+    const gate = firstDatabase.holdAfterQuery((statement) =>
+      statement.includes("pg_try_advisory_xact_lock"));
+
+    const first = workerService(firstDatabase).createChallenge(worker.workerId);
+    await gate.entered.promise;
+    let secondResult;
+    try {
+      secondResult = await outcome(
+        workerService(secondDatabase).createChallenge(worker.workerId),
+      );
+    } finally {
+      gate.release.resolve();
+    }
+
+    const challenge = await first;
+    expect(secondResult).toEqual({
+      status: "rejected",
+      reason: new WorkerChallengeRateLimitedError(),
+    });
+    await expect(workerService(fixtureDatabase).createChallenge(worker.workerId)).rejects.toEqual(
+      new WorkerChallengeRateLimitedError(),
+    );
+    const slots = await fixtureDatabase.query<{ count: string; challenge_hash: Buffer }>(`
+      SELECT count(*) OVER()::text AS count, challenge_hash
+      FROM worker_session_challenges
+      WHERE worker_id = $1
+    `, [worker.workerId]);
+    expect(slots.rows[0]).toEqual({ count: "1", challenge_hash: hashToken(challenge.challenge) });
+  });
+
+  it("reuses a consumed Worker slot immediately and invalidates the old challenge", async () => {
+    const worker = await enrollWorker();
+    const service = workerService(fixtureDatabase);
+    const first = await service.createChallenge(worker.workerId);
+    await service.createSession({
+      workerId: worker.workerId,
+      challenge: first.challenge,
+      signature: signChallenge(first.challenge, worker.keys.privateKey),
+    });
+
+    const second = await service.createChallenge(worker.workerId);
+    expect(second.challenge).not.toBe(first.challenge);
+    await expect(service.createSession({
+      workerId: worker.workerId,
+      challenge: first.challenge,
+      signature: signChallenge(first.challenge, worker.keys.privateKey),
+    })).rejects.toEqual(new WorkerAuthenticationError());
+    await expect(service.createSession({
+      workerId: worker.workerId,
+      challenge: second.challenge,
+      signature: signChallenge(second.challenge, worker.keys.privateKey),
+    })).resolves.toMatchObject({ token: expect.any(String) });
+    const slots = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count
+      FROM worker_session_challenges
+      WHERE worker_id = $1
+    `, [worker.workerId]);
+    expect(slots.rows[0]?.count).toBe("1");
+  });
+
+  it("replaces an unconsumed Worker slot after the cooldown and invalidates its secret", async () => {
+    const worker = await enrollWorker();
+    const service = workerService(fixtureDatabase);
+    const first = await service.createChallenge(worker.workerId);
+    await fixtureDatabase.query(`
+      UPDATE worker_session_challenges
+      SET created_at = clock_timestamp() - INTERVAL '2 seconds'
+      WHERE worker_id = $1
+    `, [worker.workerId]);
+
+    const second = await service.createChallenge(worker.workerId);
+    expect(second.challenge).not.toBe(first.challenge);
+    await expect(service.createSession({
+      workerId: worker.workerId,
+      challenge: first.challenge,
+      signature: signChallenge(first.challenge, worker.keys.privateKey),
+    })).rejects.toEqual(new WorkerAuthenticationError());
+    await expect(service.createSession({
+      workerId: worker.workerId,
+      challenge: second.challenge,
+      signature: signChallenge(second.challenge, worker.keys.privateKey),
+    })).resolves.toMatchObject({ token: expect.any(String) });
+    const slots = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count
+      FROM worker_session_challenges
+      WHERE worker_id = $1
+    `, [worker.workerId]);
+    expect(slots.rows[0]?.count).toBe("1");
+  });
+
+  it("lets different Workers create isolated challenge slots", async () => {
+    const first = await enrollWorker();
+    const second = await enrollWorker();
+    const firstDatabase = observedDatabase();
+    const gate = firstDatabase.holdAfterQuery((statement) =>
+      statement.includes("pg_try_advisory_xact_lock"));
+    const firstPromise = workerService(firstDatabase).createChallenge(first.workerId);
+    await gate.entered.promise;
+    let secondChallenge;
+    try {
+      secondChallenge = await workerService(fixtureDatabase).createChallenge(second.workerId);
+    } finally {
+      gate.release.resolve();
+    }
+    const firstChallenge = await firstPromise;
+    expect(firstChallenge.workerId).toBe(first.workerId);
+    expect(secondChallenge.workerId).toBe(second.workerId);
+    const slots = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM worker_session_challenges
+    `, []);
+    expect(slots.rows[0]?.count).toBe("2");
+  });
+
+  it("serializes challenge replacement behind an in-flight valid session exchange", async () => {
+    const worker = await enrollWorker();
+    const initial = await workerService(fixtureDatabase).createChallenge(worker.workerId);
+    const sessionDatabase = observedDatabase();
+    const replacementDatabase = observedDatabase();
+    const gate = sessionDatabase.holdAfterQuery((statement) =>
+      statement.includes("FOR UPDATE OF challenges"));
+    const session = workerService(sessionDatabase).createSession({
+      workerId: worker.workerId,
+      challenge: initial.challenge,
+      signature: signChallenge(initial.challenge, worker.keys.privateKey),
+    });
+    await gate.entered.promise;
+    const replacement = outcome(
+      workerService(replacementDatabase).createChallenge(worker.workerId),
+    );
+    const replacementPid = await replacementDatabase.transactionStarted.promise;
+    try {
+      await expect(waitForLock(replacementPid)).resolves.toBe("Lock");
+    } finally {
+      gate.release.resolve();
+    }
+
+    await expect(session).resolves.toMatchObject({ token: expect.any(String) });
+    const replacementResult = await replacement;
+    expect(replacementResult.status).toBe("fulfilled");
+    if (replacementResult.status !== "fulfilled") throw replacementResult.reason;
+    const replaced = replacementResult.value;
+    expect(replaced.challenge).not.toBe(initial.challenge);
+    await expect(workerService(fixtureDatabase).createSession({
+      workerId: worker.workerId,
+      challenge: initial.challenge,
+      signature: signChallenge(initial.challenge, worker.keys.privateKey),
+    })).rejects.toEqual(new WorkerAuthenticationError());
+    const slots = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM worker_session_challenges WHERE worker_id = $1
+    `, [worker.workerId]);
+    expect(slots.rows[0]?.count).toBe("1");
   });
 
   it("allows only one backend to exchange a signed challenge", async () => {

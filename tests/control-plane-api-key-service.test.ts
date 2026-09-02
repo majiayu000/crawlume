@@ -17,6 +17,7 @@ import {
   requireProjectApiKeyScope,
   revokeProjectApiKey,
   WorkerAuthenticationError,
+  WorkerChallengeRateLimitedError,
   WorkerEnrollmentAuthenticationError,
   WorkerIdentityService,
   WorkerNotFoundError,
@@ -442,18 +443,46 @@ describe("Worker enrollment", () => {
 
 describe("Worker challenge and session", () => {
   it("stores only a two-minute challenge hash and does not accept a Project from the Worker", async () => {
-    const database = new ApiKeyDatabase([{ rows: [{ id: "challenge-a" }] }]);
+    const database = new ApiKeyDatabase([
+      { rows: [{ acquired: true }] },
+      { rows: [{ project_id: "project-a", public_key_id: "key-a" }] },
+      { rows: [{ id: "challenge-a", expires_at: new Date(workerNow.getTime() + 120_000) }] },
+    ]);
     const { service } = await workerHarness(database);
     const challenge = await service.createChallenge("worker-a");
 
     expect(challenge.challenge).toMatch(/^dya_wc_[A-Za-z0-9_-]{43}$/u);
     expect(challenge.signingPayload).toBe(`dya-worker-session-v1\n${challenge.challenge}`);
     expect(challenge.expiresAt.getTime() - workerNow.getTime()).toBe(2 * 60 * 1_000);
-    expect(database.calls[0]?.parameters[1]).toBe("worker-a");
-    expect(database.calls[0]?.parameters[2]).toEqual(
+    expect(database.calls[1]?.parameters).toEqual(["worker-a"]);
+    expect(database.calls[2]?.parameters[4]).toEqual(
       createHash("sha256").update(challenge.challenge).digest(),
     );
     expect(JSON.stringify(database.calls)).not.toContain(challenge.challenge);
+    expect(database.transactions).toBe(1);
+    expect(database.calls[0]?.statement).toContain("pg_try_advisory_xact_lock");
+    expect(database.calls[2]?.statement).toContain("ON CONFLICT ON CONSTRAINT");
+    expect(database.calls[2]?.statement).toContain("clock_timestamp()");
+  });
+
+  it("rate-limits a concurrent or too-recent challenge without returning another secret", async () => {
+    const lockBusy = new ApiKeyDatabase([{ rows: [{ acquired: false }] }]);
+    const locked = await workerHarness(lockBusy);
+    await expect(locked.service.createChallenge("worker-a")).rejects.toEqual(
+      new WorkerChallengeRateLimitedError(),
+    );
+    expect(lockBusy.calls).toHaveLength(1);
+
+    const recent = new ApiKeyDatabase([
+      { rows: [{ acquired: true }] },
+      { rows: [{ project_id: "project-a", public_key_id: "key-a" }] },
+      { rows: [] },
+    ]);
+    const active = await workerHarness(recent);
+    await expect(active.service.createChallenge("worker-a")).rejects.toEqual(
+      new WorkerChallengeRateLimitedError(),
+    );
+    expect(recent.calls).toHaveLength(3);
   });
 
   it("uses one error for an unknown, expired, or replayed challenge", async () => {
@@ -473,7 +502,11 @@ describe("Worker challenge and session", () => {
     const { challenge, signature, capabilityHash, identity } = workerChallengeProof();
     const database = new ApiKeyDatabase([
       { rows: [identity] },
-      { rows: [{ id: "session-a" }] },
+      { rows: [{
+        id: "session-a",
+        created_at: workerNow,
+        expires_at: new Date(workerNow.getTime() + 5 * 60 * 1_000),
+      }] },
       { rows: [{ active: true }] },
     ]);
     const active = await workerHarness(database);
@@ -496,7 +529,7 @@ describe("Worker challenge and session", () => {
     expect(verifiedJwt.payload.capability_hash).toBe(capabilityHash.toString("base64url"));
     expect((verifiedJwt.payload.exp as number) - (verifiedJwt.payload.iat as number)).toBe(300);
     expect(database.calls[0]?.statement).toContain("FOR UPDATE OF challenges");
-    expect(database.calls[1]?.statement).toContain("WITH consumed AS");
+    expect(database.calls[1]?.statement).toContain("consumed AS");
 
     await expect(active.service.verifySession(session.token)).resolves.toEqual({
       workerId: "worker-a",
@@ -512,7 +545,11 @@ describe("Worker challenge and session", () => {
     const database = new ApiKeyDatabase([
       { rows: [proof.identity] },
       { rows: [proof.identity] },
-      { rows: [{ id: "session-a" }] },
+      { rows: [{
+        id: "session-a",
+        created_at: workerNow,
+        expires_at: new Date(workerNow.getTime() + 5 * 60 * 1_000),
+      }] },
     ]);
     const { service } = await workerHarness(database);
 
@@ -530,14 +567,18 @@ describe("Worker challenge and session", () => {
       challenge: proof.challenge,
       signature: proof.signature,
     })).resolves.toMatchObject({ expiresAt: new Date(workerNow.getTime() + 5 * 60 * 1_000) });
-    expect(database.calls[2]?.statement).toContain("WITH consumed AS");
+    expect(database.calls[2]?.statement).toContain("consumed AS");
   });
 
   it("allows only one concurrent session exchange for a challenge", async () => {
     const proof = workerChallengeProof("G");
     const database = new ApiKeyDatabase([
       { rows: [proof.identity] },
-      { rows: [{ id: "session-a" }] },
+      { rows: [{
+        id: "session-a",
+        created_at: workerNow,
+        expires_at: new Date(workerNow.getTime() + 5 * 60 * 1_000),
+      }] },
       { rows: [] },
     ]);
     const { service } = await workerHarness(database);
@@ -564,7 +605,11 @@ describe("Worker challenge and session", () => {
       { rows: [proof.identity] },
       () => { throw databaseFailure; },
       { rows: [proof.identity] },
-      { rows: [{ id: "session-a" }] },
+      { rows: [{
+        id: "session-a",
+        created_at: workerNow,
+        expires_at: new Date(workerNow.getTime() + 5 * 60 * 1_000),
+      }] },
     ]);
     const { service } = await workerHarness(database);
 

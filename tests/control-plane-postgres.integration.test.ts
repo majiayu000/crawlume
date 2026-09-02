@@ -306,7 +306,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     await administration.end();
   });
 
-  it("executes all seven checked-in migrations on an empty database", async () => {
+  it("executes all eight checked-in migrations on an empty database", async () => {
     await runControlPlaneMigrations(database!);
     await runControlPlaneMigrations(database!);
 
@@ -323,7 +323,61 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       { version: 5, name: "0005_jobs_and_leases.sql" },
       { version: 6, name: "0006_job_results.sql" },
       { version: 7, name: "0007_audit_events.sql" },
+      { version: 8, name: "0008_bound_auth_attempts.sql" },
     ]);
+  });
+
+  it("refuses to bound Worker challenge slots while duplicate legacy rows exist", async () => {
+    await runControlPlaneMigrations(database!);
+    await seedRuntimeFixture(database!);
+    await database!.query(`
+      DELETE FROM control_plane_schema_migrations WHERE version = 8;
+      ALTER TABLE worker_session_challenges
+        DROP CONSTRAINT worker_session_challenges_worker_unique;
+      CREATE INDEX worker_session_challenges_worker_open
+        ON worker_session_challenges(worker_id, expires_at)
+        WHERE consumed_at IS NULL;
+    `);
+    await database!.query(`
+      INSERT INTO worker_session_challenges(
+        id, project_id, worker_id, public_key_id, challenge_hash,
+        created_at, expires_at, consumed_at
+      ) VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $6),
+        ($8, $2, $3, $4, $9, $6, $7, NULL)
+    `, [
+      randomUUID(), fixture.projectId, fixture.workerId, fixture.publicKeyId,
+      Buffer.alloc(32, 5), fixtureNow, new Date(fixtureNow.getTime() + 120_000),
+      randomUUID(), Buffer.alloc(32, 6),
+    ]);
+
+    await expect(runControlPlaneMigrations(database!)).rejects.toThrow(
+      "worker_session_challenges contains duplicate worker_id rows; " +
+      "resolve them before migration",
+    );
+
+    const state = await database!.query<{
+      applied: string;
+      constraint_name: string | null;
+      challenge_count: string;
+      legacy_index: string | null;
+    }>(`
+      SELECT
+        (SELECT count(*)::text FROM control_plane_schema_migrations WHERE version = 8) AS applied,
+        (SELECT constraint_name FROM information_schema.table_constraints
+          WHERE table_schema = 'public'
+            AND table_name = 'worker_session_challenges'
+            AND constraint_name = 'worker_session_challenges_worker_unique') AS constraint_name,
+        (SELECT count(*)::text FROM worker_session_challenges
+          WHERE worker_id = $1) AS challenge_count,
+        to_regclass('public.worker_session_challenges_worker_open')::text AS legacy_index
+    `, [fixture.workerId]);
+    expect(state.rows[0]).toEqual({
+      applied: "0",
+      constraint_name: null,
+      challenge_count: "2",
+      legacy_index: "worker_session_challenges_worker_open",
+    });
   });
 
   it("enforces the project-organization composite foreign key and audit triggers", async () => {

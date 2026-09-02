@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AccessTokenAuthenticationError,
   OidcAuthenticationError,
+  OidcLoginRateLimitedError,
   RefreshTokenAuthenticationError,
   RefreshTokenReuseError,
   RefreshTokenRotationConflictError,
@@ -123,6 +124,18 @@ describe("Human Auth HTTP API", () => {
       `__Secure-diaoyan_oidc_state=${state}; Path=/v1/auth/oidc/callback; ` +
         `Expires=${stateExpiresAt.toUTCString()}; Secure; HttpOnly; SameSite=Lax`,
     ]);
+  });
+
+  it("returns a retryable 429 with Retry-After when OIDC begin is rate limited", async () => {
+    const { api } = harness({
+      beginLogin: vi.fn(async () => { throw new OidcLoginRateLimitedError(); }),
+    });
+
+    await expect(api.handle(request())).resolves.toMatchObject({
+      status: 429,
+      headers: { "retry-after": "1", "content-type": "application/problem+json" },
+      body: { code: "OIDC_LOGIN_RATE_LIMITED", retryable: true },
+    });
   });
 
   it("completes login only for the initiating browser and never returns the refresh token", async () => {

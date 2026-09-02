@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   WorkerAuthenticationError,
+  WorkerChallengeRateLimitedError,
   WorkerEnrollmentAuthenticationError,
   WorkerNotFoundError,
   WorkerPublicKeyError,
@@ -314,6 +315,23 @@ describe("Worker bootstrap HTTP API", () => {
       workerId,
       challenge: challengeValue,
       signature,
+    });
+  });
+
+  it("returns a retryable 429 with Retry-After when challenge creation is rate limited", async () => {
+    const { api } = await harness({
+      createChallenge: vi.fn(async () => { throw new WorkerChallengeRateLimitedError(); }),
+    });
+    const result = await api.handle(request({
+      path: "/v1/worker-sessions/challenges",
+      headers: { "content-type": "application/json" },
+      body: { worker_id: workerId },
+    }));
+
+    expect(result).toMatchObject({
+      status: 429,
+      headers: { "retry-after": "1", "content-type": "application/problem+json" },
+      body: { code: "WORKER_CHALLENGE_RATE_LIMITED", retryable: true },
     });
   });
 

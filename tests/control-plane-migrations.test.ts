@@ -113,6 +113,7 @@ describe("control-plane migration runner", () => {
       { version: 5, name: "0005_jobs_and_leases.sql" },
       { version: 6, name: "0006_job_results.sql" },
       { version: 7, name: "0007_audit_events.sql" },
+      { version: 8, name: "0008_bound_auth_attempts.sql" },
     ]);
   });
 

@@ -18,6 +18,7 @@ import {
   AccessTokenAuthenticationError,
   createOidcRemoteJwkSet,
   OidcAuthenticationError,
+  OidcLoginRateLimitedError,
   OidcSessionService,
   RefreshTokenAuthenticationError,
   RefreshTokenRotationConflictError,
@@ -145,14 +146,19 @@ function runtimeEnvironment(
 
 describe("OIDC Authorization Code + PKCE", () => {
   it("stores only the state hash and creates an S256 authorization request", async () => {
-    const database = new IdentityDatabase([{ rows: [{ id: "attempt-a" }] }]);
+    const database = new IdentityDatabase([
+      { rows: [{ acquired: true }] },
+      { rows: [] },
+      { rows: [{ id: "attempt-a", created_at: now, expires_at: new Date(now.getTime() + 600_000) }] },
+    ]);
     const { service } = await harness(database);
 
     const started = await service.beginLogin();
     const url = new URL(started.authorizationUrl);
     const state = url.searchParams.get("state") as string;
     const nonce = url.searchParams.get("nonce") as string;
-    const codeVerifier = database.calls[0]?.parameters[5] as string;
+    const insert = database.calls[2];
+    const codeVerifier = insert?.parameters[5] as string;
 
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
@@ -160,18 +166,47 @@ describe("OIDC Authorization Code + PKCE", () => {
       createHash("sha256").update(codeVerifier).digest("base64url"),
     );
     expect(url.searchParams.get("scope")).toBe("openid profile email");
-    expect(database.calls[0]?.parameters[1]).toEqual(createHash("sha256").update(state).digest());
-    expect(database.calls[0]?.parameters[6]).toBe(nonce);
-    expect(JSON.stringify(database.calls[0]?.parameters)).not.toContain(state);
+    expect(insert?.parameters[1]).toEqual(createHash("sha256").update(state).digest());
+    expect(insert?.parameters[6]).toBe(nonce);
+    expect(JSON.stringify(insert?.parameters)).not.toContain(state);
     expect(started.expiresAt.getTime() - now.getTime()).toBe(10 * 60 * 1_000);
+    expect(database.transactions).toBe(1);
+    expect(database.calls[0]?.statement).toContain("pg_try_advisory_xact_lock");
+    expect(database.calls[1]?.statement).toContain("DELETE FROM oidc_login_attempts");
+    expect(insert?.statement).toContain("clock_timestamp()");
+  });
+
+  it("rate-limits a concurrent or too-recent begin without inserting another attempt", async () => {
+    const lockBusy = new IdentityDatabase([{ rows: [{ acquired: false }] }]);
+    const lockedService = await harness(lockBusy);
+    await expect(lockedService.service.beginLogin()).rejects.toEqual(
+      new OidcLoginRateLimitedError(),
+    );
+    expect(lockBusy.calls).toHaveLength(1);
+
+    const recent = new IdentityDatabase([
+      { rows: [{ acquired: true }] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    const recentService = await harness(recent);
+    await expect(recentService.service.beginLogin()).rejects.toEqual(
+      new OidcLoginRateLimitedError(),
+    );
+    expect(recent.calls).toHaveLength(3);
+    expect(recent.transactions).toBe(1);
   });
 
   it("consumes state once, verifies nonce, and provisions the personal tenant", async () => {
-    const database = new IdentityDatabase([{ rows: [{ id: "attempt-a" }] }]);
+    const database = new IdentityDatabase([
+      { rows: [{ acquired: true }] },
+      { rows: [] },
+      { rows: [{ id: "attempt-a", created_at: now, expires_at: new Date(now.getTime() + 600_000) }] },
+    ]);
     const tokenRequest = { form: undefined as URLSearchParams | undefined };
     const fetcher = (async (_input: URL | RequestInfo, init?: RequestInit) => {
       tokenRequest.form = init?.body as URLSearchParams;
-      const nonce = database.calls[0]?.parameters[6] as string;
+      const nonce = database.calls[2]?.parameters[6] as string;
       const { oidcKeys, config } = await activeHarness;
       const issuedAt = Math.floor(now.getTime() / 1_000);
       const idToken = await new SignJWT({
@@ -195,8 +230,8 @@ describe("OIDC Authorization Code + PKCE", () => {
     const started = await activeHarness.service.beginLogin();
     const authorizationUrl = new URL(started.authorizationUrl);
     const state = authorizationUrl.searchParams.get("state") as string;
-    const codeVerifier = database.calls[0]?.parameters[5] as string;
-    const nonce = database.calls[0]?.parameters[6] as string;
+    const codeVerifier = database.calls[2]?.parameters[5] as string;
+    const nonce = database.calls[2]?.parameters[6] as string;
     database.enqueue(
       { rows: [{
         issuer: activeHarness.config.issuer,
@@ -226,10 +261,10 @@ describe("OIDC Authorization Code + PKCE", () => {
     expect(completed.tokens.accessTokenExpiresAt.getTime() - now.getTime()).toBe(10 * 60 * 1_000);
     expect(completed.tokens.refreshTokenExpiresAt.getTime() - now.getTime())
       .toBe(30 * 24 * 60 * 60 * 1_000);
-    expect(database.calls[4]?.statement).toContain("organization_memberships");
-    expect(database.calls[4]?.parameters).toHaveLength(2);
-    expect(database.calls[5]?.statement).toContain("'default'");
-    const refreshInsert = database.calls[6];
+    expect(database.calls[6]?.statement).toContain("organization_memberships");
+    expect(database.calls[6]?.parameters).toHaveLength(2);
+    expect(database.calls[7]?.statement).toContain("'default'");
+    const refreshInsert = database.calls[8];
     expect(refreshInsert?.parameters[3]).toEqual(
       createHash("sha256").update(completed.tokens.refreshToken).digest(),
     );
