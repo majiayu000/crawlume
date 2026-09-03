@@ -79,7 +79,7 @@ function request(overrides: Partial<WorkerHttpRequest> = {}): WorkerHttpRequest 
     path: `/v1/projects/${projectId}/api-keys`,
     query: "",
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `bEaReR ${token}`,
       "content-type": "application/json",
     },
     body: { scopes: ["tasks:write", "results:read"], expires_at: null },

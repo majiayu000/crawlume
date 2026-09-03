@@ -306,7 +306,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     await administration.end();
   });
 
-  it("executes all eight checked-in migrations on an empty database", async () => {
+  it("executes all nine checked-in migrations on an empty database", async () => {
     await runControlPlaneMigrations(database!);
     await runControlPlaneMigrations(database!);
 
@@ -324,6 +324,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       { version: 6, name: "0006_job_results.sql" },
       { version: 7, name: "0007_audit_events.sql" },
       { version: 8, name: "0008_bound_auth_attempts.sql" },
+      { version: 9, name: "0009_project_creation_idempotency.sql" },
     ]);
   });
 
@@ -331,7 +332,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     await runControlPlaneMigrations(database!);
     await seedRuntimeFixture(database!);
     await database!.query(`
-      DELETE FROM control_plane_schema_migrations WHERE version = 8;
+      DELETE FROM control_plane_schema_migrations WHERE version >= 8;
       ALTER TABLE worker_session_challenges
         DROP CONSTRAINT worker_session_challenges_worker_unique;
       CREATE INDEX worker_session_challenges_worker_open

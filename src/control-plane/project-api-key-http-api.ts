@@ -112,7 +112,7 @@ function matchRoute(path: string): ApiKeyRoute | null {
 
 function accessToken(request: WorkerHttpRequest): string {
   const authorization = controlPlaneHeader(request, "authorization");
-  const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u.exec(
+  const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/iu.exec(
     authorization ?? "",
   );
   if (match?.[1] === undefined) throw new AccessTokenAuthenticationError();
