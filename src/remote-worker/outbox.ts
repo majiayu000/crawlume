@@ -255,7 +255,7 @@ export class RemoteWorkerOutbox {
         this.#database.exec(`
           BEGIN IMMEDIATE;
           CREATE TABLE remote_worker_outbox (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             job_id TEXT NOT NULL,
             lease_id TEXT NOT NULL,
             lease_generation INTEGER NOT NULL CHECK(lease_generation > 0),

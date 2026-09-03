@@ -795,6 +795,31 @@ describe("RemoteWorkerOutbox", () => {
     reopened.close();
   });
 
+  it.each([
+    ["highest publication", lease, successOutcome(), "publication"],
+    ["sole failure event", failureLease, failureOutcome(), "event"],
+  ] as const)("never reuses the %s row identity after delete and exact reinsert", (_label, identity, outcome, kind) => {
+    const path = outboxPath();
+    const initial = new RemoteWorkerOutbox(path); initial.stageOutcome(identity, outcome); initial.close();
+    const database = new DatabaseSync(path);
+    const planned = database.prepare("SELECT id FROM remote_worker_outbox WHERE kind=?").get(kind) as { id: number };
+    database.prepare("CREATE TEMP TABLE replacement AS SELECT * FROM remote_worker_outbox WHERE id=?").run(planned.id);
+    database.prepare("DELETE FROM remote_worker_outbox WHERE id=?").run(planned.id);
+    database.exec(`INSERT INTO remote_worker_outbox(job_id,lease_id,lease_generation,kind,dedupe_key,local_sequence,
+      payload_json,payload_hash,state,created_at_ms,acked_at_ms,blocked_code)
+      SELECT job_id,lease_id,lease_generation,kind,dedupe_key,local_sequence,payload_json,payload_hash,state,
+        created_at_ms,acked_at_ms,blocked_code FROM replacement`);
+    const replacement = database.prepare("SELECT id FROM remote_worker_outbox WHERE kind=?").get(kind) as { id: number };
+    expect(replacement.id).toBeGreaterThan(planned.id);
+    expect(database.prepare("SELECT seq FROM sqlite_sequence WHERE name='remote_worker_outbox'").get())
+      .toEqual({ seq: replacement.id });
+    database.close();
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(() => reopened.getExecution(identity)).toThrow(RemoteWorkerOutboxIntegrityError);
+    expect(() => reopened.listRecoverableExecutions()).toThrow(RemoteWorkerOutboxIntegrityError);
+    reopened.close();
+  });
+
   it("rejects primary-key-only mutation that reverses delivery order", () => {
     const path = outboxPath();
     const initial = new RemoteWorkerOutbox(path); initial.stageOutcome(lease, successOutcome()); initial.close();
