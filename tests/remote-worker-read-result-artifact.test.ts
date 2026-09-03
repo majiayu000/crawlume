@@ -200,12 +200,66 @@ describe("encodePublicReadResultArtifact", () => {
   });
 
   it("returns fresh bytes that do not affect later encodes when mutated", () => {
-    const first = encodePublicReadResultArtifact(readResult());
-    first.bytes[0] = 0;
+    const artifact = encodePublicReadResultArtifact(readResult());
+    const mutated = artifact.bytes;
+    mutated[0] = 0;
 
-    const second = encodePublicReadResultArtifact(readResult());
+    const canonical = artifact.bytes;
 
-    expect(first.bytes).not.toEqual(second.bytes);
-    expect(Buffer.from(second.bytes).toString("utf8")).toBe(goldenJson);
+    expect(mutated).not.toEqual(canonical);
+    expect(Buffer.from(canonical).toString("utf8")).toBe(goldenJson);
+    expect(createHash("sha256").update(canonical).digest("base64url"))
+      .toBe(artifact.contentHash);
+  });
+
+  it.each(["own", "inherited"] as const)(
+    "does not execute an %s completeness getter",
+    (placement) => {
+      let reads = 0;
+      const getter = {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return "complete";
+        },
+      };
+      const input = readResult() as ReadPageResult & Record<string, unknown>;
+      delete (input as Record<string, unknown>).completeness;
+      if (placement === "own") {
+        Object.defineProperty(input, "completeness", getter);
+      } else {
+        Object.setPrototypeOf(input, Object.create(Object.prototype, { completeness: getter }));
+      }
+
+      expect(() => encodePublicReadResultArtifact(input))
+        .toThrow(PublicReadResultArtifactError);
+      expect(reads).toBe(0);
+    },
+  );
+
+  it.each(["own", "inherited"] as const)(
+    "does not execute an %s array entry getter",
+    (placement) => {
+      let reads = 0;
+      const getter = {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return "SECRET_SENTINEL";
+        },
+      };
+      const array: unknown[] = placement === "own" ? [undefined] : [];
+      if (placement === "own") {
+        Object.defineProperty(array, "0", getter);
+      } else {
+        Object.setPrototypeOf(array, Object.create(Array.prototype, { 0: getter }));
+        Object.defineProperty(array, "length", { value: 1 });
+      }
+      const input = readResult() as ReadPageResult & Record<string, unknown>;
+      input.invalid = array;
+
+      expect(() => encodePublicReadResultArtifact(input))
+        .toThrow(PublicReadResultArtifactError);
+      expect(reads).toBe(0);
   });
 });

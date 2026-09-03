@@ -49,11 +49,27 @@ function encodeJson(
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        throw new PublicReadResultArtifactError();
+      }
+      if (Object.getOwnPropertySymbols(value).length > 0) {
+        throw new PublicReadResultArtifactError();
+      }
       const entries: string[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        const entry = value[index];
-        if (entry === undefined) throw new PublicReadResultArtifactError();
-        entries.push(encodeJson(entry, ancestors));
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) {
+        throw new PublicReadResultArtifactError();
+      }
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (
+          descriptor === undefined ||
+          !("value" in descriptor) ||
+          descriptor.value === undefined
+        ) {
+          throw new PublicReadResultArtifactError();
+        }
+        entries.push(encodeJson(descriptor.value, ancestors));
       }
       return `[${entries.join(",")}]`;
     }
@@ -94,20 +110,26 @@ export function encodePublicReadResultArtifact(
   result: ReadPageResult,
 ): PublicReadResultArtifact {
   try {
-    const completeness = result.completeness === "complete"
+    const completenessDescriptor = Object.getOwnPropertyDescriptor(result, "completeness");
+    if (completenessDescriptor === undefined || !("value" in completenessDescriptor)) {
+      throw new PublicReadResultArtifactError();
+    }
+    const completeness = completenessDescriptor.value === "complete"
       ? "complete"
-      : result.completeness === "uncertain"
+      : completenessDescriptor.value === "uncertain"
         ? "partial"
         : undefined;
     if (completeness === undefined) throw new PublicReadResultArtifactError();
 
     const encodedResult = encodeJson(result, new WeakSet(), new Set(["cached"]));
     const json = `{"result":${encodedResult},"schema":"diaoyan.public-read-result","version":1}`;
-    const bytes = Buffer.from(json, "utf8");
+    const canonicalBytes = Buffer.from(json, "utf8");
     return Object.freeze({
-      bytes,
-      contentHash: createHash("sha256").update(bytes).digest("base64url"),
-      byteCount: bytes.byteLength,
+      get bytes() {
+        return Uint8Array.from(canonicalBytes);
+      },
+      contentHash: createHash("sha256").update(canonicalBytes).digest("base64url"),
+      byteCount: canonicalBytes.byteLength,
       mediaType,
       completeness,
       storage: "worker_local" as const,
