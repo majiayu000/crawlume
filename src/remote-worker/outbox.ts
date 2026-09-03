@@ -5,10 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { RemoteWorkerClient, RemoteWorkerHttpError } from "./client.js";
+import { RemoteWorkerClient, RemoteWorkerHttpError, type RemoteWorkerTerminal } from "./client.js";
 
 const maximumPayloadBytes = 64 * 1_024;
-const schemaVersion = 1;
+const schemaVersion = 2;
 const uuidSchema = z.uuid();
 const generationSchema = z.number().int().positive().safe();
 const dedupeKeySchema = z.string().trim().min(1).max(128);
@@ -37,6 +37,19 @@ const publicationInputSchema = z.object({
   mediaType: z.string().trim().min(1).max(255), completeness: z.enum(["complete", "partial"]),
   storage: z.enum(["worker_local", "cloud_object"]),
 }).strict();
+const completedTerminalSchema = z.object({
+  status: z.literal("completed"), resultCompleteness: z.enum(["complete", "partial"]), errorCode: z.null(),
+}).strict();
+const failedTerminalSchema = z.object({
+  status: z.literal("failed"), resultCompleteness: z.null(),
+  errorCode: z.string().trim().min(1).max(128),
+}).strict();
+const terminalSchema = z.discriminatedUnion("status", [completedTerminalSchema, failedTerminalSchema]);
+const executionStageSchema = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("success"), event: eventInputSchema, publication: publicationInputSchema,
+    artifactBytes: z.instanceof(Uint8Array), terminal: completedTerminalSchema }).strict(),
+  z.object({ outcome: z.literal("failure"), event: eventInputSchema, terminal: failedTerminalSchema }).strict(),
+]);
 const eventPayloadSchema = z.object({
   generation: generationSchema, local_sequence: z.number().int().positive().safe(),
   event_type: z.string().min(1).max(64), page_status: z.number().int().min(100).max(599).nullable(),
@@ -69,6 +82,15 @@ export type RemoteWorkerOutboxEntry = Readonly<{
   ackedAtMs: number | null;
   blockedCode: string | null;
 }>;
+export type RemoteWorkerExecutionStageInput = Readonly<z.input<typeof executionStageSchema>>;
+export type RemoteWorkerExecutionState = "staged" | "terminal_attempted" | "terminal_acked" | "blocked";
+export type RemoteWorkerExecution = Readonly<{
+  jobId: string; leaseId: string; generation: number; outcome: "success" | "failure";
+  state: RemoteWorkerExecutionState; event: RemoteWorkerOutboxEntry;
+  publication: RemoteWorkerOutboxEntry | null; artifactBytes: Uint8Array | null;
+  terminal: RemoteWorkerTerminal; stagedAtMs: number; terminalAttemptedAtMs: number | null;
+  terminalAckedAtMs: number | null; blockedCode: string | null;
+}>;
 
 type OutboxRow = {
   id: number;
@@ -84,6 +106,14 @@ type OutboxRow = {
   created_at_ms: number;
   acked_at_ms: number | null;
   blocked_code: string | null;
+};
+type ExecutionRow = {
+  job_id: string; lease_id: string; lease_generation: number; outcome: "success" | "failure";
+  event_dedupe_key: string; publication_dedupe_key: string | null;
+  artifact_bytes: Uint8Array | null; artifact_hash: Uint8Array | null;
+  terminal_json: string; terminal_hash: Uint8Array; state: RemoteWorkerExecutionState;
+  staged_at_ms: number; terminal_attempted_at_ms: number | null;
+  terminal_acked_at_ms: number | null; blocked_code: string | null;
 };
 type DeliveryOptions = Readonly<{
   lease: RemoteWorkerOutboxLease;
@@ -146,6 +176,19 @@ export class RemoteWorkerOutboxPathError extends Error {
     super("The Remote Worker outbox path is not a private owned file location.");
     this.name = "RemoteWorkerOutboxPathError";
   }
+}
+
+export class RemoteWorkerExecutionConflictError extends Error {
+  constructor() { super("The Remote Worker execution is already bound to a different outcome."); this.name = "RemoteWorkerExecutionConflictError"; }
+}
+export class RemoteWorkerExecutionNotReadyError extends Error {
+  constructor() { super("The Remote Worker execution outbox is not fully acknowledged."); this.name = "RemoteWorkerExecutionNotReadyError"; }
+}
+export class RemoteWorkerTerminalOutcomeUnknownError extends Error {
+  constructor() { super("The Remote Worker terminal request outcome is unknown."); this.name = "RemoteWorkerTerminalOutcomeUnknownError"; }
+}
+export class RemoteWorkerExecutionStateError extends Error {
+  constructor() { super("The Remote Worker execution state does not allow this operation."); this.name = "RemoteWorkerExecutionStateError"; }
 }
 
 function parsed<Value>(schema: z.ZodType<Value>, value: unknown): Value {
@@ -219,7 +262,6 @@ export class RemoteWorkerOutbox {
   readonly #database: DatabaseSync;
   readonly #deliveries = new Map<string, Promise<void>>();
   #closed = false;
-
   constructor(path: string, private readonly now: () => number = () => Date.now()) {
     const memory = path === ":memory:";
     const existed = memory ? true : prepareFilePath(path);
@@ -271,7 +313,28 @@ export class RemoteWorkerOutbox {
             blocked_at_ms INTEGER NOT NULL,
             PRIMARY KEY(job_id, lease_id, lease_generation)
           ) STRICT;
-          PRAGMA user_version = 1;
+          CREATE TABLE remote_worker_executions (
+            job_id TEXT NOT NULL,
+            lease_id TEXT NOT NULL UNIQUE,
+            lease_generation INTEGER NOT NULL CHECK(lease_generation > 0),
+            outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure')),
+            event_dedupe_key TEXT NOT NULL,
+            publication_dedupe_key TEXT,
+            artifact_bytes BLOB,
+            artifact_hash BLOB CHECK(artifact_hash IS NULL OR length(artifact_hash) = 32),
+            terminal_json TEXT NOT NULL,
+            terminal_hash BLOB NOT NULL CHECK(length(terminal_hash) = 32),
+            state TEXT NOT NULL CHECK(state IN ('staged','terminal_attempted','terminal_acked','blocked')),
+            staged_at_ms INTEGER NOT NULL,
+            terminal_attempted_at_ms INTEGER,
+            terminal_acked_at_ms INTEGER,
+            blocked_code TEXT,
+            PRIMARY KEY(job_id, lease_id, lease_generation),
+            CHECK((outcome = 'success' AND publication_dedupe_key IS NOT NULL AND artifact_bytes IS NOT NULL
+              AND artifact_hash IS NOT NULL) OR (outcome = 'failure' AND publication_dedupe_key IS NULL
+              AND artifact_bytes IS NULL AND artifact_hash IS NULL))
+          ) STRICT;
+          PRAGMA user_version = 2;
           COMMIT;
         `);
       }
@@ -285,7 +348,6 @@ export class RemoteWorkerOutbox {
       throw error;
     }
   }
-
   enqueueEvent(leaseValue: RemoteWorkerOutboxLease, inputValue: RemoteWorkerOutboxEventInput): RemoteWorkerOutboxEntry {
     const lease = parsed(leaseSchema, leaseValue);
     const input = parsed(eventInputSchema, inputValue);
@@ -303,7 +365,6 @@ export class RemoteWorkerOutbox {
       occurred_at: input.occurredAt.toISOString(),
     }));
   }
-
   enqueuePublication(
     leaseValue: RemoteWorkerOutboxLease,
     inputValue: RemoteWorkerOutboxPublicationInput,
@@ -320,7 +381,89 @@ export class RemoteWorkerOutbox {
       storage: input.storage,
     }));
   }
-
+  stageOutcome(leaseValue: RemoteWorkerOutboxLease, inputValue: RemoteWorkerExecutionStageInput): RemoteWorkerExecution {
+    this.#assertOpen();
+    const lease = parsed(leaseSchema, leaseValue), input = parsed(executionStageSchema, inputValue);
+    const artifact = input.outcome === "success" ? Buffer.from(input.artifactBytes) : null;
+    if (input.outcome === "success" && (artifact!.byteLength !== input.publication.byteCount ||
+        !createHash("sha256").update(artifact!).digest().equals(Buffer.from(input.publication.contentHash, "base64url")) ||
+        input.terminal.resultCompleteness !== input.publication.completeness)) throw new RemoteWorkerOutboxInputError();
+    input.event.occurredAt.toISOString();
+    const terminal = encodedPayload(input.terminal);
+    return this.#transaction(() => {
+      try {
+        this.#enqueueInTransaction(lease, "event", input.event.dedupeKey,
+          (sequence) => this.#eventPayload(lease, input.event, sequence));
+        if (input.outcome === "success") this.#enqueueInTransaction(
+          lease, "publication", input.publication.dedupeKey,
+          (sequence) => this.#publicationPayload(lease, input.publication, sequence),
+        );
+      } catch (error) {
+        if (error instanceof RemoteWorkerOutboxDedupeConflictError) throw new RemoteWorkerExecutionConflictError();
+        throw error;
+      }
+      const existing = this.#executionRow(lease);
+      if (existing !== null) {
+        const same = existing.outcome === input.outcome && existing.event_dedupe_key === input.event.dedupeKey &&
+          existing.publication_dedupe_key === (input.outcome === "success" ? input.publication.dedupeKey : null) &&
+          existing.terminal_json === terminal.json && Buffer.from(existing.terminal_hash).equals(terminal.hash) &&
+          ((artifact === null && existing.artifact_bytes === null) || (artifact !== null &&
+            existing.artifact_bytes !== null && Buffer.from(existing.artifact_bytes).equals(artifact)));
+        if (!same) throw new RemoteWorkerExecutionConflictError();
+        return this.#execution(existing);
+      }
+      const stagedAt = this.#timestamp();
+      const inserted = this.#database.prepare(`INSERT INTO remote_worker_executions(
+        job_id,lease_id,lease_generation,outcome,event_dedupe_key,publication_dedupe_key,
+        artifact_bytes,artifact_hash,terminal_json,terminal_hash,state,staged_at_ms
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,'staged',?) RETURNING *`).get(
+        lease.jobId, lease.leaseId, lease.generation, input.outcome, input.event.dedupeKey,
+        input.outcome === "success" ? input.publication.dedupeKey : null, artifact,
+        artifact === null ? null : createHash("sha256").update(artifact).digest(), terminal.json, terminal.hash, stagedAt,
+      ) as ExecutionRow | undefined;
+      if (inserted === undefined) throw new RemoteWorkerOutboxIntegrityError();
+      return this.#execution(inserted);
+    });
+  }
+  getExecution(leaseValue: RemoteWorkerOutboxLease): RemoteWorkerExecution | null {
+    this.#assertOpen(); const lease = parsed(leaseSchema, leaseValue), row = this.#executionRow(lease);
+    return row === null ? null : this.#execution(row);
+  }
+  listRecoverableExecutions(): readonly RemoteWorkerExecution[] {
+    this.#assertOpen();
+    const rows = this.#database.prepare("SELECT * FROM remote_worker_executions WHERE state IN ('staged','terminal_attempted') ORDER BY staged_at_ms,rowid").all() as ExecutionRow[];
+    return Object.freeze(rows.map((row) => this.#execution(row)));
+  }
+  beginTerminal(leaseValue: RemoteWorkerOutboxLease): RemoteWorkerTerminal {
+    this.#assertOpen(); const lease = parsed(leaseSchema, leaseValue);
+    return this.#transaction(() => {
+      const row = this.#executionRow(lease);
+      if (row === null || row.state === "terminal_acked") throw new RemoteWorkerExecutionStateError();
+      if (row.state === "terminal_attempted") throw new RemoteWorkerTerminalOutcomeUnknownError();
+      if (row.state === "blocked") throw new RemoteWorkerOutboxLeaseBlockedError(row.blocked_code!);
+      const execution = this.#execution(row);
+      if (execution.event.state !== "acked" || (execution.publication !== null && execution.publication.state !== "acked")) {
+        throw new RemoteWorkerExecutionNotReadyError();
+      }
+      const changed = this.#database.prepare(`UPDATE remote_worker_executions SET state='terminal_attempted',
+        terminal_attempted_at_ms=? WHERE job_id=? AND lease_id=? AND lease_generation=? AND state='staged'`)
+        .run(this.#timestamp(), lease.jobId, lease.leaseId, lease.generation);
+      if (Number(changed.changes) !== 1) throw new RemoteWorkerOutboxIntegrityError();
+      return execution.terminal;
+    });
+  }
+  ackTerminal(leaseValue: RemoteWorkerOutboxLease): RemoteWorkerExecution {
+    this.#assertOpen(); const lease = parsed(leaseSchema, leaseValue);
+    return this.#transaction(() => {
+      const row = this.#executionRow(lease);
+      if (row === null || row.state !== "terminal_attempted") throw new RemoteWorkerExecutionStateError();
+      const ackedAt = this.#timestamp(), changed = this.#database.prepare(`UPDATE remote_worker_executions SET state='terminal_acked',
+        terminal_acked_at_ms=? WHERE job_id=? AND lease_id=? AND lease_generation=? AND state='terminal_attempted'`)
+        .run(ackedAt, lease.jobId, lease.leaseId, lease.generation);
+      if (Number(changed.changes) !== 1) throw new RemoteWorkerOutboxIntegrityError();
+      return this.#execution({ ...row, state: "terminal_acked", terminal_acked_at_ms: ackedAt });
+    });
+  }
   listPendingLeases(): readonly RemoteWorkerOutboxLease[] {
     this.#assertOpen();
     const rows = this.#database.prepare(`
@@ -332,7 +475,6 @@ export class RemoteWorkerOutbox {
       jobId: row.job_id, leaseId: row.lease_id, generation: row.lease_generation,
     })));
   }
-
   getEntry(
     leaseValue: RemoteWorkerOutboxLease,
     kind: "event" | "publication",
@@ -347,7 +489,6 @@ export class RemoteWorkerOutbox {
     `).get(lease.jobId, lease.leaseId, lease.generation, kind, dedupeKey) as OutboxRow | undefined;
     return row === undefined ? null : entry(row);
   }
-
   listEntries(leaseValue: RemoteWorkerOutboxLease): readonly RemoteWorkerOutboxEntry[] {
     // Result acknowledgements are durable here; terminal response-loss remains outcome-unknown.
     this.#assertOpen();
@@ -358,7 +499,6 @@ export class RemoteWorkerOutbox {
     `).all(lease.jobId, lease.leaseId, lease.generation) as OutboxRow[];
     return Object.freeze(rows.map(entry));
   }
-
   blockLeaseGeneration(
     jobIdValue: string,
     leaseIdValue: string,
@@ -372,14 +512,12 @@ export class RemoteWorkerOutbox {
     const code = parsed(blockedCodeSchema, codeValue);
     this.#transaction(() => { this.#blockInTransaction(lease, code); });
   }
-
   async deliverNext(options: DeliveryOptions): Promise<RemoteWorkerOutboxEntry | null> {
     this.#assertOpen();
     const lease = parsed(leaseSchema, options.lease);
     const key = `${lease.jobId}\0${lease.leaseId}\0${lease.generation}`;
     return this.#serializeDelivery(key, () => this.#deliverOne(options, lease));
   }
-
   async #deliverOne(
     options: DeliveryOptions,
     lease: z.infer<typeof leaseSchema>,
@@ -459,14 +597,12 @@ export class RemoteWorkerOutbox {
       throw error;
     }
   }
-
   close(): void {
     this.#assertOpen();
     if (this.#deliveries.size > 0) throw new RemoteWorkerOutboxDeliveryActiveError();
     this.#database.close();
     this.#closed = true;
   }
-
   #enqueue(
     lease: z.infer<typeof leaseSchema>,
     kind: "event" | "publication",
@@ -474,7 +610,10 @@ export class RemoteWorkerOutbox {
     payload: (localSequence: number) => Readonly<{ json: string; hash: Buffer }>,
   ): RemoteWorkerOutboxEntry {
     this.#assertOpen();
-    return this.#transaction(() => {
+    return this.#transaction(() => this.#enqueueInTransaction(lease, kind, dedupeKey, payload));
+  }
+  #enqueueInTransaction(lease: z.infer<typeof leaseSchema>, kind: "event" | "publication", dedupeKey: string,
+    payload: (localSequence: number) => Readonly<{ json: string; hash: Buffer }>): RemoteWorkerOutboxEntry {
       const binding = this.#database.prepare(`
         SELECT job_id, lease_generation FROM remote_worker_outbox WHERE lease_id = ? LIMIT 1
       `).get(lease.leaseId) as { job_id: string; lease_generation: number } | undefined;
@@ -523,7 +662,6 @@ export class RemoteWorkerOutbox {
       ) as OutboxRow | undefined;
       if (inserted === undefined) throw new Error("The Remote Worker outbox insert returned no row.");
       return entry(inserted);
-    });
   }
 
   #blockedCode(jobId: string, leaseId: string, generation: number): string | null {
@@ -560,6 +698,70 @@ export class RemoteWorkerOutbox {
       WHERE job_id = ? AND lease_id = ? AND lease_generation = ?
         AND state IN ('pending', 'inflight')
     `).run(storedCode, lease.jobId, lease.leaseId, lease.generation);
+    this.#database.prepare(`UPDATE remote_worker_executions SET state='blocked', blocked_code=?
+      WHERE job_id=? AND lease_id=? AND lease_generation=? AND state='staged'`)
+      .run(storedCode, lease.jobId, lease.leaseId, lease.generation);
+  }
+
+  #timestamp(): number {
+    const value = this.now();
+    if (!Number.isSafeInteger(value) || value < 0) throw new RemoteWorkerOutboxInputError();
+    return value;
+  }
+  #eventPayload(lease: z.infer<typeof leaseSchema>, input: z.infer<typeof eventInputSchema>, sequence: number) {
+    return encodedPayload({ generation: lease.generation, local_sequence: sequence, event_type: input.eventType,
+      page_status: input.pageStatus, error_code: input.errorCode, provider: input.provider,
+      byte_count: input.byteCount, duration_ms: input.durationMs, content_hash: input.contentHash,
+      usage: canonicalOutboxUsage(input.usage), occurred_at: input.occurredAt.toISOString() });
+  }
+  #publicationPayload(lease: z.infer<typeof leaseSchema>, input: z.infer<typeof publicationInputSchema>, sequence: number) {
+    return encodedPayload({ generation: lease.generation, local_sequence: sequence, content_hash: input.contentHash,
+      byte_count: input.byteCount, media_type: input.mediaType, completeness: input.completeness, storage: input.storage });
+  }
+  #executionRow(lease: z.infer<typeof leaseSchema>): ExecutionRow | null {
+    return (this.#database.prepare(`SELECT * FROM remote_worker_executions
+      WHERE job_id=? AND lease_id=? AND lease_generation=?`).get(
+      lease.jobId, lease.leaseId, lease.generation,
+    ) as ExecutionRow | undefined) ?? null;
+  }
+  #verifiedOutbox(row: ExecutionRow, kind: "event" | "publication", dedupeKey: string): OutboxRow {
+    const stored = this.#database.prepare(`SELECT * FROM remote_worker_outbox WHERE job_id=? AND lease_id=?
+      AND lease_generation=? AND kind=? AND dedupe_key=?`).get(
+      row.job_id, row.lease_id, row.lease_generation, kind, dedupeKey,
+    ) as OutboxRow | undefined;
+    if (stored === undefined || !createHash("sha256").update(stored.payload_json).digest()
+      .equals(Buffer.from(stored.payload_hash))) throw new RemoteWorkerOutboxIntegrityError();
+    try {
+      const payload = (kind === "event" ? eventPayloadSchema : publicationPayloadSchema).parse(JSON.parse(stored.payload_json));
+      if (payload.generation !== row.lease_generation || payload.local_sequence !== stored.local_sequence) throw new Error();
+    } catch { throw new RemoteWorkerOutboxIntegrityError(); }
+    return stored;
+  }
+  #execution(row: ExecutionRow): RemoteWorkerExecution {
+    let terminal: RemoteWorkerTerminal;
+    try {
+      if (!createHash("sha256").update(row.terminal_json).digest().equals(Buffer.from(row.terminal_hash))) throw new Error();
+      terminal = terminalSchema.parse(JSON.parse(row.terminal_json));
+    } catch { throw new RemoteWorkerOutboxIntegrityError(); }
+    const eventRow = this.#verifiedOutbox(row, "event", row.event_dedupe_key);
+    const publicationRow = row.publication_dedupe_key === null ? null :
+      this.#verifiedOutbox(row, "publication", row.publication_dedupe_key);
+    const artifact = row.artifact_bytes === null ? null : Buffer.from(row.artifact_bytes);
+    if ((row.outcome === "failure" && (terminal.status !== "failed" || publicationRow !== null || artifact !== null)) ||
+        (row.outcome === "success" && (terminal.status !== "completed" || publicationRow === null || artifact === null ||
+          row.artifact_hash === null || !createHash("sha256").update(artifact).digest().equals(Buffer.from(row.artifact_hash))))) {
+      throw new RemoteWorkerOutboxIntegrityError();
+    }
+    if (publicationRow !== null && artifact !== null) {
+      const publication = publicationPayloadSchema.parse(JSON.parse(publicationRow.payload_json));
+      if (publication.byte_count !== artifact.byteLength || publication.content_hash !== Buffer.from(row.artifact_hash!).toString("base64url") ||
+          terminal.status !== "completed" || publication.completeness !== terminal.resultCompleteness) throw new RemoteWorkerOutboxIntegrityError();
+    }
+    return Object.freeze({ jobId: row.job_id, leaseId: row.lease_id, generation: row.lease_generation,
+      outcome: row.outcome, state: row.state, event: entry(eventRow), publication: publicationRow === null ? null : entry(publicationRow),
+      artifactBytes: artifact === null ? null : Uint8Array.from(artifact), terminal: Object.freeze({ ...terminal }),
+      stagedAtMs: row.staged_at_ms, terminalAttemptedAtMs: row.terminal_attempted_at_ms,
+      terminalAckedAtMs: row.terminal_acked_at_ms, blockedCode: row.blocked_code });
   }
 
   async #serializeDelivery<Value>(key: string, operation: () => Promise<Value>): Promise<Value> {

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
@@ -22,9 +23,13 @@ import {
   RemoteWorkerOutboxDeliveryActiveError,
   RemoteWorkerOutboxDedupeConflictError,
   RemoteWorkerOutboxIntegrityError,
+  RemoteWorkerOutboxInputError,
   RemoteWorkerOutboxLeaseBlockedError,
   RemoteWorkerOutboxOwnershipError,
   RemoteWorkerOutboxPathError,
+  RemoteWorkerExecutionConflictError,
+  RemoteWorkerExecutionNotReadyError,
+  RemoteWorkerTerminalOutcomeUnknownError,
   type RemoteWorkerOutboxLease,
 } from "../src/remote-worker/outbox.js";
 
@@ -39,6 +44,9 @@ const artifactId = "99999999-9999-4999-8999-999999999999";
 const sessionToken = "aaa.bbb.ccc";
 const contentHash = Buffer.alloc(32, 7).toString("base64url");
 const lease = { jobId, leaseId, generation: 3 } as const;
+const failureLease = { jobId: otherJobId, leaseId: otherLeaseId, generation: 1 } as const;
+const artifactBytes = Buffer.from("durable public artifact", "utf8");
+const artifactHash = createHash("sha256").update(artifactBytes).digest("base64url");
 
 const directories: string[] = [];
 
@@ -136,6 +144,26 @@ function publicationInput(dedupeKey = "result") {
     mediaType: " text/markdown ",
     completeness: "complete",
     storage: "worker_local",
+  } as const;
+}
+
+function successOutcome() {
+  return {
+    outcome: "success",
+    event: eventInput(),
+    publication: {
+      ...publicationInput(), contentHash: artifactHash, byteCount: artifactBytes.byteLength,
+    },
+    artifactBytes,
+    terminal: { status: "completed", resultCompleteness: "complete", errorCode: null },
+  } as const;
+}
+
+function failureOutcome(errorCode = "PROVIDER_FAILED") {
+  return {
+    outcome: "failure",
+    event: eventInput(),
+    terminal: { status: "failed", resultCompleteness: null, errorCode },
   } as const;
 }
 
@@ -270,7 +298,7 @@ describe("RemoteWorkerOutbox", () => {
 
     const database = new DatabaseSync(path);
     expect(database.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
-    expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     expect(database.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     database.close();
     expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
@@ -579,6 +607,141 @@ describe("RemoteWorkerOutbox", () => {
       await expect(outbox.deliverNext({ lease, sessionToken, client: fakeClient })).rejects.toBe(failure);
       expect(outbox.listEntries(lease)[0]).toMatchObject({ state: "pending", blockedCode: null });
       outbox.close();
+    }
+  });
+
+  it("atomically stages success and failure outcomes with immutable artifact copies", () => {
+    const outbox = new RemoteWorkerOutbox(":memory:", () => 4_000);
+    const success = outbox.stageOutcome(lease, successOutcome());
+    const failure = outbox.stageOutcome(failureLease, failureOutcome());
+    expect(outbox.stageOutcome(lease, successOutcome())).toEqual(success);
+
+    expect(success).toMatchObject({ outcome: "success", state: "staged", stagedAtMs: 4_000 });
+    expect(success.event).toMatchObject({ kind: "event", localSequence: 1 });
+    expect(success.publication).toMatchObject({ kind: "publication", localSequence: 1 });
+    expect(success.artifactBytes).toEqual(Uint8Array.from(artifactBytes));
+    expect(failure).toMatchObject({
+      outcome: "failure", state: "staged", publication: null, artifactBytes: null,
+    });
+    expect(outbox.listEntries(lease)).toHaveLength(2);
+    expect(outbox.listEntries(failureLease)).toHaveLength(1);
+    expect(Object.isFrozen(success)).toBe(true);
+    expect(Object.isFrozen(success.terminal)).toBe(true);
+    success.artifactBytes![0] = 0;
+    expect(outbox.getExecution(lease)?.artifactBytes).toEqual(Uint8Array.from(artifactBytes));
+    outbox.close();
+  });
+
+  it("validates a complete stage before writing and makes semantic replay idempotent", () => {
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const valid = successOutcome();
+    expect(() => outbox.stageOutcome(lease, {
+      ...valid, publication: { ...valid.publication, byteCount: valid.publication.byteCount + 1 },
+    })).toThrow(RemoteWorkerOutboxInputError);
+    expect(() => outbox.stageOutcome(lease, {
+      ...valid,
+      publication: { ...valid.publication, completeness: "partial" },
+    })).toThrow(RemoteWorkerOutboxInputError);
+    expect(() => outbox.stageOutcome(lease, {
+      ...valid, artifactBytes: Buffer.alloc(valid.artifactBytes.byteLength),
+    })).toThrow(RemoteWorkerOutboxInputError);
+    expect(outbox.getExecution(lease)).toBeNull();
+    expect(outbox.listEntries(lease)).toEqual([]);
+    outbox.enqueuePublication(lease, publicationInput());
+    expect(() => outbox.stageOutcome(lease, valid)).toThrow(RemoteWorkerExecutionConflictError);
+    expect(outbox.getExecution(lease)).toBeNull();
+    expect(outbox.getEntry(lease, "event", "page-1")).toBeNull();
+    expect(outbox.listEntries(lease)).toHaveLength(1);
+
+    const first = outbox.stageOutcome(failureLease, failureOutcome());
+    expect(outbox.stageOutcome(failureLease, failureOutcome())).toEqual(first);
+    expect(() => outbox.stageOutcome(failureLease, {
+      ...failureOutcome(), event: { ...eventInput(), provider: "browser" },
+    })).toThrow(RemoteWorkerExecutionConflictError);
+    expect(() => outbox.stageOutcome(failureLease, failureOutcome("DIFFERENT_FAILURE")))
+      .toThrow(RemoteWorkerExecutionConflictError);
+    expect(outbox.listEntries(failureLease)).toHaveLength(1);
+    outbox.close();
+  });
+
+  it("persists terminal readiness, outcome-unknown, and acknowledgement transitions", async () => {
+    const path = outboxPath();
+    let outbox = new RemoteWorkerOutbox(path);
+    outbox.stageOutcome(lease, successOutcome());
+    expect(() => outbox.beginTerminal(lease)).toThrow(RemoteWorkerExecutionNotReadyError);
+    const acknowledger = {
+      appendEvent: async () => ({} as never),
+      publishResult: async () => ({} as never),
+    };
+    await expect(outbox.deliverNext({ lease, sessionToken, client: acknowledger }))
+      .resolves.toMatchObject({ kind: "event", state: "acked" });
+    expect(() => outbox.beginTerminal(lease)).toThrow(RemoteWorkerExecutionNotReadyError);
+    await expect(outbox.deliverNext({ lease, sessionToken, client: acknowledger }))
+      .resolves.toMatchObject({ kind: "publication", state: "acked" });
+    outbox.close();
+
+    outbox = new RemoteWorkerOutbox(path);
+    expect(outbox.listRecoverableExecutions()).toEqual([
+      expect.objectContaining({ state: "staged", outcome: "success" }),
+    ]);
+    const terminal = outbox.beginTerminal(lease);
+    expect(terminal).toEqual({ status: "completed", resultCompleteness: "complete", errorCode: null });
+    expect(Object.isFrozen(terminal)).toBe(true);
+    outbox.close();
+
+    outbox = new RemoteWorkerOutbox(path);
+    expect(outbox.listRecoverableExecutions()[0]).toMatchObject({ state: "terminal_attempted" });
+    expect(() => outbox.beginTerminal(lease)).toThrow(RemoteWorkerTerminalOutcomeUnknownError);
+    expect(outbox.ackTerminal(lease)).toMatchObject({ state: "terminal_acked" });
+    expect(outbox.listRecoverableExecutions()).toEqual([]);
+    outbox.close();
+
+    outbox = new RemoteWorkerOutbox(path);
+    expect(outbox.listRecoverableExecutions()).toEqual([]);
+    expect(outbox.getExecution(lease)).toMatchObject({ state: "terminal_acked" });
+    outbox.close();
+  });
+
+  it("makes heartbeat and remote fences sticky for staged executions", async () => {
+    const path = outboxPath();
+    let outbox = new RemoteWorkerOutbox(path);
+    outbox.stageOutcome(lease, successOutcome());
+    outbox.blockLeaseGeneration(jobId, leaseId, 3, "JOB_LEASE_FENCED");
+    outbox.close();
+    outbox = new RemoteWorkerOutbox(path);
+    expect(outbox.getExecution(lease)).toMatchObject({ state: "blocked", blockedCode: "JOB_LEASE_FENCED" });
+    expect(outbox.listRecoverableExecutions()).toEqual([]);
+    expect(() => outbox.beginTerminal(lease)).toThrow(RemoteWorkerOutboxLeaseBlockedError);
+
+    outbox.stageOutcome(failureLease, failureOutcome());
+    const fenced = new RemoteWorkerHttpError(409, "JOB_LEASE_FENCED", requestId, false, null);
+    await expect(outbox.deliverNext({
+      lease: failureLease,
+      sessionToken,
+      client: { appendEvent: async () => { throw fenced; }, publishResult: async () => ({} as never) },
+    })).rejects.toBe(fenced);
+    expect(outbox.getExecution(failureLease)).toMatchObject({
+      state: "blocked", blockedCode: "JOB_LEASE_FENCED",
+    });
+    outbox.close();
+  });
+
+  it("detects stored artifact and terminal plan corruption", () => {
+    for (const column of ["artifact_bytes", "terminal_json"] as const) {
+      const path = outboxPath();
+      const initial = new RemoteWorkerOutbox(path);
+      initial.stageOutcome(lease, successOutcome());
+      initial.close();
+      const database = new DatabaseSync(path);
+      if (column === "artifact_bytes") {
+        database.prepare("UPDATE remote_worker_executions SET artifact_bytes = X'00'").run();
+      } else {
+        database.prepare("UPDATE remote_worker_executions SET terminal_json = '{}'").run();
+      }
+      database.close();
+      const reopened = new RemoteWorkerOutbox(path);
+      expect(() => reopened.getExecution(lease)).toThrow(RemoteWorkerOutboxIntegrityError);
+      reopened.close();
     }
   });
 
