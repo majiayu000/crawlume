@@ -461,8 +461,8 @@ Wave 2 串行集成：
 | Lane | Task | 依赖 | 时间盒 | 完成定义 |
 |---|---|---|---:|---|
 | Worker Client | RW-01 | INT-01 | 2 天 | Enrollment、Session、claim、heartbeat、terminal 客户端完成 |
-| Runtime Adapter | RW-02 | INT-01 | 2 天 | Job Envelope 映射到现有 read/crawl/monitor，不复制抓取算法 |
-| Local Durability | RW-03 | RW-01 | 2 天 | Event/Publication 本地 outbox，断网可重试，幂等不重复 |
+| Runtime Adapter | RW-02 | INT-01 | 2 天 | 首个 checkpoint 将公开 read Job Envelope 映射到现有 Reader，不复制抓取算法 |
+| Local Durability | RW-03 | RW-01 | 2 天 | Event/Publication 本地 outbox，在同一有效 Lease generation 内断网可重试且幂等不重复 |
 | Integration | E2E-01 | RW-02, RW-03 | 2 天 | 真 PG + 真 HTTP + 真 Worker 完成公开 read Job |
 | Recovery | E2E-02 | E2E-01 | 2 天 | Control/Worker kill-restart，不丢 Job/Event/Publication |
 
@@ -480,6 +480,16 @@ Phase 2 完成 Gate：
 ```
 
 在此 Gate 通过前，不开始 C 端 UI，也不引入 Kafka、Kubernetes 或正式账单。
+
+Wave 3 协议边界：
+
+- 当前冻结的 Job 类型是 `read`、`inspect`、`map`、`crawl`、`search`，没有 `monitor` Job 或 interval 字段。Phase 2 Gate 先完成公开 `read`；其他已冻结 Job 类型在后续 Runtime Adapter 任务扩展，Monitor 由后续控制面 Monitor 合同创建普通 Job，不调用本地长期 scheduler 冒充 Remote Job。
+- 首个 Remote Worker 只部署到仅产生公开 `read` Job 的 Phase 2 环境；在服务端具备 Job 类型能力过滤前，不声称它可安全消费混合类型队列。若意外收到不支持的类型，必须显式失败，不能静默降级。
+- RW-03 的 durable outbox 覆盖 Worker 进程重启，以及在 heartbeat 截止前恢复的瞬时网络故障。服务器已接受但客户端尚未记录确认的 Event/Publication，必须以原 `lease_id + generation + local_sequence` 和原 payload 重放。
+- Lease 过期或被替代后，旧 generation 的提交继续被 fencing 拒绝；Worker 停止旧提交，由控制面重排 Job 并在新 generation 重新执行。当前不承诺跨 generation 搬运旧 Event/Publication。
+- Enrollment、claim 和 terminal 都不自动重试。Enrollment/claim 响应丢失时明确报告结果不确定；claim 最终由 Lease recovery 重排。terminal 响应丢失后的确认协议留作后续合同任务，E2E-02 不把它伪装成已解决。
+- E2E-02 的 Worker restart 场景必须发生在有效 heartbeat window 内，并覆盖 Publication 服务端已接收、本地未确认后的同 payload 重放；Control restart 另行验证数据库状态一致。
+- Phase 2 的“用户查询到结果”是查询到 Publication/Artifact metadata。正文下载依赖 Wave 4 Object Store，不在 E2E-01 中伪造。
 
 ### Wave 4：Private/Public Worker 与 Artifact，可三 Lane 并行
 
