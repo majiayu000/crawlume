@@ -9,6 +9,231 @@ security:
   - ProjectApiKey: []
 x-max-body-bytes: 65536
 paths:
+  /auth/oidc/begin:
+    get:
+      operationId: beginHumanOidcLogin
+      x-status: Planned
+      summary: Begin an OIDC Authorization Code + PKCE login
+      description: Creates one bounded login attempt. No request body or query parameters are accepted.
+      security: []
+      responses:
+        '302':
+          description: Redirect to the configured OIDC Provider
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            Set-Cookie:
+              description: Secure HttpOnly SameSite=Lax state cookie scoped to the callback path.
+              schema: { type: string }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+            Pragma: { $ref: '#/components/headers/NoCache' }
+        '400': { $ref: '#/components/responses/HumanAuthBadRequest' }
+        '429': { $ref: '#/components/responses/HumanAuthRateLimited' }
+        '500': { $ref: '#/components/responses/HumanAuthInternalError' }
+  /auth/oidc/callback:
+    get:
+      operationId: completeHumanOidcLogin
+      x-status: Planned
+      summary: Complete an OIDC login and establish a human session
+      description: >-
+        Requires exactly one state plus either one authorization code or one Provider error.
+        Provider error details are never reflected in the response.
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/OidcState' }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, minLength: 1 }
+        - name: error
+          in: query
+          required: false
+          schema: { type: string, minLength: 1 }
+        - name: error_description
+          in: query
+          required: false
+          schema: { type: string, minLength: 1 }
+        - name: error_uri
+          in: query
+          required: false
+          schema: { type: string, minLength: 1 }
+        - name: __Secure-diaoyan_oidc_state
+          in: cookie
+          required: true
+          description: Secure HttpOnly SameSite=Lax browser binding; must equal the state query value.
+          schema: { $ref: '#/components/schemas/OidcState' }
+      responses:
+        '200':
+          description: Login completed; keep the Access Token in memory only
+          headers:
+            Set-Cookie:
+              description: Clears the state cookie and sets the rotated Secure HttpOnly refresh cookie.
+              schema:
+                type: array
+                items: { type: string }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+            Pragma: { $ref: '#/components/headers/NoCache' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HumanLoginResponse' }
+        '400': { $ref: '#/components/responses/HumanAuthBadRequest' }
+        '401': { $ref: '#/components/responses/HumanAuthUnauthorized' }
+        '500': { $ref: '#/components/responses/HumanAuthInternalError' }
+  /auth/refresh:
+    post:
+      operationId: refreshHumanSession
+      x-status: Planned
+      summary: Rotate the HttpOnly refresh cookie and issue a new Access Token
+      description: Accepts no request body or query parameters.
+      security:
+        - HumanRefreshCookie: []
+      responses:
+        '200':
+          description: Refresh rotation completed; keep the Access Token in memory only
+          headers:
+            Set-Cookie:
+              description: Rotated Secure HttpOnly SameSite=Strict cookie scoped to /v1/auth/refresh.
+              schema: { type: string }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+            Pragma: { $ref: '#/components/headers/NoCache' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HumanAccessTokenResponse' }
+        '400': { $ref: '#/components/responses/HumanAuthBadRequest' }
+        '401': { $ref: '#/components/responses/HumanAuthUnauthorized' }
+        '409': { $ref: '#/components/responses/RefreshRotationConflict' }
+        '500': { $ref: '#/components/responses/HumanAuthInternalError' }
+  /auth/logout:
+    post:
+      operationId: logoutHumanSession
+      x-status: Planned
+      summary: Revoke every refresh session for the authenticated user
+      description: Accepts no request body or query parameters.
+      security:
+        - HumanAccessToken: []
+      responses:
+        '204':
+          description: Sessions revoked and the refresh cookie cleared
+          headers:
+            Set-Cookie:
+              description: Expires the refresh cookie at /v1/auth/refresh.
+              schema: { type: string }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+            Pragma: { $ref: '#/components/headers/NoCache' }
+        '400': { $ref: '#/components/responses/HumanAuthBadRequest' }
+        '401': { $ref: '#/components/responses/HumanAccessTokenUnauthorized' }
+        '500': { $ref: '#/components/responses/HumanAuthInternalError' }
+  /organizations:
+    get:
+      operationId: listOrganizations
+      x-status: Planned
+      summary: List Organizations visible to the authenticated user
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OpaqueCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Reverse-chronological Organization memberships
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, organizations, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  organizations:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrganizationSummary' }
+                  pagination: { $ref: '#/components/schemas/CursorPagination' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /organizations/{organization_id}/projects:
+    get:
+      operationId: listOrganizationProjects
+      x-status: Planned
+      summary: List Projects in one Organization membership
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - $ref: '#/components/parameters/OpaqueCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Reverse-chronological Projects in the Organization
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, projects, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  projects:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProjectSummary' }
+                  pagination: { $ref: '#/components/schemas/CursorPagination' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '404': { $ref: '#/components/responses/OrganizationNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: createOrganizationProject
+      x-status: Planned
+      summary: Create or idempotently replay a Project in an Organization
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [slug, name]
+              properties:
+                slug: { type: string, minLength: 1, maxLength: 200, pattern: '\S' }
+                name: { type: string, minLength: 1, maxLength: 200, pattern: '\S' }
+      responses:
+        '201':
+          description: Newly created Project or the original Project for an identical replay
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, project]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  project: { $ref: '#/components/schemas/ProjectSummary' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanOrganizationForbidden' }
+        '404': { $ref: '#/components/responses/OrganizationNotFound' }
+        '409': { $ref: '#/components/responses/ProjectCreationConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ProjectValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /projects/{project_id}/jobs:
     post:
       operationId: createProjectJob
@@ -399,6 +624,7 @@ paths:
       operationId: createProjectApiKey
       x-status: Planned
       summary: Create a Project API Key and reveal its Secret once
+      description: This credential-mint operation is non-idempotent and must not be retried automatically.
       security:
         - HumanAccessToken: []
       parameters:
@@ -433,6 +659,7 @@ paths:
           headers:
             Location:
               schema: { type: string }
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
           content:
             application/json:
               schema:
@@ -444,10 +671,13 @@ paths:
                   api_key: { $ref: '#/components/schemas/ProjectApiKeyMetadata' }
                   secret:
                     type: string
-                    writeOnly: true
-                    description: Returned only by this successful creation response.
+                    readOnly: true
+                    x-sensitive: true
+                    description: Returned only by the initial successful creation response.
+        '400': { $ref: '#/components/responses/MalformedRequest' }
         '401': { $ref: '#/components/responses/HumanUnauthorized' }
         '403': { $ref: '#/components/responses/HumanForbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/ApiKeyValidationFailed' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -534,10 +764,110 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Short-lived human Access Token issued after OIDC Authorization Code + PKCE.
+    HumanRefreshCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-diaoyan_refresh
+      description: Rotating Secure HttpOnly SameSite=Strict refresh token scoped to /v1/auth/refresh.
+  parameters:
+    OrganizationId:
+      name: organization_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    OpaqueCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
+        pattern: '^[A-Za-z0-9_-]+$'
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+  headers:
+    NoStore:
+      schema: { type: string, const: no-store }
+    NoCache:
+      schema: { type: string, const: no-cache }
+    RetryAfter:
+      description: Whole seconds until another attempt may be made.
+      schema: { type: integer, minimum: 1 }
   schemas:
     Uuid:
       type: string
       format: uuid
+    OidcState:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+    HumanAccessTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, token_type, access_token, access_token_expires_at]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        token_type: { type: string, const: Bearer }
+        access_token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+          x-sensitive: true
+          description: Short-lived token intended for in-memory storage only.
+        access_token_expires_at: { type: string, format: date-time }
+    HumanLoginResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, token_type, access_token, access_token_expires_at, user]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        token_type: { type: string, const: Bearer }
+        access_token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+          x-sensitive: true
+          description: Short-lived token intended for in-memory storage only.
+        access_token_expires_at: { type: string, format: date-time }
+        user:
+          type: object
+          additionalProperties: false
+          required: [id, email, display_name]
+          properties:
+            id: { $ref: '#/components/schemas/Uuid' }
+            email:
+              oneOf: [{ type: string }, { type: 'null' }]
+            display_name:
+              oneOf: [{ type: string }, { type: 'null' }]
+    OrganizationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, slug, name, kind, role]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        slug: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [personal, business] }
+        role: { type: string, enum: [owner, admin, member] }
+    ProjectSummary:
+      type: object
+      additionalProperties: false
+      required: [id, organization_id, slug, name]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        organization_id: { $ref: '#/components/schemas/Uuid' }
+        slug: { type: string }
+        name: { type: string }
+    CursorPagination:
+      type: object
+      additionalProperties: false
+      required: [next_cursor, has_more, limit]
+      properties:
+        next_cursor:
+          oneOf: [{ type: string }, { type: 'null' }]
+        has_more: { type: boolean }
+        limit: { type: integer, minimum: 1, maximum: 100 }
     JsonObject:
       type: object
       additionalProperties: true
@@ -952,6 +1282,85 @@ components:
               field: { type: string }
               message: { type: string }
   responses:
+    HumanAuthBadRequest:
+      description: Authentication query, headers, or body are malformed
+      headers:
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+        Pragma: { $ref: '#/components/headers/NoCache' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanAuthUnauthorized:
+      description: OIDC state, Provider result, or refresh credential is invalid
+      headers:
+        Set-Cookie:
+          description: May clear the invalid state or refresh cookie.
+          schema: { type: string }
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+        Pragma: { $ref: '#/components/headers/NoCache' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanAccessTokenUnauthorized:
+      description: The human Access Token is missing, invalid, expired, or revoked
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, const: Bearer }
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+        Pragma: { $ref: '#/components/headers/NoCache' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanAuthRateLimited:
+      description: Too many anonymous OIDC login attempts
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+        Pragma: { $ref: '#/components/headers/NoCache' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RefreshRotationConflict:
+      description: Another request already rotated this refresh token during the grace window
+      headers:
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+        Pragma: { $ref: '#/components/headers/NoCache' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanAuthInternalError:
+      description: The authentication request could not be completed
+      headers:
+        Set-Cookie:
+          description: Callback failures may clear the state cookie.
+          schema: { type: string }
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+        Pragma: { $ref: '#/components/headers/NoCache' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanOrganizationForbidden:
+      description: The Organization member lacks the owner or admin role required to create a Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    OrganizationNotFound:
+      description: The Organization is absent or hidden because the user has no membership
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProjectCreationConflict:
+      description: >-
+        The Organization already has this Project slug, or the Idempotency-Key is bound to
+        a different request payload.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ProjectValidationFailed:
+      description: The Project creation request violates the contract
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     MalformedRequest:
       description: A required header or request syntax is malformed
       content:

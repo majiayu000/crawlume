@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { z } from "zod";
 
+import { humanAuthRouterOperations } from "../src/control-plane/human-auth-http-api.js";
 import { ControlPlaneHttpApi } from "../src/control-plane/project-http-api.js";
+import { projectApiKeyRouteDefinitions } from "../src/control-plane/router-contract.js";
+import { workerBootstrapRouterOperations } from "../src/control-plane/worker-bootstrap-http-api.js";
 
 type OpenApiOperation = Readonly<{
   method: string;
@@ -40,6 +43,8 @@ const safeIntegerSchema = z.object({
   type: z.literal("integer"),
   maximum: z.literal(Number.MAX_SAFE_INTEGER),
 }).passthrough();
+const objectSchema = z.record(z.string(), z.unknown());
+const securitySchema = z.array(z.record(z.string(), z.array(z.unknown())));
 
 function parseDocument(source: string, document: string): unknown {
   try {
@@ -78,6 +83,43 @@ function openApiOperations(source: string, document: string): readonly OpenApiOp
     }
   }
   return operations;
+}
+
+function loadOpenApi(source: string): Record<string, unknown> {
+  return parseValue(
+    source,
+    objectSchema,
+    parseDocument(source, readFileSync(new URL(`../docs/${source}`, import.meta.url), "utf8")),
+  );
+}
+
+function objectValue(source: string, value: unknown): Record<string, unknown> {
+  return parseValue(source, objectSchema, value);
+}
+
+function operationValue(
+  source: string,
+  document: Record<string, unknown>,
+  path: string,
+  method: string,
+): Record<string, unknown> {
+  const paths = objectValue(`${source} paths`, document.paths);
+  const pathItem = objectValue(`${source} path ${path}`, paths[path]);
+  return objectValue(`${source} ${method} ${path}`, pathItem[method.toLowerCase()]);
+}
+
+function resolvedResponse(
+  source: string,
+  document: Record<string, unknown>,
+  response: unknown,
+): Record<string, unknown> {
+  const value = objectValue(`${source} response`, response);
+  if (typeof value.$ref !== "string") return value;
+  const prefix = "#/components/responses/";
+  if (!value.$ref.startsWith(prefix)) throw new Error(`${source} response reference is not local`);
+  const components = objectValue(`${source} components`, document.components);
+  const responses = objectValue(`${source} component responses`, components.responses);
+  return objectValue(`${source} ${value.$ref}`, responses[value.$ref.slice(prefix.length)]);
 }
 
 function operationKey(operation: Pick<OpenApiOperation, "method" | "operationId" | "path">): string {
@@ -128,6 +170,260 @@ describe("control-plane OpenAPI Router parity", () => {
     expect(integratedKeys.filter((key) => plannedKeys.has(key)),
       "an integrated Router operation cannot remain Planned").toEqual([]);
     expect(integratedKeys.sort()).toEqual(documentedIntegratedKeys);
+  });
+
+  it("keeps all Wave 2 bootstrap contracts Planned with exact security and responses", () => {
+    const projectSource = "project-control-api.openapi.yaml";
+    const workerSource = "worker-control-api.openapi.yaml";
+    const documents = {
+      [projectSource]: loadOpenApi(projectSource),
+      [workerSource]: loadOpenApi(workerSource),
+    };
+    const human = [{ HumanAccessToken: [] }];
+    const contracts = [
+      {
+        source: projectSource, method: "GET", path: "/auth/oidc/begin",
+        operationId: "beginHumanOidcLogin", security: [], statuses: ["302", "400", "429", "500"],
+        successStatus: "302", successMediaType: null,
+      },
+      {
+        source: projectSource, method: "GET", path: "/auth/oidc/callback",
+        operationId: "completeHumanOidcLogin", security: [],
+        statuses: ["200", "400", "401", "500"], successStatus: "200",
+        successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "POST", path: "/auth/refresh",
+        operationId: "refreshHumanSession", security: [{ HumanRefreshCookie: [] }],
+        statuses: ["200", "400", "401", "409", "500"], successStatus: "200",
+        successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "POST", path: "/auth/logout",
+        operationId: "logoutHumanSession", security: human,
+        statuses: ["204", "400", "401", "500"], successStatus: "204", successMediaType: null,
+      },
+      {
+        source: projectSource, method: "GET", path: "/organizations",
+        operationId: "listOrganizations", security: human,
+        statuses: ["200", "400", "401", "500"], successStatus: "200",
+        successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "GET", path: "/organizations/{organization_id}/projects",
+        operationId: "listOrganizationProjects", security: human,
+        statuses: ["200", "400", "401", "404", "500"], successStatus: "200",
+        successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "POST", path: "/organizations/{organization_id}/projects",
+        operationId: "createOrganizationProject", security: human,
+        statuses: ["201", "400", "401", "403", "404", "409", "413", "415", "422", "500"],
+        successStatus: "201", successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "POST", path: "/projects/{project_id}/api-keys",
+        operationId: "createProjectApiKey", security: human,
+        statuses: ["201", "400", "401", "403", "413", "415", "422", "500"],
+        successStatus: "201", successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "GET", path: "/projects/{project_id}/api-keys",
+        operationId: "listProjectApiKeys", security: human,
+        statuses: ["200", "400", "401", "403", "500"], successStatus: "200",
+        successMediaType: "application/json",
+      },
+      {
+        source: projectSource, method: "DELETE", path: "/projects/{project_id}/api-keys/{key_id}",
+        operationId: "revokeProjectApiKey", security: human,
+        statuses: ["204", "401", "403", "404", "500"], successStatus: "204",
+        successMediaType: null,
+      },
+      {
+        source: workerSource, method: "POST", path: "/projects/{project_id}/worker-enrollments",
+        operationId: "createWorkerEnrollment", security: human,
+        statuses: ["201", "400", "401", "403", "413", "415", "422", "500"],
+        successStatus: "201", successMediaType: "application/json",
+      },
+      {
+        source: workerSource, method: "POST", path: "/worker-enrollments",
+        operationId: "enrollWorker", security: [{ WorkerEnrollmentToken: [] }],
+        statuses: ["201", "400", "401", "413", "415", "422", "500"],
+        successStatus: "201", successMediaType: "application/json",
+      },
+      {
+        source: workerSource, method: "POST", path: "/worker-sessions/challenges",
+        operationId: "createWorkerSessionChallenge", security: [],
+        statuses: ["201", "400", "413", "415", "422", "429", "500"],
+        successStatus: "201", successMediaType: "application/json",
+      },
+      {
+        source: workerSource, method: "POST", path: "/worker-sessions",
+        operationId: "createWorkerSession", security: [],
+        statuses: ["201", "400", "413", "415", "422", "500"],
+        successStatus: "201", successMediaType: "application/json",
+      },
+      {
+        source: workerSource, method: "POST",
+        path: "/projects/{project_id}/workers/{worker_id}/disable",
+        operationId: "disableProjectWorker", security: human,
+        statuses: ["200", "400", "401", "403", "404", "413", "415", "422", "500"],
+        successStatus: "200", successMediaType: "application/json",
+      },
+    ] as const;
+
+    for (const contract of contracts) {
+      const document = documents[contract.source];
+      const operation = operationValue(contract.source, document, contract.path, contract.method);
+      expect(operation.operationId).toBe(contract.operationId);
+      expect(operation["x-status"]).toBe("Planned");
+      expect(parseValue(`${contract.operationId} security`, securitySchema, operation.security))
+        .toEqual(contract.security);
+      const responses = objectValue(`${contract.operationId} responses`, operation.responses);
+      expect(Object.keys(responses).sort()).toEqual([...contract.statuses].sort());
+      const success = resolvedResponse(contract.source, document, responses[contract.successStatus]);
+      if (contract.successMediaType === null) {
+        expect(success.content).toBeUndefined();
+      } else {
+        const content = objectValue(`${contract.operationId} success content`, success.content);
+        expect(content).toHaveProperty(contract.successMediaType);
+      }
+      for (const status of contract.statuses.filter((value) => Number(value) >= 400)) {
+        const error = resolvedResponse(contract.source, document, responses[status]);
+        const content = objectValue(`${contract.operationId} ${status} content`, error.content);
+        expect(content).toHaveProperty("application/problem+json");
+      }
+    }
+    expect(contracts).toHaveLength(15);
+    const projectApiKeyOperations: Pick<
+      OpenApiOperation,
+      "method" | "operationId" | "path"
+    >[] = [];
+    for (const { operations } of projectApiKeyRouteDefinitions) {
+      projectApiKeyOperations.push(...operations);
+    }
+    const implementedBootstrap: Pick<
+      OpenApiOperation,
+      "method" | "operationId" | "path"
+    >[] = [
+      ...humanAuthRouterOperations,
+      ...projectApiKeyOperations,
+      ...workerBootstrapRouterOperations,
+    ];
+    const implementedIds = new Set(implementedBootstrap.map(({ operationId }) => operationId));
+    const documentedImplemented = contracts
+      .filter(({ operationId }) => implementedIds.has(operationId))
+      .map(operationKey)
+      .sort();
+    expect(implementedBootstrap.map(operationKey).sort()).toEqual(documentedImplemented);
+  });
+
+  it("documents bootstrap browser bindings, one-time credentials, and idempotency boundaries", () => {
+    const projectSource = "project-control-api.openapi.yaml";
+    const workerSource = "worker-control-api.openapi.yaml";
+    const project = loadOpenApi(projectSource);
+    const worker = loadOpenApi(workerSource);
+
+    const callback = operationValue(projectSource, project, "/auth/oidc/callback", "GET");
+    const callbackParameters = parseValue(
+      "OIDC callback parameters",
+      z.array(objectSchema),
+      callback.parameters,
+    );
+    expect(callbackParameters.map(({ name, in: location, required }) => ({ name, location, required })))
+      .toEqual([
+        { name: "state", location: "query", required: true },
+        { name: "code", location: "query", required: false },
+        { name: "error", location: "query", required: false },
+        { name: "error_description", location: "query", required: false },
+        { name: "error_uri", location: "query", required: false },
+        { name: "__Secure-diaoyan_oidc_state", location: "cookie", required: true },
+      ]);
+    const projectComponents = objectValue("project components", project.components);
+    const projectSecurity = objectValue("project security schemes", projectComponents.securitySchemes);
+    expect(objectValue("refresh cookie scheme", projectSecurity.HumanRefreshCookie)).toMatchObject({
+      type: "apiKey",
+      in: "cookie",
+      name: "__Secure-diaoyan_refresh",
+      description: expect.stringContaining("/v1/auth/refresh"),
+    });
+
+    const createProject = operationValue(
+      projectSource,
+      project,
+      "/organizations/{organization_id}/projects",
+      "POST",
+    );
+    const projectParameters = parseValue(
+      "Project creation parameters",
+      z.array(objectSchema),
+      createProject.parameters,
+    );
+    const idempotency = projectParameters.find(({ name }) => name === "Idempotency-Key");
+    expect(idempotency).toMatchObject({ in: "header", required: true });
+    expect(objectValue("Idempotency-Key schema", idempotency?.schema)).toMatchObject({
+      minLength: 1,
+      maxLength: 200,
+    });
+
+    const createApiKey = operationValue(
+      projectSource,
+      project,
+      "/projects/{project_id}/api-keys",
+      "POST",
+    );
+    expect(createApiKey.description).toContain("non-idempotent");
+    const apiKeyParameters = parseValue(
+      "API Key creation parameters",
+      z.array(objectSchema),
+      createApiKey.parameters,
+    );
+    expect(apiKeyParameters.some(({ name }) => name === "Idempotency-Key")).toBe(false);
+    const apiKeyResponses = objectValue("API Key creation responses", createApiKey.responses);
+    const apiKeyCreated = resolvedResponse(projectSource, project, apiKeyResponses["201"]);
+    const apiKeyContent = objectValue("API Key creation content", apiKeyCreated.content);
+    const apiKeyMedia = objectValue("API Key JSON response", apiKeyContent["application/json"]);
+    const apiKeyResponseSchema = objectValue("API Key response schema", apiKeyMedia.schema);
+    const apiKeyProperties = objectValue("API Key response properties", apiKeyResponseSchema.properties);
+    expect(objectValue("API Key one-time secret", apiKeyProperties.secret)).toMatchObject({
+      readOnly: true,
+      "x-sensitive": true,
+    });
+    expect(objectValue("API Key one-time secret", apiKeyProperties.secret)).not.toHaveProperty("example");
+    expect(objectValue("API Key 201 headers", apiKeyCreated.headers)).toHaveProperty("Cache-Control");
+
+    const createEnrollment = operationValue(
+      workerSource,
+      worker,
+      "/projects/{project_id}/worker-enrollments",
+      "POST",
+    );
+    expect(createEnrollment.description).toContain("non-idempotent");
+    expect(createEnrollment.parameters).toBeDefined();
+    const workerComponents = objectValue("worker components", worker.components);
+    const workerSchemas = objectValue("worker schemas", workerComponents.schemas);
+    const enrollmentResponse = objectValue(
+      "Worker enrollment response",
+      workerSchemas.CreateWorkerEnrollmentResponse,
+    );
+    const enrollmentProperties = objectValue(
+      "Worker enrollment response properties",
+      enrollmentResponse.properties,
+    );
+    expect(objectValue("one-time enrollment token", enrollmentProperties.enrollment_token))
+      .toMatchObject({ readOnly: true, "x-sensitive": true });
+    expect(objectValue("one-time enrollment token", enrollmentProperties.enrollment_token))
+      .not.toHaveProperty("example");
+
+    for (const [document, source, path] of [
+      [project, projectSource, "/auth/oidc/begin"],
+      [worker, workerSource, "/worker-sessions/challenges"],
+    ] as const) {
+      const operation = operationValue(source, document, path, path.includes("begin") ? "GET" : "POST");
+      const responses = objectValue(`${path} responses`, operation.responses);
+      const limited = resolvedResponse(source, document, responses["429"]);
+      expect(objectValue(`${path} 429 headers`, limited.headers)).toHaveProperty("Retry-After");
+    }
   });
 
   it("documents transport-level failures for every Project Job action", () => {

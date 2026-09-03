@@ -2,7 +2,7 @@ openapi: 3.2.0
 info:
   title: Diaoyan Worker Control API
   version: 1.0.0
-  description: Internal outbound-only Worker protocol. All operations derive Project identity from the Worker Session token.
+  description: Worker bootstrap, identity, and outbound-only execution protocol.
 servers:
   - url: https://control.example/v1
 security:
@@ -215,6 +215,153 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '500':
           $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/worker-enrollments:
+    post:
+      operationId: createWorkerEnrollment
+      x-status: Planned
+      summary: Mint a one-time Worker enrollment credential
+      description: This credential-mint operation is non-idempotent and must not be retried automatically.
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkerEnrollmentRequest' }
+      responses:
+        '201':
+          description: Enrollment metadata and the one-time enrollment credential
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkerEnrollmentResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /worker-enrollments:
+    post:
+      operationId: enrollWorker
+      x-status: Planned
+      summary: Consume an enrollment credential and bind an Ed25519 Worker identity
+      security:
+        - WorkerEnrollmentToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollWorkerRequest' }
+      responses:
+        '201':
+          description: The enrolled active Worker
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkerResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/WorkerEnrollmentUnauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /worker-sessions/challenges:
+    post:
+      operationId: createWorkerSessionChallenge
+      x-status: Planned
+      summary: Create a bounded Worker proof-of-possession challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkerChallengeRequest' }
+      responses:
+        '201':
+          description: A short-lived challenge and exact signing payload
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkerChallengeResponse' }
+        '400': { $ref: '#/components/responses/WorkerProofInvalid' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/WorkerChallengeRateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /worker-sessions:
+    post:
+      operationId: createWorkerSession
+      x-status: Planned
+      summary: Exchange a valid Worker signature for a short-lived Session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkerSessionRequest' }
+      responses:
+        '201':
+          description: Five-minute Worker Session credential
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkerSessionResponse' }
+        '400': { $ref: '#/components/responses/WorkerProofInvalid' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/workers/{worker_id}/disable:
+    post:
+      operationId: disableProjectWorker
+      x-status: Planned
+      summary: Disable a Project Worker and revoke its credentials
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+        - name: worker_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Disabled Worker metadata
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkerResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '404': { $ref: '#/components/responses/WorkerNotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
 components:
   securitySchemes:
     WorkerSession:
@@ -222,6 +369,22 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Five-minute EdDSA Worker Session token with worker API audience.
+    HumanAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived human Access Token issued after OIDC Authorization Code + PKCE.
+    WorkerEnrollmentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: dya_we
+      description: One-time, ten-minute Worker enrollment credential.
+  headers:
+    NoStore:
+      schema: { type: string, const: no-store }
+    RetryAfter:
+      description: Whole seconds until another challenge may be requested.
+      schema: { type: integer, minimum: 1 }
   parameters:
     WorkerId:
       name: worker_id
@@ -239,6 +402,130 @@ components:
     Uuid:
       type: string
       format: uuid
+    CreateWorkerEnrollmentRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_name]
+      properties:
+        worker_name: { type: string, minLength: 1, maxLength: 128, pattern: '\S' }
+    WorkerEnrollment:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, worker_name, created_by_user_id, expires_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        project_id: { $ref: '#/components/schemas/Uuid' }
+        worker_name: { type: string }
+        created_by_user_id: { $ref: '#/components/schemas/Uuid' }
+        expires_at: { type: string, format: date-time }
+    CreateWorkerEnrollmentResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, enrollment, enrollment_token]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        enrollment: { $ref: '#/components/schemas/WorkerEnrollment' }
+        enrollment_token:
+          type: string
+          pattern: '^dya_we_[A-Za-z0-9_-]{43}$'
+          readOnly: true
+          x-sensitive: true
+          description: Returned only by the initial successful creation response.
+    EnrollWorkerRequest:
+      type: object
+      additionalProperties: false
+      required: [public_key_spki, version, capabilities]
+      properties:
+        public_key_spki:
+          type: string
+          minLength: 1
+          maxLength: 512
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: Canonical base64url Ed25519 SPKI DER bytes.
+        version: { type: string, minLength: 1, maxLength: 128, pattern: '\S' }
+        capabilities:
+          type: object
+          additionalProperties: true
+          x-max-json-bytes: 16384
+    WorkerIdentity:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - project_id
+        - name
+        - kind
+        - version
+        - capability_hash
+        - status
+        - created_by_user_id
+        - created_at
+        - disabled_at
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        project_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string }
+        kind: { type: string, enum: [public, private] }
+        version: { type: string }
+        capability_hash: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+        status: { type: string, enum: [active, disabled] }
+        created_by_user_id: { $ref: '#/components/schemas/Uuid' }
+        created_at: { type: string, format: date-time }
+        disabled_at:
+          oneOf: [{ type: string, format: date-time }, { type: 'null' }]
+    WorkerResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, worker]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        worker: { $ref: '#/components/schemas/WorkerIdentity' }
+    CreateWorkerChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id]
+      properties:
+        worker_id: { $ref: '#/components/schemas/Uuid' }
+    CreateWorkerChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, challenge]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        challenge:
+          type: object
+          additionalProperties: false
+          required: [worker_id, challenge, signing_payload, expires_at]
+          properties:
+            worker_id: { $ref: '#/components/schemas/Uuid' }
+            challenge: { type: string, pattern: '^dya_wc_[A-Za-z0-9_-]{43}$', x-sensitive: true }
+            signing_payload: { type: string, x-sensitive: true }
+            expires_at: { type: string, format: date-time }
+    CreateWorkerSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id, challenge, signature]
+      properties:
+        worker_id: { $ref: '#/components/schemas/Uuid' }
+        challenge: { type: string, pattern: '^dya_wc_[A-Za-z0-9_-]{43}$' }
+        signature: { type: string, pattern: '^[A-Za-z0-9_-]{86}$', x-sensitive: true }
+    CreateWorkerSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, session]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        session:
+          type: object
+          additionalProperties: false
+          required: [token, expires_at]
+          properties:
+            token:
+              type: string
+              pattern: '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+              readOnly: true
+              x-sensitive: true
+            expires_at: { type: string, format: date-time }
     ContentHash:
       type: string
       pattern: '^[A-Za-z0-9_-]{43}$'
@@ -591,6 +878,44 @@ components:
               field: { type: string }
               message: { type: string }
   responses:
+    HumanUnauthorized:
+      description: The human Access Token is missing, invalid, expired, or revoked
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, const: Bearer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanForbidden:
+      description: The authenticated user cannot administer Workers in this Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerEnrollmentUnauthorized:
+      description: The one-time Worker enrollment credential is invalid, expired, or consumed
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, const: Bearer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerProofInvalid:
+      description: The Worker identity, challenge, signature, or session proof is invalid
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerChallengeRateLimited:
+      description: Too many anonymous challenge attempts for this Worker
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerNotFound:
+      description: The Worker does not exist in this Project or is already disabled
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     MalformedRequest:
       description: Malformed request target, headers, UTF-8, or JSON
       content:
