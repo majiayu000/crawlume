@@ -70,21 +70,22 @@
 - 当前分支：`fix/crawl-recovery-ssrf-boundaries`
 - Wave 0 内容 checkpoint：`354f0217c7e47cc9394f1efd988b786e158021cf`
 - Wave 1 内容 checkpoint：`2b74175df3be3ed08555d497b2a06d1a066147c6`
-- 控制面主体、Wave 0 修复和 Wave 1 基础修复均已进入对应 checkpoint，可从最新 SHA 创建下一波独立 Worker worktree。
-- Wave 1 checkpoint 的 Node 25.9 `test:postgres` 35/35、`check`、`build` 和串行全量 690 passed Gate 已通过；全量中的 35 个条件式 PostgreSQL 用例已由专用 Gate 真实执行。
+- Wave 2 内容 checkpoint：`0d17f942eee1fa607d5f4169e65b5ed0a5cac5a3`
+- 控制面主体和 Wave 0–2 均已进入对应 checkpoint，可从最新 SHA 创建下一波独立 Worker worktree。
+- Wave 2 checkpoint 的 Node 25.9 `test:postgres` 47/47、`check`、`build` 和串行全量 755 passed Gate 已通过；全量中的 47 个条件式 PostgreSQL 用例已由专用 Gate 真实执行。
 
 ### 3.2 已存在能力
 
-- 七份 PostgreSQL migration。
+- 九份 PostgreSQL migration。
 - Project、RBAC、API Key、OIDC Session、Worker Identity 服务。
 - Job、Lease、Event、Publication、Artifact metadata、Audit 服务。
-- Project Job HTTP API 和 Worker HTTP API。
+- Human Auth、Organization/Project/API Key、Worker Bootstrap、Project Job 和 Worker HTTP API。
 - PostgreSQL Pool 适配器和 `start:control-plane`。
 - migration runner、schema checksum/version gate 和 PostgreSQL 16 integration harness。
 - 独立 Lease sweeper、pause/resume、数据库时钟 fencing 和真实并发/恢复测试。
-- OpenAPI YAML 语义解析与实际挂载 Router parity Gate。
+- 单 listener 挂载 27 个 `/v1` operation，具备 OpenAPI YAML 语义解析与实际 Router parity Gate。
 - 两份 OpenAPI 文档。
-- 171 个非 PostgreSQL 控制面专项测试和 35 个真实 PostgreSQL 测试。
+- 47 个真实 PostgreSQL 测试，以及包含空库 bootstrap 的全量串行 Gate。
 
 ### 3.3 当前 Wave 0 Gate 状态
 
@@ -99,10 +100,10 @@
 
 ### 3.4 当前结构性缺口
 
-- API Key HTTP 模块已实现，但尚未接入 `ControlPlaneHttpApi` 和 server 总 Router。
-- OIDC、Organization、API Key 管理和 Worker bootstrap HTTP 未接线。
 - 没有 Remote Worker 客户端和现有 Reader Runtime 适配。
 - Public Worker、Object Store、SDK、Webhook、C 端产品和运营闭环尚未形成。
+- INT-02 使用受控 Provider 公钥验证 OIDC ID Token；真实 RemoteJWKSet/JWKS HTTPS 网络、缓存和轮换仍需部署集成证据。
+- Auth、Cookie、Secret 和签名密钥仍需人工安全批准。
 
 ### 3.5 当前 Wave 1 Gate 状态
 
@@ -113,6 +114,17 @@
 | W1-TS | Node 25.9 `pnpm check` | Passing |
 | W1-BUILD | Node 25.9 `pnpm build` | Passing |
 | W1-FULL | 76 files：72 passed、4 条件式 PG files skipped；690 passed、35 PG tests 由 W1-PG 覆盖 | Passing |
+
+### 3.6 当前 Wave 2 Gate 状态
+
+| ID | 当前证据 | 状态 |
+|---|---|---|
+| W2-HTTP | Human Auth 4、Project Admin/API Key 6、Worker Bootstrap 5 均接入单 listener | Passing |
+| W2-PARITY | OpenAPI 与 Router 精确 27 operations；0 Planned | Passing |
+| W2-BOOTSTRAP | 空库 migration→OIDC user→Project→API Key→Worker Session 真实 HTTP/PG E2E | Passing |
+| W2-PG | PostgreSQL 16 专用 Gate：6 files、47/47 | Passing |
+| W2-TS | Node 25.9 `pnpm check` 和 `pnpm build` | Passing |
+| W2-FULL | 81 files：75 passed、6 条件式 PG files skipped；755 passed、47 PG tests 由 W2-PG 覆盖 | Passing |
 
 ## 4. 协作角色
 
@@ -748,12 +760,18 @@ Coordinator 在自己的集成分支维护以下表。当前值如下：
 | DB-03 | DB Lane | c72644c | Done | 1d | 2026-09-03 | 2026-09-03 | real concurrent claim/sequence/idempotency and runtime restart | - | 6a5059b, 7f5a4e0 | accepted; checkpoint Gate passed |
 | JOB-01 | Job Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | claim enters running; complete without heartbeat; fencing retained | - | 70a6a97 | accepted; checkpoint Gate passed |
 | JOB-02 | Job Lane | 4908f1d | Done | 1.5d | 2026-09-03 | 2026-09-03 | independent serial sweeper; fatal and close lifecycle integrated | - | 2e7ff07, 362900d, c73b3fc, 76f85c0, dbede82 | accepted; checkpoint Gate passed |
-| JOB-03 | Job Lane | 74b1385 | Done | 1d | 2026-09-03 | 2026-09-03 | real lifecycle, lock order, DB clock, generation and placement fencing | - | 1e57894, 4e9a0cf, a3c1250, 371238a, 39cd086, 2b74175 | accepted; DB clock-skew follow-up passed |
+| JOB-03 | Job Lane | 74b1385 | Done | 1d | 2026-09-03 | 2026-09-03 | real lifecycle, lock order, DB clock, generation and placement fencing | - | 1e57894, 4e9a0cf, a3c1250, 371238a, 39cd086, 2b74175, bfd4387 | accepted; DB clock-skew follow-up passed |
 | AUTH-01 | Auth Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | atomic challenge verification, consumption and Session creation | - | 4908f1d | accepted; human security review still required |
 | AUTH-02 | Auth Lane | 4908f1d | Done | 1.5d | 2026-09-03 | 2026-09-03 | concurrent rotation conflict; replay revokes one family | - | 93ff8ca | accepted; human security review still required |
 | AUTH-03 | Auth Lane | 93ff8ca | Done | 1d | 2026-09-03 | 2026-09-03 | real PG Enrollment/challenge/refresh locks and rollback | - | 74b1385 | accepted; human security review still required |
 | API-01 | Contract Lane | 354f021 | Done | 1d | 2026-09-03 | 2026-09-03 | YAML parse; 15 operations = 12 integrated + 3 Planned | - | 88aa476, 5dbc359 | accepted; checkpoint Gate passed |
 | API-02 | Contract Lane | c72644c | Done | 1d | 2026-09-03 | 2026-09-03 | pause/resume and transport/status/safe-integer contracts aligned | - | fb54952, d798390, 7fa6d89 | accepted; checkpoint Gate passed |
+| HTTP-01 | Human Auth Lane | 5d23f53 | Done | 2d | 2026-09-03 | 2026-09-03 | OIDC begin/callback/refresh/logout; browser-bound cookies; bounded anonymous attempts | - | 49676ff, a51724c, eb13cec, ac72ffc | automated review accepted; human security approval required |
+| HTTP-02 | Project Admin Lane | ac72ffc | Done | 2d | 2026-09-03 | 2026-09-03 | Organization/Project list/create; API Key create/list/revoke; PG idempotency and revocation race | - | 251123f, f7aaa76, f456e9c | accepted; PG Gate passed; human security approval required |
+| HTTP-03 | Worker Bootstrap Lane | 5d23f53 | Done | 2d | 2026-09-03 | 2026-09-03 | Enrollment, enroll, challenge, Session and disable; bounded challenge writes | - | 61c05e4, 874ff17, bf08295, eb13cec, ac72ffc | automated review accepted; human security approval required |
+| HTTP-04 | Contract Lane | ac72ffc | Done | 1d | 2026-09-03 | 2026-09-03 | 15 bootstrap contracts, security/status/media types and sensitive credential boundaries | - | b3d0785, 9639da8 | accepted; integrated parity passed |
+| INT-01 | Coordinator | f456e9c | Done | 1d | 2026-09-03 | 2026-09-03 | one listener mounts 27 operations; strict query/body transport; runtime OIDC/key config | - | a5f1c17, fbf2cb4 | contract/security review accepted; human security approval required |
+| INT-02 | Coordinator | fbf2cb4 | Done | 1d | 2026-09-03 | 2026-09-03 | empty DB migration→OIDC→Project→API Key→Worker Session HTTP/PG E2E | - | c14a0eb, 0d17f94 | accepted; 47/47 PG and 755/755 non-PG Gate passed |
 
 不要让所有 Worker 在各自分支修改这张表。Worker 使用 handoff 消息回报，Coordinator 统一更新。
 
