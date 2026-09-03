@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -167,36 +169,70 @@ function rows(path: string): Array<Record<string, unknown>> {
   }
 }
 
-async function startChildOwner(path: string): Promise<ChildProcess> {
-  const moduleUrl = pathToFileURL(resolve("src/remote-worker/outbox.ts")).href;
-  const source = `
-    import { RemoteWorkerOutbox } from ${JSON.stringify(moduleUrl)};
-    new RemoteWorkerOutbox(${JSON.stringify(path)});
-    process.stdout.write("ready\\n");
-    process.stdin.resume();
-  `;
-  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
-    cwd: process.cwd(),
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  await new Promise<void>((resolveReady, rejectReady) => {
+type ChildEntryMessage = Readonly<{
+  type: "awaiting" | "state";
+  entry: Readonly<{ state: string; localSequence: number }>;
+}>;
+
+function nextChildEntry(child: ChildProcess, type: ChildEntryMessage["type"]): Promise<ChildEntryMessage> {
+  return new Promise((resolveMessage, rejectMessage) => {
     const cleanup = () => {
-      child.stdout?.off("data", onData);
+      child.off("message", onMessage);
       child.off("exit", onExit);
     };
-    const onData = (chunk: Buffer) => {
-      if (!chunk.toString().includes("ready")) return;
+    const onMessage = (message: unknown) => {
+      if (typeof message !== "object" || message === null || !("type" in message) || message.type !== type) return;
       cleanup();
-      resolveReady();
+      resolveMessage(message as ChildEntryMessage);
     };
     const onExit = (code: number | null) => {
       cleanup();
-      rejectReady(new Error(`child outbox owner exited before ready: ${String(code)}`));
+      rejectMessage(new Error(`child outbox owner exited before ${type}: ${String(code)}`));
     };
-    child.stdout?.on("data", onData);
+    child.on("message", onMessage);
     child.on("exit", onExit);
   });
-  return child;
+}
+
+function startChildDelivery(path: string, baseUrl: string): Readonly<{
+  child: ChildProcess;
+  awaiting: Promise<ChildEntryMessage>;
+}> {
+  const outboxModuleUrl = pathToFileURL(resolve("src/remote-worker/outbox.ts")).href;
+  const clientModuleUrl = pathToFileURL(resolve("src/remote-worker/client.ts")).href;
+  const serializedEvent = JSON.stringify({
+    ...eventInput(), occurredAt: eventInput().occurredAt.toISOString(),
+  });
+  const source = `
+    import { RemoteWorkerOutbox } from ${JSON.stringify(outboxModuleUrl)};
+    import { RemoteWorkerClient } from ${JSON.stringify(clientModuleUrl)};
+    const lease = ${JSON.stringify(lease)};
+    const event = ${serializedEvent};
+    event.occurredAt = new Date(event.occurredAt);
+    const outbox = new RemoteWorkerOutbox(${JSON.stringify(path)});
+    outbox.enqueueEvent(lease, event);
+    const report = (type) => process.send({ type, entry: outbox.listEntries(lease)[0] });
+    process.on("message", (message) => { if (message === "inspect") report("state"); });
+    const delivery = outbox.deliverNext({
+      lease,
+      sessionToken: ${JSON.stringify(sessionToken)},
+      client: new RemoteWorkerClient(${JSON.stringify(baseUrl)}),
+    });
+    report("awaiting");
+    await delivery;
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  return { child, awaiting: nextChildEntry(child, "awaiting") };
+}
+
+async function killChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
 }
 
 afterEach(() => {
@@ -209,24 +245,28 @@ describe("RemoteWorkerOutbox", () => {
   it("creates a private WAL database and atomically allocates independent Event/Publication sequences", () => {
     const path = outboxPath();
     const priorUmask = process.umask(0);
-    let outbox: RemoteWorkerOutbox;
+    let outbox: RemoteWorkerOutbox | undefined;
     try {
       outbox = new RemoteWorkerOutbox(path, () => 1_000);
+      expect(outbox.enqueueEvent(lease, eventInput())).toMatchObject({
+        kind: "event", localSequence: 1, state: "pending", createdAtMs: 1_000,
+      });
+      expect(outbox.enqueueEvent(lease, eventInput(undefined, "page-2"))).toMatchObject({
+        kind: "event", localSequence: 2,
+      });
+      expect(outbox.enqueuePublication(lease, publicationInput())).toMatchObject({
+        kind: "publication", localSequence: 1,
+      });
+      expect(outbox.listPendingLeases()).toEqual([lease]);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(`${path}-wal`).mode & 0o777).toBe(0o600);
+      if (existsSync(`${path}-shm`)) expect(statSync(`${path}-shm`).mode & 0o777).toBe(0o600);
+      outbox.close();
+      outbox = undefined;
     } finally {
+      outbox?.close();
       process.umask(priorUmask);
     }
-
-    expect(outbox.enqueueEvent(lease, eventInput())).toMatchObject({
-      kind: "event", localSequence: 1, state: "pending", createdAtMs: 1_000,
-    });
-    expect(outbox.enqueueEvent(lease, eventInput(undefined, "page-2"))).toMatchObject({
-      kind: "event", localSequence: 2,
-    });
-    expect(outbox.enqueuePublication(lease, publicationInput())).toMatchObject({
-      kind: "publication", localSequence: 1,
-    });
-    expect(outbox.listPendingLeases()).toEqual([lease]);
-    outbox.close();
 
     const database = new DatabaseSync(path);
     expect(database.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
@@ -268,17 +308,58 @@ describe("RemoteWorkerOutbox", () => {
     reopened.close();
   });
 
-  it("releases SQLite ownership when the owning process dies", async () => {
+  it("keeps an inflight network delivery exclusively owned and replays it after process death", async () => {
     const path = outboxPath();
-    const child = await startChildOwner(path);
+    const requestBodies: string[] = [];
+    let markFirstRequest!: () => void;
+    const firstRequest = new Promise<void>((resolveRequest) => { markFirstRequest = resolveRequest; });
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => { body += chunk; });
+      request.on("end", () => {
+        requestBodies.push(body);
+        if (requestBodies.length === 1) {
+          markFirstRequest();
+          return;
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(eventResponse()));
+      });
+    });
+    await new Promise<void>((resolveListening) => { server.listen(0, "127.0.0.1", resolveListening); });
+    const address = server.address() as AddressInfo;
+    const { child, awaiting } = startChildDelivery(path, `http://127.0.0.1:${address.port}/v1/`);
     try {
+      const [reported] = await Promise.all([awaiting, firstRequest]);
+      expect(reported.entry).toMatchObject({ state: "inflight", localSequence: 1 });
       expect(() => new RemoteWorkerOutbox(path)).toThrow(RemoteWorkerOutboxOwnershipError);
+      const afterOverlap = nextChildEntry(child, "state");
+      child.send("inspect");
+      await expect(afterOverlap).resolves.toMatchObject({
+        entry: { state: "inflight", localSequence: 1 },
+      });
+      await killChild(child);
+
+      const reopened = new RemoteWorkerOutbox(path);
+      expect(reopened.listEntries(lease)).toEqual([
+        expect.objectContaining({ state: "pending", localSequence: 1 }),
+      ]);
+      await expect(reopened.deliverNext({
+        lease,
+        sessionToken,
+        client: new RemoteWorkerClient(`http://127.0.0.1:${address.port}/v1/`),
+      })).resolves.toMatchObject({ state: "acked", localSequence: 1 });
+      expect(requestBodies).toHaveLength(2);
+      expect(requestBodies[1]).toBe(requestBodies[0]);
+      expect(JSON.parse(requestBodies[1]!)).toMatchObject({ generation: 3, local_sequence: 1 });
+      reopened.close();
     } finally {
-      child.kill("SIGKILL");
-      await once(child, "exit");
+      await killChild(child);
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => { if (error) rejectClose(error); else resolveClose(); });
+      });
     }
-    const reopened = new RemoteWorkerOutbox(path);
-    reopened.close();
   });
 
   it("deduplicates stable logical submissions and exposes state without exposing payload", () => {
