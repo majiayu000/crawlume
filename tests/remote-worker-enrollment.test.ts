@@ -1,5 +1,17 @@
-import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createPublicKey, generateKeyPairSync, randomUUID, verify } from "node:crypto";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,7 +35,8 @@ const workerId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
 const temporaryDirectories: string[] = [];
 
 async function temporaryStateDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "diaoyan-worker-identity-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "diaoyan-worker-identity-")));
+  await chmod(directory, 0o700);
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -141,6 +154,69 @@ describe("filesystem Remote Worker identity", () => {
       "publicKeySpki",
       identities[0]?.publicKeySpki,
     );
+    const directory = join(stateDirectory, "worker-identity");
+    expect((await lstat(join(directory, "private-key.pk8"))).nlink).toBe(1);
+    expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("rejects a symlink state directory without creating identity state", async () => {
+    const parent = await temporaryStateDirectory();
+    const target = await temporaryStateDirectory();
+    const linkedStateDirectory = join(parent, "linked-state");
+    await symlink(target, linkedStateDirectory);
+
+    await expect(loadOrCreateWorkerIdentity(linkedStateDirectory))
+      .rejects.toThrow(RemoteWorkerIdentityStoreError);
+    await expect(lstat(join(target, "worker-identity"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a mode-0755 state directory without creating identity state", async () => {
+    const stateDirectory = await temporaryStateDirectory();
+    await chmod(stateDirectory, 0o755);
+
+    await expect(loadOrCreateWorkerIdentity(stateDirectory))
+      .rejects.toThrow(RemoteWorkerIdentityStoreError);
+    await expect(lstat(join(stateDirectory, "worker-identity")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a group or world-writable non-sticky ancestor", async () => {
+    const parent = await temporaryStateDirectory();
+    const unsafeAncestor = join(parent, "unsafe");
+    const stateDirectory = join(unsafeAncestor, "state");
+    await mkdir(unsafeAncestor, { mode: 0o777 });
+    await chmod(unsafeAncestor, 0o777);
+    await mkdir(stateDirectory, { mode: 0o700 });
+    await chmod(stateDirectory, 0o700);
+
+    await expect(loadOrCreateWorkerIdentity(stateDirectory))
+      .rejects.toThrow(RemoteWorkerIdentityStoreError);
+    await expect(lstat(join(stateDirectory, "worker-identity")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a non-directory state path component", async () => {
+    const parent = await temporaryStateDirectory();
+    const nonDirectory = join(parent, "not-a-directory");
+    await writeFile(nonDirectory, "not a directory", { mode: 0o600 });
+
+    await expect(loadOrCreateWorkerIdentity(join(nonDirectory, "state")))
+      .rejects.toThrow(RemoteWorkerIdentityStoreError);
+  });
+
+  it("accepts a mode-0700 state directory below the root-owned sticky temp directory", async () => {
+    const stickyTemporaryDirectory = await realpath("/tmp");
+    const metadata = await lstat(stickyTemporaryDirectory);
+    if (metadata.uid !== 0 || (metadata.mode & 0o1000) === 0 || (metadata.mode & 0o002) === 0) {
+      return;
+    }
+    const stateDirectory = await realpath(
+      await mkdtemp(join(stickyTemporaryDirectory, "diaoyan-worker-identity-sticky-")),
+    );
+    temporaryDirectories.push(stateDirectory);
+    await chmod(stateDirectory, 0o700);
+
+    await expect(loadOrCreateWorkerIdentity(stateDirectory)).resolves.toBeDefined();
   });
 
   it("rejects an identity directory symlink", async () => {
@@ -174,6 +250,71 @@ describe("filesystem Remote Worker identity", () => {
     expect((await lstat(privateKeyPath)).isSymbolicLink()).toBe(true);
   });
 
+  it("cleans a published stale temporary hard link without touching unrelated files", async () => {
+    const stateDirectory = await temporaryStateDirectory();
+    await loadOrCreateWorkerIdentity(stateDirectory);
+    const directory = join(stateDirectory, "worker-identity");
+    const privateKeyPath = join(directory, "private-key.pk8");
+    const stalePath = join(
+      directory,
+      `.private-key.pk8.${randomUUID()}.tmp`,
+    );
+    const unrelatedPath = join(directory, "keep.txt");
+    const orphanTemporaryPath = join(
+      directory,
+      `.private-key.pk8.${randomUUID()}.tmp`,
+    );
+    await link(privateKeyPath, stalePath);
+    await writeFile(unrelatedPath, "keep", { mode: 0o600 });
+    await writeFile(orphanTemporaryPath, "orphan", { mode: 0o600 });
+
+    await expect(loadOrCreateWorkerIdentity(stateDirectory)).resolves.toBeDefined();
+    await expect(lstat(stalePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(orphanTemporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(privateKeyPath)).nlink).toBe(1);
+    await expect(readFile(unrelatedPath, "utf8")).resolves.toBe("keep");
+  });
+
+  it("cleans an unpublished stale temporary file after the final identity exists", async () => {
+    const stateDirectory = await temporaryStateDirectory();
+    const directory = await identityDirectory(stateDirectory);
+    const stalePath = join(
+      directory,
+      `.private-key.pk8.${randomUUID()}.tmp`,
+    );
+    await writeFile(stalePath, "stale secret", { mode: 0o600 });
+
+    await loadOrCreateWorkerIdentity(stateDirectory);
+    await expect(lstat(stalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("cleans a temporary file owned by a dead process", async () => {
+    const stateDirectory = await temporaryStateDirectory();
+    await loadOrCreateWorkerIdentity(stateDirectory);
+    const stalePath = join(
+      stateDirectory,
+      "worker-identity",
+      `.private-key.pk8.2147483647.${randomUUID()}.tmp`,
+    );
+    await writeFile(stalePath, "stale secret", { mode: 0o600 });
+
+    await loadOrCreateWorkerIdentity(stateDirectory);
+    await expect(lstat(stalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a final private key with an external hard link without deleting either path", async () => {
+    const stateDirectory = await temporaryStateDirectory();
+    await loadOrCreateWorkerIdentity(stateDirectory);
+    const privateKeyPath = join(stateDirectory, "worker-identity", "private-key.pk8");
+    const externalPath = join(stateDirectory, "external-private-key.pk8");
+    await link(privateKeyPath, externalPath);
+
+    await expect(loadOrCreateWorkerIdentity(stateDirectory))
+      .rejects.toThrow(RemoteWorkerIdentityStoreError);
+    await expect(lstat(privateKeyPath)).resolves.toBeDefined();
+    await expect(lstat(externalPath)).resolves.toBeDefined();
+  });
+
   it.each([
     ["non-regular", async (path: string) => { await mkdir(path, { mode: 0o600 }); }],
     ["wide permissions", async (path: string) => {
@@ -204,7 +345,7 @@ describe("filesystem Remote Worker identity", () => {
     expect(await lstat(privateKeyPath)).toBeDefined();
   });
 
-  it("rejects an identity owned by another effective user", async () => {
+  it("rejects a state path owned by another effective user", async () => {
     const stateDirectory = await temporaryStateDirectory();
     await loadOrCreateWorkerIdentity(stateDirectory);
     const posixProcess = process as NodeJS.Process & { geteuid(): number };
