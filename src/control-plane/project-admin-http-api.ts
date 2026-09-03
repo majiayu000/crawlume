@@ -98,6 +98,14 @@ class ProjectIdempotencyKeyRequiredError extends Error {
   }
 }
 
+class ProjectAdminRequestError extends Error {
+  readonly code = "PROJECT_ADMIN_REQUEST_INVALID";
+  constructor() {
+    super("This Project Admin request must not include a request body.");
+    this.name = "ProjectAdminRequestError";
+  }
+}
+
 const cursorSchema = z.object({
   created_at: z.string().datetime({ offset: true }),
   id: z.uuid(),
@@ -163,6 +171,17 @@ function idempotencyKey(request: WorkerHttpRequest): string {
   return normalized;
 }
 
+function requestHasBody(request: WorkerHttpRequest): boolean {
+  if (request.body !== null) return true;
+  if (Object.keys(request.headers).some((name) => name.toLowerCase() === "transfer-encoding")) {
+    return true;
+  }
+  const contentLengths = Object.entries(request.headers)
+    .filter(([name]) => name.toLowerCase() === "content-length");
+  return contentLengths.length > 0 &&
+    (contentLengths.length !== 1 || contentLengths[0]?.[1] !== "0");
+}
+
 function encodedCursor(item: Readonly<{ createdAt: Date; id: string }>): string {
   return Buffer.from(JSON.stringify({
     created_at: item.createdAt.toISOString(),
@@ -201,6 +220,7 @@ function response(
     status,
     headers: Object.freeze({
       "x-request-id": requestId,
+      "cache-control": "no-store",
       ...(body === null ? {} : { "content-type": "application/json" }),
       ...headers,
     }),
@@ -233,6 +253,7 @@ function problem(
     headers: Object.freeze({
       "content-type": "application/problem+json",
       "x-request-id": requestId,
+      "cache-control": "no-store",
       ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
     }),
     body,
@@ -289,6 +310,7 @@ export class ProjectAdminHttpApi {
     }
 
     try {
+      if (method === "GET" && requestHasBody(request)) throw new ProjectAdminRequestError();
       const subject = await this.services.authenticateAccessToken(accessToken(request));
       if (method === "GET") {
         const input = pageInput(request.query ?? "");
@@ -351,6 +373,10 @@ export class ProjectAdminHttpApi {
     }
     if (error instanceof ProjectIdempotencyKeyRequiredError) {
       return problem(request, requestId, 400, error.code, "Idempotency Key Required", error.message);
+    }
+    if (error instanceof ProjectAdminRequestError) {
+      return problem(request, requestId, 400, error.code, "Project Admin Request Invalid",
+        error.message);
     }
     if (error instanceof ProjectAdminQueryError) {
       return problem(request, requestId, 400, error.code, "Project Admin Query Invalid", error.message);

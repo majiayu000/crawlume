@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runControlPlaneMigrations } from "../src/control-plane/migrations.js";
 import {
   createOrganizationProject,
+  ProjectAdminAccessDeniedError,
   ProjectCreationIdempotencyConflictError,
 } from "../src/control-plane/project-admin-management.js";
 import { PostgresControlPlaneDatabase } from "../src/server.js";
@@ -36,6 +37,34 @@ function databaseUrl(name: string): string {
   }
   url.pathname = `/${name}`;
   return url.toString();
+}
+
+async function waitForOrganizationLock(database: Pool): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const activity = await database.query<{ waiting: boolean }>(`
+      SELECT EXISTS(
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND query LIKE '%SELECT id%FROM organizations%FOR UPDATE%'
+          AND wait_event_type = 'Lock'
+          AND cardinality(pg_blocking_pids(pid)) > 0
+      ) AS waiting
+    `);
+    if (activity.rows[0]?.waiting === true) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("Project creation did not reach the expected Organization row lock.");
+}
+
+async function expectPostgresError(operation: () => Promise<unknown>, code: string): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    expect(error).toMatchObject({ code });
+    return;
+  }
+  throw new Error(`Expected PostgreSQL error ${code}, but the statement succeeded.`);
 }
 
 describeWithPostgres("Project Admin PostgreSQL integration", () => {
@@ -125,5 +154,68 @@ describeWithPostgres("Project Admin PostgreSQL integration", () => {
     expect(projects.rows[0]?.count).toBe("1");
     expect(records.rows[0]?.count).toBe("1");
     expect(audits.rows[0]?.count).toBe("1");
+
+    const otherOrganizationId = "10000000-0000-4000-8000-000000000003";
+    await pool.query(`
+      INSERT INTO organizations(id, slug, name, kind)
+      VALUES ($1, 'http-02-other', 'HTTP-02 Other', 'business')
+    `, [otherOrganizationId]);
+    await expectPostgresError(() => pool.query(`
+      INSERT INTO project_creation_idempotency(
+        organization_id, idempotency_key, request_hash, project_id
+      ) VALUES ($1, 'cross-organization', $2, $3)
+    `, [otherOrganizationId, Buffer.alloc(32, 9), first.id]), "23503");
+  });
+
+  it("rechecks a demoted administrator after waiting for the Organization lock", async () => {
+    await pool.query(`
+      UPDATE organization_memberships
+      SET role = 'admin'
+      WHERE organization_id = $1 AND user_id = $2
+    `, [organizationId, userId]);
+    const blocker = await pool.connect();
+    await blocker.query("BEGIN");
+    await blocker.query("SELECT id FROM organizations WHERE id = $1 FOR UPDATE", [organizationId]);
+    const creation = createOrganizationProject(
+      database,
+      { userId },
+      organizationId,
+      "demotion-race",
+      { slug: "demotion-race", name: "Demotion Race" },
+      { correlationId: "http-02-demotion" },
+    );
+    try {
+      await waitForOrganizationLock(pool);
+      await pool.query(`
+        UPDATE organization_memberships
+        SET role = 'member'
+        WHERE organization_id = $1 AND user_id = $2
+      `, [organizationId, userId]);
+      await blocker.query("COMMIT");
+      await expect(creation).rejects.toEqual(new ProjectAdminAccessDeniedError());
+
+      const effects = await pool.query<{
+        projects: string;
+        audits: string;
+        idempotency_records: string;
+      }>(`
+        SELECT
+          (SELECT count(*)::text FROM projects
+            WHERE organization_id = $1 AND slug = 'demotion-race') AS projects,
+          (SELECT count(*)::text FROM audit_events
+            WHERE organization_id = $1 AND correlation_id = 'http-02-demotion') AS audits,
+          (SELECT count(*)::text FROM project_creation_idempotency
+            WHERE organization_id = $1 AND idempotency_key = 'demotion-race') AS idempotency_records
+      `, [organizationId]);
+      expect(effects.rows[0]).toEqual({ projects: "0", audits: "0", idempotency_records: "0" });
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await pool.query(`
+        UPDATE organization_memberships
+        SET role = 'owner'
+        WHERE organization_id = $1 AND user_id = $2
+      `, [organizationId, userId]);
+    }
   });
 });

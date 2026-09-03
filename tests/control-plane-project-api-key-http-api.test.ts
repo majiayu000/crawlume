@@ -117,7 +117,10 @@ describe("Project API Key management HTTP API", () => {
 
     expect(result).toMatchObject({
       status: 201,
-      headers: { location: `/v1/projects/${projectId}/api-keys/${keyId}` },
+      headers: {
+        "cache-control": "no-store",
+        location: `/v1/projects/${projectId}/api-keys/${keyId}`,
+      },
       body: {
         request_id: requestId,
         api_key: { id: keyId, display_prefix: "dya_live_deadbeef" },
@@ -141,6 +144,7 @@ describe("Project API Key management HTTP API", () => {
 
     expect(result).toMatchObject({
       status: 200,
+      headers: { "cache-control": "no-store" },
       body: {
         api_keys: [{ id: keyId }],
         pagination: { has_more: true, limit: 1 },
@@ -162,7 +166,11 @@ describe("Project API Key management HTTP API", () => {
       body: null,
     }));
 
-    expect(result).toMatchObject({ status: 204, body: null });
+    expect(result).toMatchObject({
+      status: 204,
+      headers: { "cache-control": "no-store" },
+      body: null,
+    });
     expect(result.headers).not.toHaveProperty("content-type");
     expect(revoke).toHaveBeenCalledWith(projectScope, keyId, { correlationId: requestId });
   });
@@ -173,7 +181,7 @@ describe("Project API Key management HTTP API", () => {
     });
     await expect(invalid.api.handle(request())).resolves.toMatchObject({
       status: 401,
-      headers: { "www-authenticate": "Bearer" },
+      headers: { "cache-control": "no-store", "www-authenticate": "Bearer" },
       body: { code: "ACCESS_TOKEN_INVALID" },
     });
 
@@ -200,8 +208,39 @@ describe("Project API Key management HTTP API", () => {
     const { api, authenticateAccessToken } = await harness();
     await expect(api.handle(request({ method: "PATCH" }))).resolves.toMatchObject({
       status: 405,
-      headers: { allow: "GET, POST" },
+      headers: { allow: "GET, POST", "cache-control": "no-store" },
     });
+
+    for (const bodyRequest of [
+      request({ method: "GET" }),
+      request({
+        method: "GET",
+        headers: { authorization: `Bearer ${token}`, "transfer-encoding": "chunked" },
+        body: null,
+      }),
+      request({
+        method: "DELETE",
+        path: `/v1/projects/${projectId}/api-keys/${keyId}`,
+        headers: { authorization: `Bearer ${token}`, "content-length": "4" },
+        body: null,
+      }),
+      request({
+        method: "DELETE",
+        path: `/v1/projects/${projectId}/api-keys/${keyId}`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Content-Length": "0",
+          "content-length": "0",
+        },
+        body: null,
+      }),
+    ]) {
+      await expect(api.handle(bodyRequest)).resolves.toMatchObject({
+        status: 400,
+        headers: { "cache-control": "no-store" },
+        body: { code: "API_KEY_REQUEST_INVALID" },
+      });
+    }
     expect(authenticateAccessToken).not.toHaveBeenCalled();
 
     await expect(api.handle(request({ method: "GET", query: "?offset=1", body: null })))

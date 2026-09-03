@@ -160,7 +160,7 @@ describe("Project Admin HTTP API", () => {
 
     expect(result).toMatchObject({
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "cache-control": "no-store", "content-type": "application/json" },
       body: {
         request_id: requestId,
         organizations: [{ id: organizationId, role: "owner" }],
@@ -196,7 +196,7 @@ describe("Project Admin HTTP API", () => {
 
   it("trims required idempotency and creates a Project without a dead Location", async () => {
     const { api, createProject } = httpHarness();
-    const result = await api.handle(request({
+    const createRequest = request({
       method: "POST",
       path: `/v1/organizations/${organizationId}/projects`,
       headers: {
@@ -205,12 +205,16 @@ describe("Project Admin HTTP API", () => {
         "idempotency-key": "  create-research  ",
       },
       body: { slug: "research", name: "Research" },
-    }));
+    });
+    const result = await api.handle(createRequest);
+    const replay = await api.handle(createRequest);
 
     expect(result).toMatchObject({
       status: 201,
+      headers: { "cache-control": "no-store" },
       body: { project: { id: projectId, slug: "research", name: "Research" } },
     });
+    expect(replay).toMatchObject({ status: 201, body: result.body });
     expect(result.headers).not.toHaveProperty("location");
     expect(createProject).toHaveBeenCalledWith(
       { userId },
@@ -219,6 +223,7 @@ describe("Project Admin HTTP API", () => {
       { slug: "research", name: "Research" },
       auditContext,
     );
+    expect(createProject).toHaveBeenCalledTimes(2);
 
     const missing = await api.handle(request({
       method: "POST",
@@ -247,7 +252,11 @@ describe("Project Admin HTTP API", () => {
     });
     await expect(invalid.api.handle(request())).resolves.toMatchObject({
       status: 401,
-      headers: { "www-authenticate": "Bearer", "content-type": "application/problem+json" },
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "application/problem+json",
+        "www-authenticate": "Bearer",
+      },
       body: { code: "ACCESS_TOKEN_INVALID" },
     });
 
@@ -318,6 +327,39 @@ describe("Project Admin HTTP API", () => {
     expect(JSON.stringify(internal)).not.toContain("secret");
   });
 
+  it("returns Allow for unsupported Organization methods before authentication", async () => {
+    const { api, authenticateAccessToken } = httpHarness();
+    await expect(api.handle(request({ method: "POST" }))).resolves.toMatchObject({
+      status: 405,
+      headers: { allow: "GET", "cache-control": "no-store" },
+      body: { code: "PROJECT_ADMIN_METHOD_NOT_ALLOWED" },
+    });
+    expect(authenticateAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("rejects GET bodies before authenticating", async () => {
+    const { api, authenticateAccessToken } = httpHarness();
+    for (const bodyRequest of [
+      request({ body: {} }),
+      request({ headers: { authorization: `Bearer ${token}`, "transfer-encoding": "chunked" } }),
+      request({ headers: { authorization: `Bearer ${token}`, "content-length": "4" } }),
+      request({
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Content-Length": "0",
+          "content-length": "0",
+        },
+      }),
+    ]) {
+      await expect(api.handle(bodyRequest)).resolves.toMatchObject({
+        status: 400,
+        headers: { "cache-control": "no-store" },
+        body: { code: "PROJECT_ADMIN_REQUEST_INVALID" },
+      });
+    }
+    expect(authenticateAccessToken).not.toHaveBeenCalled();
+  });
+
   it("delegates existing API Key management routes without authenticating twice", async () => {
     const { api, apiKeyHandle, apiKeyResponse, authenticateAccessToken } = httpHarness();
     const apiKeyRequest = request({
@@ -373,7 +415,8 @@ describe("Project Admin management", () => {
 
   it("creates and audits one Project before binding the idempotency record", async () => {
     const database = new ScriptedDatabase([
-      { rows: [{ id: organizationId, role: "admin" }] },
+      { rows: [{ id: organizationId }] },
+      { rows: [{ role: "admin" }] },
       { rows: [] },
       { rows: [{
         id: projectId,
@@ -395,9 +438,10 @@ describe("Project Admin management", () => {
       auditContext,
     )).resolves.toEqual(project({ slug: "research", name: "Research" }));
     expect(database.transactions).toBe(1);
-    expect(database.calls[0]?.statement).toContain("FOR UPDATE OF organizations");
-    expect(database.calls[2]?.parameters[1]).toBe(organizationId);
-    expect(database.calls[3]?.parameters.slice(3)).toEqual([
+    expect(database.calls[0]?.statement).toContain("FOR UPDATE");
+    expect(database.calls[1]?.statement).toContain("organization_memberships");
+    expect(database.calls[3]?.parameters[1]).toBe(organizationId);
+    expect(database.calls[4]?.parameters.slice(3)).toEqual([
       "user",
       userId,
       "project.created",
@@ -406,8 +450,8 @@ describe("Project Admin management", () => {
       "succeeded",
       requestId,
     ]);
-    expect(database.calls[4]?.statement).toContain("project_creation_idempotency");
-    expect(database.calls[4]?.parameters.slice(0, 2)).toEqual([
+    expect(database.calls[5]?.statement).toContain("project_creation_idempotency");
+    expect(database.calls[5]?.parameters.slice(0, 2)).toEqual([
       organizationId,
       "create-research",
     ]);
@@ -418,7 +462,8 @@ describe("Project Admin management", () => {
       .update(JSON.stringify({ slug: "research", name: "Research" }))
       .digest();
     const replayDatabase = new ScriptedDatabase([
-      { rows: [{ id: organizationId, role: "owner" }] },
+      { rows: [{ id: organizationId }] },
+      { rows: [{ role: "owner" }] },
       { rows: [{ request_hash: requestHash, project_id: projectId }] },
       { rows: [{
         id: projectId,
@@ -436,10 +481,11 @@ describe("Project Admin management", () => {
       { slug: "research", name: "Research" },
       auditContext,
     )).resolves.toEqual(project({ slug: "research", name: "Research" }));
-    expect(replayDatabase.calls).toHaveLength(3);
+    expect(replayDatabase.calls).toHaveLength(4);
 
     const conflictDatabase = new ScriptedDatabase([
-      { rows: [{ id: organizationId, role: "owner" }] },
+      { rows: [{ id: organizationId }] },
+      { rows: [{ role: "owner" }] },
       { rows: [{ request_hash: Buffer.alloc(32, 7), project_id: projectId }] },
     ]);
     await expect(createOrganizationProject(
@@ -461,7 +507,10 @@ describe("Project Admin management", () => {
       { before: null, limit: 50 },
     )).rejects.toEqual(new ProjectAdminOrganizationNotFoundError());
 
-    const member = new ScriptedDatabase([{ rows: [{ id: organizationId, role: "member" }] }]);
+    const member = new ScriptedDatabase([
+      { rows: [{ id: organizationId }] },
+      { rows: [{ role: "member" }] },
+    ]);
     await expect(createOrganizationProject(
       member,
       { userId },
@@ -470,6 +519,6 @@ describe("Project Admin management", () => {
       { slug: "research", name: "Research" },
       auditContext,
     )).rejects.toEqual(new ProjectAdminAccessDeniedError());
-    expect(member.calls).toHaveLength(1);
+    expect(member.calls).toHaveLength(2);
   });
 });

@@ -6,9 +6,13 @@ CREATE TABLE project_creation_idempotency (
     length(btrim(idempotency_key)) BETWEEN 1 AND 200
   ),
   request_hash BYTEA NOT NULL CHECK (octet_length(request_hash) = 32),
-  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+  project_id UUID NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (organization_id, idempotency_key)
+  PRIMARY KEY (organization_id, idempotency_key),
+  CONSTRAINT project_creation_idempotency_project_owner_fk
+    FOREIGN KEY (project_id, organization_id)
+    REFERENCES projects(id, organization_id)
+    ON DELETE RESTRICT
 );
 
 COMMIT;

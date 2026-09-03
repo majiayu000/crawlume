@@ -59,7 +59,7 @@ type ProjectRow = {
   created_at: Date;
 };
 
-type OrganizationMembershipRow = { id: string; role: OrganizationRole | null };
+type OrganizationIdRow = { id: string };
 type MembershipRow = { role: OrganizationRole };
 type IdempotencyRow = { request_hash: Buffer; project_id: string };
 
@@ -148,24 +148,23 @@ async function accessibleOrganizationRole(
   organizationId: string,
   lock: boolean,
 ): Promise<OrganizationRole> {
-  const result = lock
-    ? await transaction.query<OrganizationMembershipRow>(`
-        SELECT organizations.id, organization_memberships.role
+  if (lock) {
+    const organization = await transaction.query<OrganizationIdRow>(`
+        SELECT id
         FROM organizations
-        LEFT JOIN organization_memberships
-          ON organization_memberships.organization_id = organizations.id
-          AND organization_memberships.user_id = $2
         WHERE organizations.id = $1
-        FOR UPDATE OF organizations
-      `, [organizationId, subject.userId])
-    : await transaction.query<MembershipRow>(`
-        SELECT role
-        FROM organization_memberships
-        WHERE organization_id = $1 AND user_id = $2
-        LIMIT 1
-      `, [organizationId, subject.userId]);
-  const role = result.rows[0]?.role;
-  if (role === undefined || role === null) throw new ProjectAdminOrganizationNotFoundError();
+        FOR UPDATE
+      `, [organizationId]);
+    if (organization.rows[0] === undefined) throw new ProjectAdminOrganizationNotFoundError();
+  }
+  const membership = await transaction.query<MembershipRow>(`
+    SELECT role
+    FROM organization_memberships
+    WHERE organization_id = $1 AND user_id = $2
+    LIMIT 1
+  `, [organizationId, subject.userId]);
+  const role = membership.rows[0]?.role;
+  if (role === undefined) throw new ProjectAdminOrganizationNotFoundError();
   return role;
 }
 

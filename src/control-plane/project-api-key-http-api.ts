@@ -82,6 +82,14 @@ class ProjectApiKeyInputError extends Error {
   }
 }
 
+class ProjectApiKeyRequestBodyError extends Error {
+  readonly code = "API_KEY_REQUEST_INVALID";
+  constructor() {
+    super("This API Key management request must not include a request body.");
+    this.name = "ProjectApiKeyRequestBodyError";
+  }
+}
+
 const createBodySchema = z.object({
   scopes: z.array(z.enum(["tasks:write", "results:read", "project:admin"]))
     .min(1)
@@ -117,6 +125,17 @@ function accessToken(request: WorkerHttpRequest): string {
   );
   if (match?.[1] === undefined) throw new AccessTokenAuthenticationError();
   return match[1];
+}
+
+function requestHasBody(request: WorkerHttpRequest): boolean {
+  if (request.body !== null) return true;
+  if (Object.keys(request.headers).some((name) => name.toLowerCase() === "transfer-encoding")) {
+    return true;
+  }
+  const contentLengths = Object.entries(request.headers)
+    .filter(([name]) => name.toLowerCase() === "content-length");
+  return contentLengths.length > 0 &&
+    (contentLengths.length !== 1 || contentLengths[0]?.[1] !== "0");
 }
 
 function listInput(query: string): { before: ProjectApiKeyCursor | null; limit: number } {
@@ -178,6 +197,7 @@ function response(
     status,
     headers: Object.freeze({
       "x-request-id": requestId,
+      "cache-control": "no-store",
       ...(body === null ? {} : { "content-type": "application/json" }),
       ...headers,
     }),
@@ -235,6 +255,9 @@ export class ProjectApiKeyHttpApi {
     }
 
     try {
+      if ((method === "GET" || route.kind === "item") && requestHasBody(request)) {
+        throw new ProjectApiKeyRequestBodyError();
+      }
       const subject = await this.services.authenticateAccessToken(accessToken(request));
       const scope = await this.services.resolveScope(subject, route.projectId);
       const context: AuditContext = { correlationId: requestId };
@@ -302,6 +325,9 @@ export class ProjectApiKeyHttpApi {
     }
     if (error instanceof ProjectApiKeyQueryError) {
       return problem(request, requestId, 400, error.code, "API Key Query Invalid", error.message);
+    }
+    if (error instanceof ProjectApiKeyRequestBodyError) {
+      return problem(request, requestId, 400, error.code, "API Key Request Invalid", error.message);
     }
     if (error instanceof ZodError) {
       return problem(request, requestId, 422, "API_KEY_REQUEST_INVALID",
