@@ -20,31 +20,12 @@ import {
 import type { ProjectApiKeyHttpApi } from "./project-api-key-http-api.js";
 import { controlPlaneHeader, isJsonControlPlaneRequest } from "./project-http-api.js";
 import type { AuthenticatedUser } from "./project-scope.js";
-import { projectApiKeyRouteDefinitions } from "./router-contract.js";
+import {
+  organizationProjectRouteDefinitions,
+  projectAdminRouterOperations,
+  projectApiKeyRouteDefinitions,
+} from "./router-contract.js";
 import type { WorkerHttpRequest, WorkerHttpResponse } from "./organization-service.js";
-
-const uuidPath =
-  "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})";
-
-const organizationProjectRouterOperations = [
-  { method: "GET", path: "/organizations", operationId: "listOrganizations" },
-  {
-    method: "GET",
-    path: "/organizations/{organization_id}/projects",
-    operationId: "listOrganizationProjects",
-  },
-  {
-    method: "POST",
-    path: "/organizations/{organization_id}/projects",
-    operationId: "createOrganizationProject",
-  },
-] as const;
-
-export const projectAdminRouterOperations = Object.freeze([
-  ...organizationProjectRouterOperations,
-  ...projectApiKeyRouteDefinitions[0].operations,
-  ...projectApiKeyRouteDefinitions[1].operations,
-]);
 
 type ProjectAdminHttpServices = Readonly<{
   authenticateAccessToken: OidcSessionService["verifyAccessToken"];
@@ -116,12 +97,18 @@ const createProjectSchema = z.object({
 }).strict();
 
 function matchRoute(path: string): ProjectAdminRoute | null {
-  if (path === "/v1/organizations") return { kind: "organizations", methods: ["GET"] };
-  const matched = new RegExp(`^/v1/organizations/${uuidPath}/projects$`, "u").exec(path);
-  const organizationId = matched?.[1];
-  return organizationId === undefined
-    ? null
-    : { kind: "projects", organizationId, methods: ["GET", "POST"] };
+  for (const definition of organizationProjectRouteDefinitions) {
+    const matched = definition.pattern.exec(path);
+    if (matched === null) continue;
+    if (definition.kind === "organizations") {
+      return { kind: definition.kind, methods: definition.methods };
+    }
+    const organizationId = matched[1];
+    if (organizationId !== undefined) {
+      return { kind: definition.kind, organizationId, methods: definition.methods };
+    }
+  }
+  return null;
 }
 
 function accessToken(request: WorkerHttpRequest): string {

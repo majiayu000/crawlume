@@ -150,6 +150,7 @@ describe("control-plane OpenAPI Router parity", () => {
     const integratedIds = integrated.map(({ operationId }) => operationId);
     const integratedRoutes = integrated.map(routeKey);
     const integratedKeys = integrated.map(operationKey);
+    expect(integrated).toHaveLength(27);
     expect(new Set(documentedIds).size, "OpenAPI operationId values must be globally unique")
       .toBe(documentedIds.length);
     expect(new Set(documentedRoutes).size, "OpenAPI method and path pairs must be globally unique")
@@ -169,7 +170,7 @@ describe("control-plane OpenAPI Router parity", () => {
     expect(integratedKeys.sort()).toEqual(documentedIntegratedKeys);
   });
 
-  it("keeps all Wave 2 bootstrap contracts Planned with exact security and responses", () => {
+  it("keeps all integrated bootstrap contracts aligned with exact security and responses", () => {
     const projectSource = "project-control-api.openapi.yaml";
     const workerSource = "worker-control-api.openapi.yaml";
     const documents = {
@@ -273,7 +274,7 @@ describe("control-plane OpenAPI Router parity", () => {
       const document = documents[contract.source];
       const operation = operationValue(contract.source, document, contract.path, contract.method);
       expect(operation.operationId).toBe(contract.operationId);
-      expect(operation["x-status"]).toBe("Planned");
+      expect(operation["x-status"]).toBeUndefined();
       expect(parseValue(`${contract.operationId} security`, securitySchema, operation.security))
         .toEqual(contract.security);
       const responses = objectValue(`${contract.operationId} responses`, operation.responses);
@@ -300,7 +301,7 @@ describe("control-plane OpenAPI Router parity", () => {
       .filter(({ planned }) => planned)
       .map(operationKey)
       .sort();
-    expect(documentedPlanned).toEqual(contracts.map(operationKey).sort());
+    expect(documentedPlanned).toEqual([]);
   });
 
   it("documents bootstrap browser bindings, one-time credentials, and idempotency boundaries", () => {

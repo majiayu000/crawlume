@@ -218,7 +218,6 @@ paths:
   /projects/{project_id}/worker-enrollments:
     post:
       operationId: createWorkerEnrollment
-      x-status: Planned
       summary: Mint a one-time Worker enrollment credential
       description: This credential-mint operation is non-idempotent and must not be retried automatically.
       security:
@@ -251,7 +250,6 @@ paths:
   /worker-enrollments:
     post:
       operationId: enrollWorker
-      x-status: Planned
       summary: Consume an enrollment credential and bind an Ed25519 Worker identity
       description: Consumes the one-time enrollment credential. This operation is non-idempotent and must not be retried automatically.
       security:
@@ -278,7 +276,6 @@ paths:
   /worker-sessions/challenges:
     post:
       operationId: createWorkerSessionChallenge
-      x-status: Planned
       summary: Create a bounded Worker proof-of-possession challenge
       security: []
       requestBody:
@@ -303,7 +300,6 @@ paths:
   /worker-sessions:
     post:
       operationId: createWorkerSession
-      x-status: Planned
       summary: Exchange a valid Worker signature for a short-lived Session
       security: []
       requestBody:
@@ -327,7 +323,6 @@ paths:
   /projects/{project_id}/workers/{worker_id}/disable:
     post:
       operationId: disableProjectWorker
-      x-status: Planned
       summary: Disable a Project Worker and revoke its credentials
       security:
         - HumanAccessToken: []

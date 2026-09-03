@@ -57,6 +57,53 @@ export const projectJobRouterOperations = projectJobRouteDefinitions.map(
   ({ method, operationId, path }) => ({ method, operationId, path }),
 );
 
+export const humanAuthRouteDefinitions = [
+  {
+    kind: "begin", method: "GET", path: "/auth/oidc/begin",
+    operationId: "beginHumanOidcLogin", pattern: /^\/v1\/auth\/oidc\/begin$/u,
+  },
+  {
+    kind: "callback", method: "GET", path: "/auth/oidc/callback",
+    operationId: "completeHumanOidcLogin", pattern: /^\/v1\/auth\/oidc\/callback$/u,
+  },
+  {
+    kind: "refresh", method: "POST", path: "/auth/refresh",
+    operationId: "refreshHumanSession", pattern: /^\/v1\/auth\/refresh$/u,
+  },
+  {
+    kind: "logout", method: "POST", path: "/auth/logout",
+    operationId: "logoutHumanSession", pattern: /^\/v1\/auth\/logout$/u,
+  },
+] as const;
+
+export const humanAuthRouterOperations = humanAuthRouteDefinitions.map(
+  ({ method, operationId, path }) => ({ method, operationId, path }),
+);
+
+export const organizationProjectRouteDefinitions = [
+  {
+    kind: "organizations",
+    pattern: /^\/v1\/organizations$/u,
+    methods: ["GET"],
+    operations: [{ method: "GET", path: "/organizations", operationId: "listOrganizations" }],
+  },
+  {
+    kind: "projects",
+    pattern: new RegExp(`^/v1/organizations/${uuidPath}/projects$`, "u"),
+    methods: ["GET", "POST"],
+    operations: [
+      {
+        method: "GET", path: "/organizations/{organization_id}/projects",
+        operationId: "listOrganizationProjects",
+      },
+      {
+        method: "POST", path: "/organizations/{organization_id}/projects",
+        operationId: "createOrganizationProject",
+      },
+    ],
+  },
+] as const;
+
 export const projectApiKeyRouteDefinitions = [
   {
     kind: "collection",
@@ -86,6 +133,42 @@ export const projectApiKeyRouteDefinitions = [
     }],
   },
 ] as const;
+
+export const projectAdminRouterOperations = Object.freeze([
+  ...organizationProjectRouteDefinitions[0].operations,
+  ...organizationProjectRouteDefinitions[1].operations,
+  ...projectApiKeyRouteDefinitions[0].operations,
+  ...projectApiKeyRouteDefinitions[1].operations,
+]);
+
+export const workerBootstrapRouteDefinitions = [
+  {
+    kind: "create-enrollment", method: "POST",
+    path: "/projects/{project_id}/worker-enrollments", operationId: "createWorkerEnrollment",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/worker-enrollments$`, "u"),
+  },
+  {
+    kind: "enroll", method: "POST", path: "/worker-enrollments",
+    operationId: "enrollWorker", pattern: /^\/v1\/worker-enrollments$/u,
+  },
+  {
+    kind: "challenge", method: "POST", path: "/worker-sessions/challenges",
+    operationId: "createWorkerSessionChallenge", pattern: /^\/v1\/worker-sessions\/challenges$/u,
+  },
+  {
+    kind: "session", method: "POST", path: "/worker-sessions",
+    operationId: "createWorkerSession", pattern: /^\/v1\/worker-sessions$/u,
+  },
+  {
+    kind: "disable", method: "POST", path: "/projects/{project_id}/workers/{worker_id}/disable",
+    operationId: "disableProjectWorker",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/workers/${uuidPath}/disable$`, "u"),
+  },
+] as const;
+
+export const workerBootstrapRouterOperations = workerBootstrapRouteDefinitions.map(
+  ({ method, operationId, path }) => ({ method, operationId, path }),
+);
 
 export const workerRouteDefinitions = [
   {
@@ -130,6 +213,9 @@ export const workerRouterOperations = workerRouteDefinitions.map(
 );
 
 export const controlPlaneRouterOperations = Object.freeze([
+  ...humanAuthRouterOperations,
+  ...projectAdminRouterOperations,
+  ...workerBootstrapRouterOperations,
   ...projectJobRouterOperations,
   ...workerRouterOperations,
 ]);

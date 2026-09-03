@@ -14,6 +14,9 @@ import {
 } from "./oidc-session-service.js";
 import type { WorkerHttpRequest, WorkerHttpResponse } from "./organization-service.js";
 import { controlPlaneHeader } from "./project-http-api.js";
+import { humanAuthRouteDefinitions, humanAuthRouterOperations } from "./router-contract.js";
+
+export { humanAuthRouteDefinitions, humanAuthRouterOperations } from "./router-contract.js";
 
 const oidcStateCookieName = "__Secure-diaoyan_oidc_state";
 const refreshCookieName = "__Secure-diaoyan_refresh";
@@ -21,41 +24,6 @@ const oidcStateCookiePath = "/v1/auth/oidc/callback";
 const refreshCookiePath = "/v1/auth/refresh";
 const oidcStatePattern = /^[A-Za-z0-9_-]{43}$/u;
 const refreshTokenPattern = /^dya_rt_[A-Za-z0-9_-]{43}$/u;
-
-export const humanAuthRouteDefinitions = [
-  {
-    kind: "begin",
-    method: "GET",
-    path: "/auth/oidc/begin",
-    operationId: "beginHumanOidcLogin",
-    pattern: /^\/v1\/auth\/oidc\/begin$/u,
-  },
-  {
-    kind: "callback",
-    method: "GET",
-    path: "/auth/oidc/callback",
-    operationId: "completeHumanOidcLogin",
-    pattern: /^\/v1\/auth\/oidc\/callback$/u,
-  },
-  {
-    kind: "refresh",
-    method: "POST",
-    path: "/auth/refresh",
-    operationId: "refreshHumanSession",
-    pattern: /^\/v1\/auth\/refresh$/u,
-  },
-  {
-    kind: "logout",
-    method: "POST",
-    path: "/auth/logout",
-    operationId: "logoutHumanSession",
-    pattern: /^\/v1\/auth\/logout$/u,
-  },
-] as const;
-
-export const humanAuthRouterOperations = humanAuthRouteDefinitions.map(
-  ({ method, operationId, path }) => ({ method, operationId, path }),
-);
 
 type HumanAuthRoute = (typeof humanAuthRouteDefinitions)[number];
 

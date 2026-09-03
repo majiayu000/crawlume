@@ -122,18 +122,30 @@ async function runtimeKeyFiles(): Promise<Readonly<{
   directory: string;
   privateKeyPath: string;
   publicKeyPath: string;
+  humanPrivateKeyPath: string;
+  humanPublicKeyPath: string;
 }>> {
   const directory = await mkdtemp(join(tmpdir(), "diaoyan-control-plane-"));
   const keys = await generateKeyPair("EdDSA", { extractable: true });
+  const humanKeys = await generateKeyPair("EdDSA", { extractable: true });
   const privateKeyPath = join(directory, "worker-session-private.pem");
   const publicKeyPath = join(directory, "worker-session-public.pem");
+  const humanPrivateKeyPath = join(directory, "human-access-private.pem");
+  const humanPublicKeyPath = join(directory, "human-access-public.pem");
   await writeFile(privateKeyPath, await exportPKCS8(keys.privateKey), { mode: 0o600 });
   await writeFile(publicKeyPath, await exportSPKI(keys.publicKey), { mode: 0o644 });
-  return { directory, privateKeyPath, publicKeyPath };
+  await writeFile(humanPrivateKeyPath, await exportPKCS8(humanKeys.privateKey), { mode: 0o600 });
+  await writeFile(humanPublicKeyPath, await exportSPKI(humanKeys.publicKey), { mode: 0o644 });
+  return { directory, privateKeyPath, publicKeyPath, humanPrivateKeyPath, humanPublicKeyPath };
 }
 
 function runtimeEnvironment(
-  files: Readonly<{ privateKeyPath: string; publicKeyPath: string }>,
+  files: Readonly<{
+    privateKeyPath: string;
+    publicKeyPath: string;
+    humanPrivateKeyPath: string;
+    humanPublicKeyPath: string;
+  }>,
 ): NodeJS.ProcessEnv {
   return {
     DIAOYAN_CONTROL_DATABASE_URL: "postgresql://control:secret@database.example/diaoyan",
@@ -141,6 +153,17 @@ function runtimeEnvironment(
     DIAOYAN_WORKER_SESSION_AUDIENCE: "https://control.example/v1/worker",
     DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH: files.privateKeyPath,
     DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH: files.publicKeyPath,
+    DIAOYAN_OIDC_ISSUER: "https://identity.example",
+    DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT: "https://identity.example/authorize",
+    DIAOYAN_OIDC_TOKEN_ENDPOINT: "https://identity.example/token",
+    DIAOYAN_OIDC_JWKS_URI: "https://identity.example/.well-known/jwks.json",
+    DIAOYAN_OIDC_CLIENT_ID: "diaoyan-web",
+    DIAOYAN_OIDC_REDIRECT_URI: "https://app.example/v1/auth/oidc/callback",
+    DIAOYAN_OIDC_ID_TOKEN_ALGORITHM: "EdDSA",
+    DIAOYAN_HUMAN_ACCESS_TOKEN_ISSUER: "https://control.example",
+    DIAOYAN_HUMAN_ACCESS_TOKEN_AUDIENCE: "https://control.example/v1/human",
+    DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH: files.humanPrivateKeyPath,
+    DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH: files.humanPublicKeyPath,
   };
 }
 
@@ -603,6 +626,20 @@ describe("control-plane runtime configuration", () => {
       });
       expect(config.identity.sessionTokenPrivateKey).toBeInstanceOf(CryptoKey);
       expect(config.identity.sessionTokenPublicKey).toBeInstanceOf(CryptoKey);
+      expect(config.humanIdentity.accessTokenPrivateKey).toBeInstanceOf(CryptoKey);
+      expect(config.humanIdentity.accessTokenPublicKey).toBeInstanceOf(CryptoKey);
+      expect(config.humanIdentity.accessTokenPrivateKey)
+        .not.toBe(config.identity.sessionTokenPrivateKey);
+      expect(config.humanIdentity).toMatchObject({
+        issuer: "https://identity.example",
+        authorizationEndpoint: "https://identity.example/authorize",
+        tokenEndpoint: "https://identity.example/token",
+        clientId: "diaoyan-web",
+        redirectUri: "https://app.example/v1/auth/oidc/callback",
+        idTokenAlgorithms: ["EdDSA"],
+        accessTokenIssuer: "https://control.example",
+        accessTokenAudience: "https://control.example/v1/human",
+      });
       expect(config.listener).toEqual({ host: "127.0.0.1", port: 8787, tls: null });
     } finally {
       await rm(files.directory, { recursive: true, force: true });
@@ -643,6 +680,79 @@ describe("control-plane runtime configuration", () => {
 
       await expect(loadControlPlaneRuntimeConfig(runtimeEnvironment(files)))
         .rejects.toThrow("must not grant permissions to group or other users");
+    } finally {
+      await rm(files.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("requires an explicit supported OIDC algorithm and HTTPS JWKS URI", async () => {
+    const files = await runtimeKeyFiles();
+    try {
+      const unsupported = runtimeEnvironment(files);
+      unsupported.DIAOYAN_OIDC_ID_TOKEN_ALGORITHM = "none";
+      await expect(loadControlPlaneRuntimeConfig(unsupported))
+        .rejects.toThrow("DIAOYAN_OIDC_ID_TOKEN_ALGORITHM is unsupported");
+
+      const insecure = runtimeEnvironment(files);
+      insecure.DIAOYAN_OIDC_JWKS_URI = "http://identity.example/jwks.json";
+      await expect(loadControlPlaneRuntimeConfig(insecure)).rejects.toThrow("jwksUri must use HTTPS");
+    } finally {
+      await rm(files.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an HTTP browser redirect URI", async () => {
+    const database = new IdentityDatabase();
+    const context = await harness(database);
+    expect(() => new OidcSessionService(database, {
+      ...context.config,
+      redirectUri: "http://127.0.0.1/v1/auth/oidc/callback",
+    })).toThrow("config.redirectUri must use HTTPS");
+  });
+
+  it("requires every Human OIDC and access-token runtime value", async () => {
+    const files = await runtimeKeyFiles();
+    try {
+      for (const name of [
+        "DIAOYAN_OIDC_ISSUER",
+        "DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT",
+        "DIAOYAN_OIDC_TOKEN_ENDPOINT",
+        "DIAOYAN_OIDC_JWKS_URI",
+        "DIAOYAN_OIDC_CLIENT_ID",
+        "DIAOYAN_OIDC_REDIRECT_URI",
+        "DIAOYAN_OIDC_ID_TOKEN_ALGORITHM",
+        "DIAOYAN_HUMAN_ACCESS_TOKEN_ISSUER",
+        "DIAOYAN_HUMAN_ACCESS_TOKEN_AUDIENCE",
+        "DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH",
+        "DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH",
+      ] as const) {
+        const environment = runtimeEnvironment(files);
+        delete environment[name];
+        await expect(loadControlPlaneRuntimeConfig(environment)).rejects.toThrow(`${name} is required`);
+      }
+    } finally {
+      await rm(files.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a Human access-token private key readable by group or other users", async () => {
+    const files = await runtimeKeyFiles();
+    try {
+      await chmod(files.humanPrivateKeyPath, 0o644);
+      await expect(loadControlPlaneRuntimeConfig(runtimeEnvironment(files)))
+        .rejects.toThrow("DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH must not grant permissions");
+    } finally {
+      await rm(files.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects copied Worker signing key material for Human access tokens", async () => {
+    const files = await runtimeKeyFiles();
+    try {
+      await writeFile(files.humanPrivateKeyPath, await readFile(files.privateKeyPath), { mode: 0o600 });
+      await writeFile(files.humanPublicKeyPath, await readFile(files.publicKeyPath), { mode: 0o644 });
+      await expect(loadControlPlaneRuntimeConfig(runtimeEnvironment(files)))
+        .rejects.toThrow("Human access-token and Worker session signing public keys must be distinct");
     } finally {
       await rm(files.directory, { recursive: true, force: true });
     }

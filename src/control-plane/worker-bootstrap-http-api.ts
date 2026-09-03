@@ -32,6 +32,12 @@ import {
   type AuthenticatedUser,
   type ProjectScope,
 } from "./project-scope.js";
+import {
+  workerBootstrapRouteDefinitions,
+  workerBootstrapRouterOperations,
+} from "./router-contract.js";
+
+export { workerBootstrapRouterOperations } from "./router-contract.js";
 
 type WorkerBootstrapHttpServices = Readonly<{
   authenticateAccessToken: OidcSessionService["verifyAccessToken"];
@@ -64,55 +70,7 @@ type WorkerBootstrapRoute =
   | Readonly<{ kind: "session"; method: "POST" }>
   | Readonly<{ kind: "disable"; projectId: string; workerId: string; method: "POST" }>;
 
-const uuidPath =
-  "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})";
 const maximumCapabilityManifestBytes = 16 * 1_024;
-
-const workerBootstrapRouteDefinitions = [
-  {
-    kind: "create-enrollment",
-    method: "POST",
-    path: "/projects/{project_id}/worker-enrollments",
-    operationId: "createWorkerEnrollment",
-    pattern: new RegExp(`^/v1/projects/${uuidPath}/worker-enrollments$`, "u"),
-  },
-  {
-    kind: "enroll",
-    method: "POST",
-    path: "/worker-enrollments",
-    operationId: "enrollWorker",
-    pattern: /^\/v1\/worker-enrollments$/u,
-  },
-  {
-    kind: "challenge",
-    method: "POST",
-    path: "/worker-sessions/challenges",
-    operationId: "createWorkerSessionChallenge",
-    pattern: /^\/v1\/worker-sessions\/challenges$/u,
-  },
-  {
-    kind: "session",
-    method: "POST",
-    path: "/worker-sessions",
-    operationId: "createWorkerSession",
-    pattern: /^\/v1\/worker-sessions$/u,
-  },
-  {
-    kind: "disable",
-    method: "POST",
-    path: "/projects/{project_id}/workers/{worker_id}/disable",
-    operationId: "disableProjectWorker",
-    pattern: new RegExp(`^/v1/projects/${uuidPath}/workers/${uuidPath}/disable$`, "u"),
-  },
-] as const;
-
-export const workerBootstrapRouterOperations = Object.freeze(
-  workerBootstrapRouteDefinitions.map(({ method, operationId, path }) => ({
-    method,
-    operationId,
-    path,
-  })),
-);
 
 const createEnrollmentBodySchema = z.object({
   worker_name: z.string().trim().min(1).max(128),

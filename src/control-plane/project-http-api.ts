@@ -480,6 +480,15 @@ export class ControlPlaneHttpApi {
   static readonly routerOperations = controlPlaneRouterOperations;
 
   constructor(
+    private readonly humanAuth: Readonly<{
+      handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse>;
+    }>,
+    private readonly projectAdmin: Readonly<{
+      handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse>;
+    }>,
+    private readonly workerBootstrap: Readonly<{
+      handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse>;
+    }>,
     private readonly projects: Pick<ProjectJobHttpApi, "handle">,
     private readonly workers: Readonly<{
       handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse>;
@@ -487,7 +496,24 @@ export class ControlPlaneHttpApi {
   ) {}
 
   handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse> {
-    return request.path.startsWith("/v1/projects/")
+    const { path } = request;
+    if (path === "/v1/auth" || path.startsWith("/v1/auth/")) {
+      return this.humanAuth.handle(request);
+    }
+    if (
+      path === "/v1/organizations" || path.startsWith("/v1/organizations/") ||
+      /^\/v1\/projects\/[^/]+\/api-keys(?:\/[^/]+)?$/u.test(path)
+    ) {
+      return this.projectAdmin.handle(request);
+    }
+    if (
+      path === "/v1/worker-enrollments" || path === "/v1/worker-sessions" ||
+      path.startsWith("/v1/worker-sessions/") ||
+      /^\/v1\/projects\/[^/]+\/(?:worker-enrollments|workers\/[^/]+\/disable)$/u.test(path)
+    ) {
+      return this.workerBootstrap.handle(request);
+    }
+    return path.startsWith("/v1/projects/")
       ? this.projects.handle(request)
       : this.workers.handle(request);
   }

@@ -592,23 +592,111 @@ describe("Project Job HTTP API", () => {
 });
 
 describe("control-plane HTTP routing", () => {
-  it("routes Project paths to the Project API and preserves Worker paths", async () => {
-    const projects = { handle: vi.fn(async () => ({ status: 201, headers: {}, body: null })) };
+  it("dispatches all 27 mounted operations to exactly one target handler", async () => {
+    const handlers = {
+      humanAuth: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
+      projectAdmin: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
+      workerBootstrap: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
+      projects: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
+      workers: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
+    };
+    const api = new ControlPlaneHttpApi(
+      handlers.humanAuth,
+      handlers.projectAdmin,
+      handlers.workerBootstrap,
+      handlers.projects,
+      handlers.workers,
+    );
+    const target = (operationId: string): keyof typeof handlers => {
+      if (["beginHumanOidcLogin", "completeHumanOidcLogin", "refreshHumanSession",
+        "logoutHumanSession"].includes(operationId)) return "humanAuth";
+      if (["listOrganizations", "listOrganizationProjects", "createOrganizationProject",
+        "createProjectApiKey", "listProjectApiKeys", "revokeProjectApiKey"].includes(operationId)) {
+        return "projectAdmin";
+      }
+      if (["createWorkerEnrollment", "enrollWorker", "createWorkerSessionChallenge",
+        "createWorkerSession", "disableProjectWorker"].includes(operationId)) return "workerBootstrap";
+      if (operationId.includes("Project")) return "projects";
+      return "workers";
+    };
+
+    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(27);
+    for (const operation of ControlPlaneHttpApi.routerOperations) {
+      const before = Object.values(handlers).reduce((sum, handler) =>
+        sum + handler.handle.mock.calls.length, 0);
+      const path = `/v1${operation.path}`
+        .replaceAll("{organization_id}", projectId)
+        .replaceAll("{project_id}", projectId)
+        .replaceAll("{job_id}", jobId)
+        .replaceAll("{key_id}", jobId)
+        .replaceAll("{worker_id}", jobId)
+        .replaceAll("{lease_id}", jobId);
+
+      await api.handle(request({ method: operation.method, path }));
+
+      expect(handlers[target(operation.operationId)].handle).toHaveBeenLastCalledWith(
+        expect.objectContaining({ method: operation.method, path }),
+      );
+      expect(Object.values(handlers).reduce((sum, handler) =>
+        sum + handler.handle.mock.calls.length, 0)).toBe(before + 1);
+    }
+  });
+
+  it("preserves allowed queries and empty-body semantics over a real loopback socket", async () => {
+    const humanAuth = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
+    const projectAdmin = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
+    const workerBootstrap = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
+    const projects = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
     const workers = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
-    const api = new ControlPlaneHttpApi(projects, workers);
+    const listener = await startWorkerControlServer(
+      new ControlPlaneHttpApi(humanAuth, projectAdmin, workerBootstrap, projects, workers),
+      { host: "127.0.0.1", port: 0, tls: null },
+    );
+    const cursor = Buffer.from("cursor").toString("base64url");
 
-    await api.handle(request());
-    await api.handle(request({ path: "/v1/workers/worker-a/claims" }));
+    try {
+      await fetch(`${listener.origin}/v1/auth/oidc/callback?state=state-a&code=code-a`);
+      await fetch(`${listener.origin}/v1/organizations?cursor=${cursor}&limit=5`);
+      await fetch(`${listener.origin}/v1/organizations/${projectId}/projects?limit=6`);
+      await fetch(`${listener.origin}/v1/projects/${projectId}/api-keys?cursor=${cursor}`);
+      await fetch(`${listener.origin}/v1/auth/refresh`, { method: "POST" });
+      await fetch(`${listener.origin}/v1/auth/logout`, { method: "POST" });
 
-    expect(projects.handle).toHaveBeenCalledTimes(1);
-    expect(workers.handle).toHaveBeenCalledTimes(1);
+      expect(humanAuth.handle).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        path: "/v1/auth/oidc/callback", query: "?state=state-a&code=code-a",
+      }));
+      expect(projectAdmin.handle).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        path: "/v1/organizations", query: `?cursor=${cursor}&limit=5`,
+      }));
+      expect(projectAdmin.handle).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        path: `/v1/organizations/${projectId}/projects`, query: "?limit=6",
+      }));
+      expect(projectAdmin.handle).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        path: `/v1/projects/${projectId}/api-keys`, query: `?cursor=${cursor}`,
+      }));
+      expect(humanAuth.handle).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        path: "/v1/auth/refresh", body: null,
+      }));
+      expect(humanAuth.handle).toHaveBeenNthCalledWith(3, expect.objectContaining({
+        path: "/v1/auth/logout", body: null,
+      }));
+
+      const emptyJson = await fetch(`${listener.origin}/v1/auth/refresh`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "",
+      });
+      expect(emptyJson.status).toBe(400);
+      await expect(emptyJson.json()).resolves.toMatchObject({ code: "JSON_INVALID" });
+      expect(humanAuth.handle).toHaveBeenCalledTimes(3);
+    } finally {
+      await listener.close();
+    }
   });
 
   it("reports Project Job action transport failures over a real loopback socket", async () => {
     const context = harness();
     const workers = { handle: vi.fn(async () => ({ status: 204, headers: {}, body: null })) };
     const listener = await startWorkerControlServer(
-      new ControlPlaneHttpApi(context.api, workers),
+      new ControlPlaneHttpApi(workers, workers, workers, context.api, workers),
       { host: "127.0.0.1", port: 0, tls: null },
     );
     const post = (action: "pause" | "resume" | "cancel", suffix: string, body: string) => fetch(
@@ -626,6 +714,7 @@ describe("control-plane HTTP routing", () => {
     };
 
     try {
+      expect((await post("pause", "", "{}")).status).toBe(200);
       await expectProblem(await post("pause", "", ""), 400, "JSON_INVALID");
       await expectProblem(await post("resume", "", "{"), 400, "JSON_INVALID");
       await expectProblem(await post("pause", "?force=true", "{}"), 400, "QUERY_UNSUPPORTED");
@@ -641,7 +730,7 @@ describe("control-plane HTTP routing", () => {
         413,
         "REQUEST_BODY_TOO_LARGE",
       );
-      expect(context.pauseJob).not.toHaveBeenCalled();
+      expect(context.pauseJob).toHaveBeenCalledOnce();
       expect(context.resumeJob).not.toHaveBeenCalled();
       expect(context.cancelJob).not.toHaveBeenCalled();
       expect(workers.handle).not.toHaveBeenCalled();

@@ -672,8 +672,22 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     database = undefined;
     const connectionString = databaseUrl(databaseName!);
     const { privateKey, publicKey } = await generateKeyPair("EdDSA");
+    const human = await generateKeyPair("EdDSA");
     const runtimeConfig = {
       database: { connectionString, max: 2 },
+      humanIdentity: {
+        issuer: "https://identity.db-03.example",
+        authorizationEndpoint: "https://identity.db-03.example/authorize",
+        tokenEndpoint: "https://identity.db-03.example/token",
+        clientId: "db-03",
+        redirectUri: "https://db-03.control.example/v1/auth/oidc/callback",
+        idTokenAlgorithms: ["EdDSA"],
+        idTokenVerificationKey: human.publicKey,
+        accessTokenIssuer: "https://db-03.control.example",
+        accessTokenAudience: "db-03-human",
+        accessTokenPrivateKey: human.privateKey,
+        accessTokenPublicKey: human.publicKey,
+      },
       identity: {
         sessionTokenIssuer: "https://db-03.control.example",
         sessionTokenAudience: "db-03-worker",

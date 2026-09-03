@@ -1,6 +1,9 @@
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 
 import { exportPKCS8, exportSPKI, generateKeyPair } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -73,6 +76,40 @@ import { controlPlaneMain, startControlPlaneRuntime } from "../src/server.js";
 
 const temporaryDirectories: string[] = [];
 
+async function invokeListener(
+  listener: RequestListener,
+  method: string,
+  path: string,
+): Promise<Readonly<{ status: number; body: unknown }>> {
+  const request = Readable.from([]) as unknown as IncomingMessage;
+  Object.defineProperties(request, {
+    headersDistinct: { value: {}, configurable: true },
+    method: { value: method, configurable: true },
+    url: { value: path, configurable: true },
+  });
+  return new Promise((resolve, reject) => {
+    let status = 0;
+    const response = Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableEnded: false,
+      writeHead(nextStatus: number) {
+        status = nextStatus;
+        return this;
+      },
+      end(payload?: Buffer) {
+        this.writableEnded = true;
+        resolve({ status, body: payload === undefined ? null : JSON.parse(payload.toString()) });
+        return this;
+      },
+    }) as unknown as ServerResponse;
+    try {
+      listener(request, response);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 describe("control-plane runtime startup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -126,8 +163,22 @@ describe("control-plane runtime startup", () => {
 
   async function runtimeConfig() {
     const { privateKey, publicKey } = await generateKeyPair("EdDSA");
+    const human = await generateKeyPair("EdDSA");
     return {
       database: {},
+      humanIdentity: {
+        issuer: "https://identity.example.test",
+        authorizationEndpoint: "https://identity.example.test/authorize",
+        tokenEndpoint: "https://identity.example.test/token",
+        clientId: "diaoyan-web",
+        redirectUri: "https://app.example.test/v1/auth/oidc/callback",
+        idTokenAlgorithms: ["EdDSA"],
+        idTokenVerificationKey: human.publicKey,
+        accessTokenIssuer: "https://control.example.test",
+        accessTokenAudience: "human",
+        accessTokenPrivateKey: human.privateKey,
+        accessTokenPublicKey: human.publicKey,
+      },
       identity: {
         sessionTokenIssuer: "https://control.example.test",
         sessionTokenAudience: "worker",
@@ -143,9 +194,14 @@ describe("control-plane runtime startup", () => {
     temporaryDirectories.push(directory);
     const privateKeyPath = join(directory, "session-private.pem");
     const publicKeyPath = join(directory, "session-public.pem");
+    const humanPrivateKeyPath = join(directory, "human-private.pem");
+    const humanPublicKeyPath = join(directory, "human-public.pem");
     const { privateKey, publicKey } = await generateKeyPair("EdDSA", { extractable: true });
+    const human = await generateKeyPair("EdDSA", { extractable: true });
     await writeFile(privateKeyPath, await exportPKCS8(privateKey), { mode: 0o600 });
     await writeFile(publicKeyPath, await exportSPKI(publicKey), { mode: 0o644 });
+    await writeFile(humanPrivateKeyPath, await exportPKCS8(human.privateKey), { mode: 0o600 });
+    await writeFile(humanPublicKeyPath, await exportSPKI(human.publicKey), { mode: 0o644 });
     return {
       DIAOYAN_CONTROL_DATABASE_URL: "postgresql://runtime:runtime@127.0.0.1:5432/runtime",
       DIAOYAN_CONTROL_HOST: "127.0.0.1",
@@ -154,6 +210,17 @@ describe("control-plane runtime startup", () => {
       DIAOYAN_WORKER_SESSION_AUDIENCE: "worker",
       DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH: privateKeyPath,
       DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH: publicKeyPath,
+      DIAOYAN_OIDC_ISSUER: "https://identity.example.test",
+      DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT: "https://identity.example.test/authorize",
+      DIAOYAN_OIDC_TOKEN_ENDPOINT: "https://identity.example.test/token",
+      DIAOYAN_OIDC_JWKS_URI: "https://identity.example.test/jwks.json",
+      DIAOYAN_OIDC_CLIENT_ID: "diaoyan-web",
+      DIAOYAN_OIDC_REDIRECT_URI: "https://app.example.test/v1/auth/oidc/callback",
+      DIAOYAN_OIDC_ID_TOKEN_ALGORITHM: "EdDSA",
+      DIAOYAN_HUMAN_ACCESS_TOKEN_ISSUER: "https://control.example.test",
+      DIAOYAN_HUMAN_ACCESS_TOKEN_AUDIENCE: "human",
+      DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH: humanPrivateKeyPath,
+      DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH: humanPublicKeyPath,
     };
   }
 
@@ -205,6 +272,30 @@ describe("control-plane runtime startup", () => {
 
     await expect(finished).resolves.toBeUndefined();
     expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+  });
+
+  it("starts the listener with every fixed control-plane API mounted", async () => {
+    const runtime = await startControlPlaneRuntime(await runtimeConfig());
+    const listener = mocks.createHttpServer.mock.calls[0]?.[1] as RequestListener | undefined;
+    expect(listener).toBeTypeOf("function");
+
+    try {
+      for (const [method, path, code] of [
+        ["GET", "/v1/auth/missing", "AUTH_ROUTE_NOT_FOUND"],
+        ["GET", "/v1/organizations/missing", "PROJECT_ADMIN_ROUTE_NOT_FOUND"],
+        ["PUT", "/v1/projects/22222222-2222-4222-8222-222222222222/api-keys",
+          "API_KEY_METHOD_NOT_ALLOWED"],
+        ["GET", "/v1/worker-sessions/missing", "WORKER_BOOTSTRAP_ROUTE_NOT_FOUND"],
+        ["GET", "/v1/projects/not-a-uuid/jobs", "PROJECT_ROUTE_NOT_FOUND"],
+        ["GET", "/v1/not-mounted", "WORKER_ROUTE_NOT_FOUND"],
+      ] as const) {
+        await expect(invokeListener(listener!, method, path)).resolves.toMatchObject({
+          body: { code },
+        });
+      }
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("closes once for concurrent callers", async () => {

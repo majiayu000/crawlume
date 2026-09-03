@@ -18,24 +18,42 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
-import { importPKCS8, importSPKI } from "jose";
+import { exportSPKI, importPKCS8, importSPKI } from "jose";
 import { Pool, type PoolConfig } from "pg";
 
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import {
   authenticateProjectApiKey,
+  createProjectApiKey,
+  revokeProjectApiKey,
   WorkerIdentityService,
   type WorkerIdentityConfig,
 } from "./control-plane/api-key-service.js";
+import { HumanAuthHttpApi } from "./control-plane/human-auth-http-api.js";
 import {
   JobResultService,
   listProjectAuditEvents,
 } from "./control-plane/organization-authorization.js";
 import { WorkerHttpApi, type WorkerHttpResponse } from "./control-plane/organization-service.js";
+import {
+  createOidcRemoteJwkSet,
+  OidcSessionService,
+  type OidcIdTokenAlgorithm,
+  type OidcSessionConfig,
+} from "./control-plane/oidc-session-service.js";
+import {
+  createOrganizationProject,
+  listOrganizationProjects,
+  listOrganizations,
+} from "./control-plane/project-admin-management.js";
+import { ProjectAdminHttpApi } from "./control-plane/project-admin-http-api.js";
+import { ProjectApiKeyHttpApi } from "./control-plane/project-api-key-http-api.js";
+import { listProjectApiKeys } from "./control-plane/project-api-key-management.js";
 import { ControlPlaneHttpApi, ProjectJobHttpApi } from "./control-plane/project-http-api.js";
 import {
   ControlPlaneJobService,
+  resolveProjectScope,
   type ControlPlaneDatabase,
   type ControlPlaneQuery,
 } from "./control-plane/project-scope.js";
@@ -47,13 +65,14 @@ import {
   ControlPlaneJobLeaseSweeper,
   ControlPlaneJobLeaseSweepRunner,
 } from "./control-plane/job-lease-recovery.js";
+import { WorkerBootstrapHttpApi } from "./control-plane/worker-bootstrap-http-api.js";
 import { createMcpServer } from "./mcp.js";
 
 const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
 const jobLeaseSweepIntervalMs = 30_000;
-const projectQueryPath = /^\/v1\/projects\/[^/]+\/(?:jobs\/[^/]+\/publications|audit-events)$/u;
+const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events))$/u;
 
 type WorkerTlsConfig = Readonly<{
   key: NonNullable<HttpsServerOptions["key"]>;
@@ -242,7 +261,7 @@ function workerRequestListener(
           throw new WorkerTransportError(400, "REQUEST_TARGET_INVALID", "The request target is invalid.");
         }
         const target = new URL(requestTarget, "http://worker.invalid");
-        if (target.search !== "" && !projectQueryPath.test(target.pathname)) {
+        if (target.search !== "" && !controlPlaneQueryPath.test(target.pathname)) {
           throw new WorkerTransportError(400, "QUERY_UNSUPPORTED", "Control-plane API routes do not accept query parameters.");
         }
         if ((declaredBodyLength(headers) ?? 0) > workerBodyLimitBytes) {
@@ -399,6 +418,7 @@ export class PostgresControlPlaneDatabase implements ControlPlaneDatabase {
 
 export type ControlPlaneRuntimeConfig = Readonly<{
   database: PoolConfig;
+  humanIdentity: OidcSessionConfig;
   identity: WorkerIdentityConfig;
   listener: WorkerControlServerConfig;
 }>;
@@ -484,6 +504,14 @@ function controlPlanePort(environment: NodeJS.ProcessEnv): number {
   return port;
 }
 
+function oidcIdTokenAlgorithm(environment: NodeJS.ProcessEnv): OidcIdTokenAlgorithm {
+  const value = requiredRuntimeValue(environment, "DIAOYAN_OIDC_ID_TOKEN_ALGORITHM");
+  if (value !== "RS256" && value !== "PS256" && value !== "ES256" && value !== "EdDSA") {
+    throw new Error("DIAOYAN_OIDC_ID_TOKEN_ALGORITHM is unsupported.");
+  }
+  return value;
+}
+
 export async function loadControlPlaneRuntimeConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<ControlPlaneRuntimeConfig> {
@@ -497,6 +525,21 @@ export async function loadControlPlaneRuntimeConfig(
     "DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH",
     false,
   );
+  const humanPrivateKeyPem = await readRuntimeFile(
+    requiredRuntimeValue(environment, "DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH"),
+    "DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH", true,
+  );
+  const humanPublicKeyPem = await readRuntimeFile(
+    requiredRuntimeValue(environment, "DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH"),
+    "DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH", false,
+  );
+  const workerPrivateKey = await importPKCS8(privateKeyPem, "EdDSA");
+  const workerPublicKey = await importSPKI(publicKeyPem, "EdDSA");
+  const humanPrivateKey = await importPKCS8(humanPrivateKeyPem, "EdDSA");
+  const humanPublicKey = await importSPKI(humanPublicKeyPem, "EdDSA");
+  if (await exportSPKI(workerPublicKey) === await exportSPKI(humanPublicKey)) {
+    throw new Error("Human access-token and Worker session signing public keys must be distinct.");
+  }
   const tlsKeyPath = environment.DIAOYAN_CONTROL_TLS_KEY_PATH;
   const tlsCertPath = environment.DIAOYAN_CONTROL_TLS_CERT_PATH;
   if ((tlsKeyPath === undefined) !== (tlsCertPath === undefined)) {
@@ -508,11 +551,26 @@ export async function loadControlPlaneRuntimeConfig(
   };
   return Object.freeze({
     database: await controlPlanePoolConfig(environment),
+    humanIdentity: {
+      issuer: requiredRuntimeValue(environment, "DIAOYAN_OIDC_ISSUER"),
+      authorizationEndpoint: requiredRuntimeValue(environment, "DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT"),
+      tokenEndpoint: requiredRuntimeValue(environment, "DIAOYAN_OIDC_TOKEN_ENDPOINT"),
+      clientId: requiredRuntimeValue(environment, "DIAOYAN_OIDC_CLIENT_ID"),
+      redirectUri: requiredRuntimeValue(environment, "DIAOYAN_OIDC_REDIRECT_URI"),
+      idTokenAlgorithms: [oidcIdTokenAlgorithm(environment)],
+      idTokenVerificationKey: createOidcRemoteJwkSet(
+        requiredRuntimeValue(environment, "DIAOYAN_OIDC_JWKS_URI"),
+      ),
+      accessTokenIssuer: requiredRuntimeValue(environment, "DIAOYAN_HUMAN_ACCESS_TOKEN_ISSUER"),
+      accessTokenAudience: requiredRuntimeValue(environment, "DIAOYAN_HUMAN_ACCESS_TOKEN_AUDIENCE"),
+      accessTokenPrivateKey: humanPrivateKey,
+      accessTokenPublicKey: humanPublicKey,
+    },
     identity: {
       sessionTokenIssuer: requiredRuntimeValue(environment, "DIAOYAN_WORKER_SESSION_ISSUER"),
       sessionTokenAudience: requiredRuntimeValue(environment, "DIAOYAN_WORKER_SESSION_AUDIENCE"),
-      sessionTokenPrivateKey: await importPKCS8(privateKeyPem, "EdDSA"),
-      sessionTokenPublicKey: await importSPKI(publicKeyPem, "EdDSA"),
+      sessionTokenPrivateKey: workerPrivateKey,
+      sessionTokenPublicKey: workerPublicKey,
     },
     listener: {
       host: environment.DIAOYAN_CONTROL_HOST ?? "127.0.0.1",
@@ -557,8 +615,40 @@ export async function startControlPlaneRuntime(
     await sweepRunner.start();
     if (hasPendingFatalError) throw pendingFatalError;
     const identity = new WorkerIdentityService(database, config.identity);
+    const humanIdentity = new OidcSessionService(database, config.humanIdentity);
     const jobs = new ControlPlaneJobService(database);
     const results = new JobResultService(database);
+    const humanAuthApi = new HumanAuthHttpApi({
+      beginLogin: humanIdentity.beginLogin.bind(humanIdentity),
+      completeLogin: humanIdentity.completeLogin.bind(humanIdentity),
+      rotateRefreshToken: humanIdentity.rotateRefreshToken.bind(humanIdentity),
+      verifyAccessToken: humanIdentity.verifyAccessToken.bind(humanIdentity),
+      revokeAllUserSessions: humanIdentity.revokeAllUserSessions.bind(humanIdentity),
+    });
+    const projectApiKeyApi = new ProjectApiKeyHttpApi({
+      authenticateAccessToken: humanIdentity.verifyAccessToken.bind(humanIdentity),
+      resolveScope: (subject, projectId) => resolveProjectScope(database, subject, projectId),
+      create: (scope, input, context) => createProjectApiKey(database, scope, input, context),
+      list: (scope, input) => listProjectApiKeys(database, scope, input),
+      revoke: (scope, keyId, context) => revokeProjectApiKey(database, scope, keyId, context),
+    });
+    const projectAdminApi = new ProjectAdminHttpApi({
+      authenticateAccessToken: humanIdentity.verifyAccessToken.bind(humanIdentity),
+      listOrganizations: (subject, input) => listOrganizations(database, subject, input),
+      listProjects: (subject, organizationId, input) =>
+        listOrganizationProjects(database, subject, organizationId, input),
+      createProject: (subject, organizationId, key, input, context) =>
+        createOrganizationProject(database, subject, organizationId, key, input, context),
+    }, projectApiKeyApi);
+    const workerBootstrapApi = new WorkerBootstrapHttpApi({
+      authenticateAccessToken: humanIdentity.verifyAccessToken.bind(humanIdentity),
+      resolveScope: (subject, projectId) => resolveProjectScope(database, subject, projectId),
+      createEnrollment: identity.createEnrollment.bind(identity),
+      enroll: identity.enroll.bind(identity),
+      createChallenge: identity.createChallenge.bind(identity),
+      createSession: identity.createSession.bind(identity),
+      disableWorker: identity.disableWorker.bind(identity),
+    });
     const projectApi = new ProjectJobHttpApi({
       authenticate: (rawKey, context) => authenticateProjectApiKey(database, rawKey, context),
       createJob: jobs.createJob.bind(jobs),
@@ -571,7 +661,7 @@ export async function startControlPlaneRuntime(
     });
     const workerApi = new WorkerHttpApi({ identity, jobs, results });
     listener = await startWorkerControlServer(
-      new ControlPlaneHttpApi(projectApi, workerApi),
+      new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
       config.listener,
     );
     const activeListener = listener;

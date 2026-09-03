@@ -276,11 +276,7 @@ export class OidcSessionService {
     );
     this.tokenEndpoint = requireHttpsUrl(config.tokenEndpoint, "config.tokenEndpoint");
     requireIdentityValue(config.clientId, "config.clientId");
-    try {
-      new URL(config.redirectUri);
-    } catch (error) {
-      throw new Error("config.redirectUri must be an absolute URL.", { cause: error });
-    }
+    requireHttpsUrl(config.redirectUri, "config.redirectUri");
     requireHttpsUrl(config.accessTokenIssuer, "config.accessTokenIssuer");
     requireIdentityValue(config.accessTokenAudience, "config.accessTokenAudience");
     if (config.idTokenAlgorithms.length === 0) {

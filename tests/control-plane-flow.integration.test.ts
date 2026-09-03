@@ -315,7 +315,7 @@ describe("control-plane Project and Worker integration", () => {
       results,
     }, { now: () => now });
     const listener = await startWorkerControlServer(
-      new ControlPlaneHttpApi(projects, workers),
+      new ControlPlaneHttpApi(workers, workers, workers, projects, workers),
       { host: "127.0.0.1", port: 0, tls: null },
     );
 

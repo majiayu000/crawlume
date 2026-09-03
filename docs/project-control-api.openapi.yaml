@@ -12,7 +12,6 @@ paths:
   /auth/oidc/begin:
     get:
       operationId: beginHumanOidcLogin
-      x-status: Planned
       summary: Begin an OIDC Authorization Code + PKCE login
       description: Creates one bounded login attempt. No request body or query parameters are accepted.
       security: []
@@ -33,7 +32,6 @@ paths:
   /auth/oidc/callback:
     get:
       operationId: completeHumanOidcLogin
-      x-status: Planned
       summary: Complete an OIDC login and establish a human session
       description: >-
         Requires exactly one state plus either one authorization code or one Provider error.
@@ -85,7 +83,6 @@ paths:
   /auth/refresh:
     post:
       operationId: refreshHumanSession
-      x-status: Planned
       summary: Rotate the HttpOnly refresh cookie and issue a new Access Token
       description: Accepts no request body or query parameters.
       security:
@@ -109,7 +106,6 @@ paths:
   /auth/logout:
     post:
       operationId: logoutHumanSession
-      x-status: Planned
       summary: Revoke every refresh session for the authenticated user
       description: Accepts no request body or query parameters.
       security:
@@ -129,7 +125,6 @@ paths:
   /organizations:
     get:
       operationId: listOrganizations
-      x-status: Planned
       summary: List Organizations visible to the authenticated user
       security:
         - HumanAccessToken: []
@@ -159,7 +154,6 @@ paths:
   /organizations/{organization_id}/projects:
     get:
       operationId: listOrganizationProjects
-      x-status: Planned
       summary: List Projects in one Organization membership
       security:
         - HumanAccessToken: []
@@ -190,7 +184,6 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
     post:
       operationId: createOrganizationProject
-      x-status: Planned
       summary: Create or idempotently replay a Project in an Organization
       security:
         - HumanAccessToken: []
@@ -622,7 +615,6 @@ paths:
   /projects/{project_id}/api-keys:
     post:
       operationId: createProjectApiKey
-      x-status: Planned
       summary: Create a Project API Key and reveal its Secret once
       description: This credential-mint operation is non-idempotent and must not be retried automatically.
       security:
@@ -683,7 +675,6 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
     get:
       operationId: listProjectApiKeys
-      x-status: Planned
       summary: List API Key metadata without Secrets
       security:
         - HumanAccessToken: []
@@ -729,7 +720,6 @@ paths:
   /projects/{project_id}/api-keys/{key_id}:
     delete:
       operationId: revokeProjectApiKey
-      x-status: Planned
       summary: Revoke one API Key in the authenticated user's Project
       security:
         - HumanAccessToken: []
