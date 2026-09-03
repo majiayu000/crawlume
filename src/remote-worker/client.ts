@@ -14,6 +14,8 @@ const sessionTokenSchema = z.string().regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A
 const versionSchema = z.string().trim().min(1).max(128);
 const generationSchema = z.number().int().positive().safe();
 const dateTimeSchema = z.string().datetime({ offset: true });
+// A claimed Job echoes a <=64 KiB accepted request plus its bounded control-plane projection.
+const maximumWorkerResponseBytes = 256 * 1_024;
 const capabilityManifestSchema = z.record(z.string(), z.unknown()).refine((value) => {
   try {
     const json = JSON.stringify(value);
@@ -116,7 +118,7 @@ const problemSchema = z.object({
   status: z.number().int().min(400).max(599),
   detail: z.string(),
   instance: z.string(),
-  code: z.string(),
+  code: z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/u),
   request_id: uuidSchema,
   retryable: z.boolean(),
   errors: z.array(z.object({
@@ -136,6 +138,26 @@ const failedTerminalSchema = z.object({
   errorCode: z.string().trim().min(1).max(128),
 }).strict();
 const terminalSchema = z.discriminatedUnion("status", [completedTerminalSchema, failedTerminalSchema]);
+
+type RemoteWorkerOperation =
+  | "enroll"
+  | "challenge"
+  | "session"
+  | "claim"
+  | "heartbeat"
+  | "complete";
+
+const operationContracts: Readonly<Record<RemoteWorkerOperation, Readonly<{
+  success: readonly number[];
+  errors: readonly number[];
+}>>> = Object.freeze({
+  enroll: Object.freeze({ success: [201], errors: [400, 401, 413, 415, 422, 500] }),
+  challenge: Object.freeze({ success: [201], errors: [400, 413, 415, 422, 429, 500] }),
+  session: Object.freeze({ success: [201], errors: [400, 413, 415, 422, 500] }),
+  claim: Object.freeze({ success: [200, 204], errors: [400, 401, 403, 413, 415, 422, 500] }),
+  heartbeat: Object.freeze({ success: [200], errors: [400, 401, 409, 413, 415, 422, 500] }),
+  complete: Object.freeze({ success: [200], errors: [400, 401, 409, 413, 415, 422, 500] }),
+});
 
 export type RemoteWorkerRecord = Readonly<{
   id: string;
@@ -220,8 +242,28 @@ export class RemoteWorkerHttpError extends Error {
     readonly retryable: boolean,
     readonly retryAfterSeconds: number | null,
   ) {
-    super(`The Remote Worker control request failed with ${code} (${status}).`);
+    super("The Remote Worker control request was rejected.");
     this.name = "RemoteWorkerHttpError";
+  }
+}
+
+export type RemoteWorkerOutcomeUnknownMetadata =
+  | Readonly<{ operation: "enroll" }>
+  | Readonly<{ operation: "claim"; workerId: string }>
+  | Readonly<{
+      operation: "complete";
+      leaseId: string;
+      generation: number;
+      expectedJobId: string;
+    }>;
+
+export class RemoteWorkerOutcomeUnknownError extends Error {
+  readonly metadata: RemoteWorkerOutcomeUnknownMetadata;
+
+  constructor(metadata: RemoteWorkerOutcomeUnknownMetadata) {
+    super("The Remote Worker request outcome is unknown.");
+    this.name = "RemoteWorkerOutcomeUnknownError";
+    this.metadata = Object.freeze({ ...metadata }) as RemoteWorkerOutcomeUnknownMetadata;
   }
 }
 
@@ -289,15 +331,48 @@ function mediaType(headers: Headers): string {
   return headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
 }
 
-async function jsonBody(result: Response, expectedMediaType: string): Promise<unknown> {
-  if (mediaType(result.headers) !== expectedMediaType) throw new RemoteWorkerProtocolError();
-  let text: string;
+function preserveCallerAbort(signal: AbortSignal | undefined, error: unknown): never {
+  if (signal?.aborted === true) throw signal.reason;
+  if (error instanceof RemoteWorkerProtocolError) throw error;
+  throw new RemoteWorkerProtocolError();
+}
+
+async function decodedBody(result: Response, signal: AbortSignal | undefined): Promise<Uint8Array> {
+  signal?.throwIfAborted();
+  if (result.body === null) return new Uint8Array();
+  const reader = result.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    text = await result.text();
-  } catch {
-    throw new RemoteWorkerProtocolError();
+    while (true) {
+      const next = await reader.read();
+      signal?.throwIfAborted();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maximumWorkerResponseBytes) {
+        await reader.cancel("Remote Worker response exceeded the decoded-byte limit.");
+        throw new RemoteWorkerProtocolError();
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    preserveCallerAbort(signal, error);
+  } finally {
+    reader.releaseLock();
   }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function jsonBody(result: Response, bytes: Uint8Array, expectedMediaType: string): unknown {
+  if (mediaType(result.headers) !== expectedMediaType) throw new RemoteWorkerProtocolError();
   try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     return JSON.parse(text) as unknown;
   } catch {
     throw new RemoteWorkerProtocolError();
@@ -382,14 +457,20 @@ export class RemoteWorkerClient {
     const enrollmentToken = input(enrollmentTokenSchema, options.enrollmentToken);
     const version = input(versionSchema, options.version);
     const capabilities = input(capabilityManifestSchema, options.capabilities);
-    const result = await this.request("worker-enrollments", "POST", {
-      public_key_spki: options.identity.publicKeySpki,
-      version,
-      capabilities,
-    }, enrollmentToken, options.signal, [201]);
-    const parsed = response(workerResponseSchema, result.body);
-    if (parsed.worker.status !== "active") throw new RemoteWorkerProtocolError();
-    return Object.freeze({ requestId: parsed.request_id, worker: worker(parsed.worker) });
+    return this.possiblyCommitted(
+      { operation: "enroll" },
+      options.signal,
+      async () => {
+        const result = await this.request("enroll", "worker-enrollments", "POST", {
+          public_key_spki: options.identity.publicKeySpki,
+          version,
+          capabilities,
+        }, enrollmentToken, options.signal);
+        const parsed = response(workerResponseSchema, result.body);
+        if (parsed.worker.status !== "active") throw new RemoteWorkerProtocolError();
+        return Object.freeze({ requestId: parsed.request_id, worker: worker(parsed.worker) });
+      },
+    );
   }
 
   async createSession(options: Readonly<{
@@ -398,9 +479,9 @@ export class RemoteWorkerClient {
     signal?: AbortSignal | undefined;
   }>): Promise<RemoteWorkerSession> {
     const workerId = input(uuidSchema, options.workerId);
-    const challenged = await this.request("worker-sessions/challenges", "POST", {
+    const challenged = await this.request("challenge", "worker-sessions/challenges", "POST", {
       worker_id: workerId,
-    }, null, options.signal, [201]);
+    }, null, options.signal);
     const challengeResult = response(challengeResponseSchema, challenged.body);
     if (
       challengeResult.challenge.worker_id !== workerId ||
@@ -418,11 +499,11 @@ export class RemoteWorkerClient {
     } catch {
       throw new RemoteWorkerProtocolError();
     }
-    const exchanged = await this.request("worker-sessions", "POST", {
+    const exchanged = await this.request("session", "worker-sessions", "POST", {
       worker_id: workerId,
       challenge: challengeResult.challenge.challenge,
       signature,
-    }, null, options.signal, [201]);
+    }, null, options.signal);
     const sessionResult = response(sessionResponseSchema, exchanged.body);
     return Object.freeze({
       requestId: sessionResult.request_id,
@@ -440,17 +521,23 @@ export class RemoteWorkerClient {
     const workerId = input(uuidSchema, options.workerId);
     const token = input(sessionTokenSchema, options.sessionToken);
     const waitMs = input(z.number().int().min(0).max(30_000), options.waitMs ?? 0);
-    const result = await this.request(
-      `workers/${workerId}/claims`, "POST", { wait_ms: waitMs }, token, options.signal, [200, 204],
+    return this.possiblyCommitted(
+      { operation: "claim", workerId },
+      options.signal,
+      async () => {
+        const result = await this.request(
+          "claim", `workers/${workerId}/claims`, "POST", { wait_ms: waitMs }, token, options.signal,
+        );
+        if (result.status === 204) return null;
+        const parsed = response(claimResponseSchema, result.body);
+        if (parsed.lease.job_id !== parsed.job.id) throw new RemoteWorkerProtocolError();
+        return Object.freeze({
+          requestId: parsed.request_id,
+          job: job(parsed.job),
+          lease: lease(parsed.lease),
+        });
+      },
     );
-    if (result.status === 204) return null;
-    const parsed = response(claimResponseSchema, result.body);
-    if (parsed.lease.job_id !== parsed.job.id) throw new RemoteWorkerProtocolError();
-    return Object.freeze({
-      requestId: parsed.request_id,
-      job: job(parsed.job),
-      lease: lease(parsed.lease),
-    });
   }
 
   async heartbeat(options: Readonly<{
@@ -463,7 +550,7 @@ export class RemoteWorkerClient {
     const leaseId = input(uuidSchema, options.leaseId);
     const generation = input(generationSchema, options.generation);
     const result = await this.request(
-      `job-leases/${leaseId}`, "PATCH", { generation }, token, options.signal, [200],
+      "heartbeat", `job-leases/${leaseId}`, "PATCH", { generation }, token, options.signal,
     );
     const parsed = response(heartbeatResponseSchema, result.body);
     if (parsed.lease.id !== leaseId || parsed.lease.generation !== generation) {
@@ -475,12 +562,14 @@ export class RemoteWorkerClient {
   async complete(options: Readonly<{
     sessionToken: string;
     leaseId: string;
+    expectedJobId: string;
     generation: number;
     terminal: RemoteWorkerTerminal;
     signal?: AbortSignal | undefined;
   }>): Promise<RemoteWorkerCompletion> {
     const token = input(sessionTokenSchema, options.sessionToken);
     const leaseId = input(uuidSchema, options.leaseId);
+    const expectedJobId = input(uuidSchema, options.expectedJobId);
     const generation = input(generationSchema, options.generation);
     const terminal = input(terminalSchema, options.terminal);
     const body = {
@@ -489,22 +578,37 @@ export class RemoteWorkerClient {
       result_completeness: terminal.resultCompleteness,
       error_code: terminal.errorCode,
     };
-    const result = await this.request(
-      `job-leases/${leaseId}/complete`, "POST", body, token, options.signal, [200],
+    return this.possiblyCommitted(
+      { operation: "complete", leaseId, generation, expectedJobId },
+      options.signal,
+      async () => {
+        const result = await this.request(
+          "complete", `job-leases/${leaseId}/complete`, "POST", body, token, options.signal,
+        );
+        const parsed = response(completionResponseSchema, result.body);
+        const completed = job(parsed.job);
+        if (
+          completed.id !== expectedJobId ||
+          completed.status !== terminal.status ||
+          completed.resultCompleteness !== terminal.resultCompleteness ||
+          completed.errorCode !== terminal.errorCode
+        ) {
+          throw new RemoteWorkerProtocolError();
+        }
+        return Object.freeze({ requestId: parsed.request_id, job: completed });
+      },
     );
-    const parsed = response(completionResponseSchema, result.body);
-    if (parsed.job.status !== terminal.status) throw new RemoteWorkerProtocolError();
-    return Object.freeze({ requestId: parsed.request_id, job: job(parsed.job) });
   }
 
   private async request(
+    operation: RemoteWorkerOperation,
     path: string,
     method: "POST" | "PATCH",
     body: unknown,
     token: string | null,
     signal: AbortSignal | undefined,
-    expectedStatuses: readonly number[],
   ): Promise<Readonly<{ status: number; body: unknown }>> {
+    signal?.throwIfAborted();
     const headers: Record<string, string> = {
       accept: "application/json, application/problem+json",
       "content-type": "application/json",
@@ -520,49 +624,72 @@ export class RemoteWorkerClient {
         ...(signal === undefined ? {} : { signal }),
       });
     } catch (error) {
-      if (signal?.aborted === true) throw error;
+      if (signal?.aborted === true) throw signal.reason;
       throw new RemoteWorkerTransportError();
     }
-    if (expectedStatuses.includes(result.status)) {
-      if (result.status === 204) {
-        let text: string;
-        try {
-          text = await result.text();
-        } catch {
+    try {
+      const bytes = await decodedBody(result, signal);
+      const contract = operationContracts[operation];
+      if (contract.success.includes(result.status)) {
+        if (result.status === 204) {
+          if (bytes.byteLength !== 0) throw new RemoteWorkerProtocolError();
+          return Object.freeze({ status: result.status, body: null });
+        }
+        return Object.freeze({
+          status: result.status,
+          body: jsonBody(result, bytes, "application/json"),
+        });
+      }
+      if (contract.errors.includes(result.status)) {
+        const parsed = response(
+          problemSchema,
+          jsonBody(result, bytes, "application/problem+json"),
+        );
+        if (parsed.status !== result.status) throw new RemoteWorkerProtocolError();
+        const retryAfter = result.headers.get("retry-after");
+        const validRetryAfter = retryAfter !== null && /^[1-9][0-9]*$/u.test(retryAfter);
+        const retryAfterSeconds = validRetryAfter ? Number(retryAfter) : null;
+        if (
+          result.status === 429 &&
+          (operation !== "challenge" || !Number.isSafeInteger(retryAfterSeconds))
+        ) {
           throw new RemoteWorkerProtocolError();
         }
-        if (text !== "") throw new RemoteWorkerProtocolError();
-        return Object.freeze({ status: result.status, body: null });
+        if (result.status !== 429 && retryAfter !== null) throw new RemoteWorkerProtocolError();
+        throw new RemoteWorkerHttpError(
+          parsed.status,
+          parsed.code,
+          parsed.request_id,
+          parsed.retryable,
+          retryAfterSeconds,
+        );
       }
-      return Object.freeze({
-        status: result.status,
-        body: await jsonBody(result, "application/json"),
-      });
-    }
-    if (result.status >= 400 && result.status <= 599) {
-      const parsed = response(
-        problemSchema,
-        await jsonBody(result, "application/problem+json"),
-      );
-      if (parsed.status !== result.status) throw new RemoteWorkerProtocolError();
-      const retryAfter = result.headers.get("retry-after");
-      const retryAfterSeconds = retryAfter === null ? null : Number(retryAfter);
-      if (
-        result.status === 429 &&
-        (!Number.isSafeInteger(retryAfterSeconds) || retryAfterSeconds === null || retryAfterSeconds < 1)
-      ) {
-        throw new RemoteWorkerProtocolError();
+      throw new RemoteWorkerProtocolError();
+    } catch (error) {
+      if (signal?.aborted === true && error === signal.reason) throw error;
+      if (error instanceof RemoteWorkerHttpError || error instanceof RemoteWorkerProtocolError) {
+        throw error;
       }
-      throw new RemoteWorkerHttpError(
-        parsed.status,
-        parsed.code,
-        parsed.request_id,
-        parsed.retryable,
-        Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds !== null
-          ? retryAfterSeconds
-          : null,
-      );
+      throw new RemoteWorkerProtocolError();
     }
-    throw new RemoteWorkerProtocolError();
+  }
+
+  private async possiblyCommitted<Result>(
+    metadata: RemoteWorkerOutcomeUnknownMetadata,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<Result>,
+  ): Promise<Result> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (signal?.aborted === true && error === signal.reason) throw error;
+      if (error instanceof RemoteWorkerHttpError || error instanceof RemoteWorkerOutcomeUnknownError) {
+        throw error;
+      }
+      if (error instanceof RemoteWorkerProtocolError || error instanceof RemoteWorkerTransportError) {
+        throw new RemoteWorkerOutcomeUnknownError(metadata);
+      }
+      throw error;
+    }
   }
 }

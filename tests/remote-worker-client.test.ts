@@ -4,6 +4,7 @@ import {
   RemoteWorkerClient,
   RemoteWorkerConfigurationError,
   RemoteWorkerHttpError,
+  RemoteWorkerOutcomeUnknownError,
   RemoteWorkerProtocolError,
   RemoteWorkerTransportError,
 } from "../src/remote-worker/client.js";
@@ -243,7 +244,10 @@ describe("Remote Worker HTTP client", () => {
   it("heartbeats and reports both terminal outcomes with the exact fenced generation", async () => {
     const { calls, fetcher } = queuedFetch(
       jsonResponse({ request_id: requestId, lease: leaseResponse() }),
-      jsonResponse({ request_id: requestId, job: workerJob("completed") }),
+      jsonResponse({
+        request_id: requestId,
+        job: { ...workerJob("completed"), result_completeness: "partial" },
+      }),
       jsonResponse({ request_id: requestId, job: workerJob("failed") }),
     );
     const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
@@ -252,12 +256,14 @@ describe("Remote Worker HTTP client", () => {
     const completed = await client.complete({
       sessionToken,
       leaseId,
+      expectedJobId: jobId,
       generation: 3,
       terminal: { status: "completed", resultCompleteness: "partial", errorCode: null },
     });
     const failed = await client.complete({
       sessionToken,
       leaseId,
+      expectedJobId: jobId,
       generation: 3,
       terminal: { status: "failed", resultCompleteness: null, errorCode: " PROVIDER_FAILED " },
     });
@@ -285,6 +291,7 @@ describe("Remote Worker HTTP client", () => {
     const caught = await client.complete({
       sessionToken,
       leaseId,
+      expectedJobId: jobId,
       generation: 3,
       terminal: { status: "completed", resultCompleteness: "complete", errorCode: null },
     }).catch((error: unknown) => error);
@@ -297,7 +304,9 @@ describe("Remote Worker HTTP client", () => {
       retryable: false,
       retryAfterSeconds: null,
     });
-    expect(String(caught)).not.toContain(sessionToken);
+    expect(String(caught)).toBe(
+      "RemoteWorkerHttpError: The Remote Worker control request was rejected.",
+    );
     expect(JSON.stringify(caught)).not.toContain(sessionToken);
   });
 
@@ -342,10 +351,10 @@ describe("Remote Worker HTTP client", () => {
       identity: createInMemoryWorkerIdentity(),
       version: "1.0.0",
       capabilities: { http: true },
-    })).rejects.toBeInstanceOf(RemoteWorkerProtocolError);
+    })).rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
   });
 
-  it("does not retry a failed enrollment transport and does not expose its token", async () => {
+  it("marks a failed enrollment transport outcome unknown without retrying or exposing its token", async () => {
     const { calls, fetcher } = queuedFetch(new Error(`network failure ${enrollmentToken}`));
     const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
 
@@ -356,8 +365,166 @@ describe("Remote Worker HTTP client", () => {
       capabilities: {},
     }).catch((error: unknown) => error);
 
-    expect(caught).toBeInstanceOf(RemoteWorkerTransportError);
+    expect(caught).toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    expect(caught).toMatchObject({ metadata: { operation: "enroll" } });
+    expect(String(caught)).toBe(
+      "RemoteWorkerOutcomeUnknownError: The Remote Worker request outcome is unknown.",
+    );
     expect(String(caught)).not.toContain(enrollmentToken);
+    expect(JSON.stringify(caught)).not.toContain(enrollmentToken);
     expect(calls).toHaveLength(1);
+  });
+
+  it("requires complete to match the expected Job and exact terminal projection", async () => {
+    const mismatched = [
+      { ...workerJob("completed"), id: "77777777-7777-4777-8777-777777777777" },
+      { ...workerJob("failed"), result_completeness: null, error_code: "PROVIDER_FAILED" },
+      { ...workerJob("completed"), result_completeness: "complete" },
+      { ...workerJob("failed"), result_completeness: null, error_code: "DIFFERENT_FAILURE" },
+    ];
+    const { fetcher } = queuedFetch(...mismatched.map((job) =>
+      jsonResponse({ request_id: requestId, job })));
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+    const completed = {
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      terminal: { status: "completed", resultCompleteness: "partial", errorCode: null } as const,
+    };
+    const failed = {
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      terminal: {
+        status: "failed",
+        resultCompleteness: null,
+        errorCode: "PROVIDER_FAILED",
+      } as const,
+    };
+
+    await expect(client.complete(completed)).rejects.toMatchObject({
+      metadata: { operation: "complete", leaseId, generation: 3, expectedJobId: jobId },
+    });
+    await expect(client.complete(completed)).rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    await expect(client.complete(completed)).rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    await expect(client.complete(failed)).rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+  });
+
+  it("uses per-operation documented error statuses and reserves Retry-After for challenge", async () => {
+    const enrollmentRejected = jsonResponse(problem({
+      type: "https://api.diaoyan.example/errors/worker-enrollment-invalid",
+      title: "Worker Enrollment Invalid",
+      status: 401,
+      code: "WORKER_ENROLLMENT_INVALID",
+    }), 401, "application/problem+json");
+    const undocumentedComplete = jsonResponse(problem({
+      type: "https://api.diaoyan.example/errors/forbidden",
+      title: "Forbidden",
+      status: 403,
+      code: "FORBIDDEN",
+    }), 403, "application/problem+json");
+    const undocumentedHeartbeat = jsonResponse(problem({
+      type: "https://api.diaoyan.example/errors/rate-limited",
+      title: "Rate Limited",
+      status: 429,
+      code: "RATE_LIMITED",
+      retryable: true,
+    }), 429, "application/problem+json");
+    undocumentedHeartbeat.headers.set("retry-after", "1");
+    const { fetcher } = queuedFetch(
+      enrollmentRejected,
+      undocumentedComplete,
+      undocumentedHeartbeat,
+    );
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.enroll({
+      enrollmentToken,
+      identity: createInMemoryWorkerIdentity(),
+      version: "1.0.0",
+      capabilities: {},
+    })).rejects.toMatchObject({ status: 401, code: "WORKER_ENROLLMENT_INVALID" });
+    await expect(client.complete({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      terminal: { status: "completed", resultCompleteness: "complete", errorCode: null },
+    })).rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    await expect(client.heartbeat({ sessionToken, leaseId, generation: 3 }))
+      .rejects.toBeInstanceOf(RemoteWorkerProtocolError);
+  });
+
+  it("rejects a reflected bearer as an unsafe Problem code without serializing it", async () => {
+    const reflectedBearer = `Bearer ${sessionToken}`;
+    const { fetcher } = queuedFetch(jsonResponse(
+      problem({ code: reflectedBearer }),
+      409,
+      "application/problem+json",
+    ));
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    const caught = await client.complete({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      terminal: { status: "completed", resultCompleteness: "complete", errorCode: null },
+    }).catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    expect(String(caught)).not.toContain(reflectedBearer);
+    expect(JSON.stringify(caught)).not.toContain(reflectedBearer);
+  });
+
+  it("caps decoded bytes even for a 204 claim response", async () => {
+    const oversized = {
+      status: 204,
+      headers: new Headers(),
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(256 * 1_024 + 1));
+          controller.close();
+        },
+      }),
+    } as Response;
+    const { fetcher } = queuedFetch(oversized);
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.claim({ workerId, sessionToken, waitMs: 0 }))
+      .rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+  });
+
+  it("preserves the caller abort reason while reading a response body", async () => {
+    const controller = new AbortController();
+    const reason = new Error("caller stopped the response read");
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        controller.abort(reason);
+        stream.error(new Error("body source failed"));
+      },
+    });
+    const { fetcher } = queuedFetch(new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.claim({
+      workerId,
+      sessionToken,
+      waitMs: 0,
+      signal: controller.signal,
+    })).rejects.toBe(reason);
+  });
+
+  it("keeps heartbeat transport failures distinct from the required outcome-unknown operations", async () => {
+    const { fetcher } = queuedFetch(new Error("network failed"));
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.heartbeat({ sessionToken, leaseId, generation: 3 }))
+      .rejects.toBeInstanceOf(RemoteWorkerTransportError);
   });
 });
