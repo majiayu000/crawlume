@@ -1,28 +1,12 @@
 import { normalizeError, ReadError } from "../errors.js";
-import type { ControlPlaneJobRequest } from "../control-plane/job-input.js";
-import type {
-  JobBudget,
-  JobDataClass,
-  JobPlacementClass,
-} from "../control-plane/project-scope.js";
 import type {
   PageReadArtifact,
   ReadPageOptions,
   ReadPageResult,
 } from "../types.js";
+import type { RemoteWorkerJob } from "./client.js";
 
-export type RemoteWorkerRuntimeJob = ControlPlaneJobRequest & Readonly<{
-  id: string;
-  data_class: JobDataClass;
-  placement: Readonly<{ class: JobPlacementClass }>;
-  budget: Readonly<{
-    deadline_ms: JobBudget["deadlineMs"];
-    max_provider_attempts: JobBudget["maxProviderAttempts"];
-    max_document_bytes: JobBudget["maxDocumentBytes"];
-    max_browser_ms: JobBudget["maxBrowserMs"];
-    max_browser_contexts: JobBudget["maxBrowserContexts"];
-  }>;
-}>;
+export type RemoteWorkerRuntimeJob = RemoteWorkerJob;
 
 export type PublicReadRuntimeReader = Readonly<{
   readPageArtifact(
@@ -41,11 +25,11 @@ export class PublicReadRuntimeAdapter {
         { details: { jobType: job.type } },
       );
     }
-    if (job.data_class !== "public") {
+    if (job.dataClass !== "public") {
       throw new ReadError(
         "INVALID_ARGUMENT",
         "The public-read Runtime Adapter only accepts public data.",
-        { details: { dataClass: job.data_class } },
+        { details: { dataClass: job.dataClass } },
       );
     }
     if (job.placement.class !== "public") {
@@ -71,11 +55,11 @@ export class PublicReadRuntimeAdapter {
           : { browserReadiness: job.input.browserReadiness }),
         requestId: job.id,
         budget: {
-          deadlineMs: job.budget.deadline_ms,
-          maxAttempts: job.budget.max_provider_attempts,
-          maxDocumentBytes: job.budget.max_document_bytes,
-          maxBrowserMs: job.budget.max_browser_ms,
-          maxBrowserContexts: job.budget.max_browser_contexts,
+          deadlineMs: job.budget.deadlineMs,
+          maxAttempts: job.budget.maxProviderAttempts,
+          maxDocumentBytes: job.budget.maxDocumentBytes,
+          maxBrowserMs: job.budget.maxBrowserMs,
+          maxBrowserContexts: job.budget.maxBrowserContexts,
           maxOptionalModelTokens: 0,
         },
         signal,
