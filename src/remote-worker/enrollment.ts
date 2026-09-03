@@ -1,4 +1,10 @@
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import {
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  sign,
+  type KeyObject,
+} from "node:crypto";
 
 import { workerSigningPayload } from "../control-plane/worker-challenge-budget.js";
 
@@ -27,6 +33,38 @@ export class InMemoryWorkerIdentity {
       .export({ format: "der", type: "spki" })
       .toString("base64url");
     return new InMemoryWorkerIdentity(keys.privateKey, publicKeySpki);
+  }
+
+  static fromPkcs8Der(pkcs8Der: Uint8Array): InMemoryWorkerIdentity {
+    const serialized = Buffer.from(pkcs8Der);
+    try {
+      const privateKey = createPrivateKey({
+        key: serialized,
+        format: "der",
+        type: "pkcs8",
+      });
+      if (privateKey.type !== "private" || privateKey.asymmetricKeyType !== "ed25519") {
+        throw new RemoteWorkerIdentityError();
+      }
+      const canonical = privateKey.export({ format: "der", type: "pkcs8" });
+      try {
+        if (!canonical.equals(serialized)) throw new RemoteWorkerIdentityError();
+      } finally {
+        canonical.fill(0);
+      }
+      const publicKey = createPublicKey(privateKey);
+      if (publicKey.type !== "public" || publicKey.asymmetricKeyType !== "ed25519") {
+        throw new RemoteWorkerIdentityError();
+      }
+      return new InMemoryWorkerIdentity(
+        privateKey,
+        publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
+      );
+    } catch {
+      throw new RemoteWorkerIdentityError();
+    } finally {
+      serialized.fill(0);
+    }
   }
 
   signSessionChallenge(challenge: string, signingPayload: string): string {
