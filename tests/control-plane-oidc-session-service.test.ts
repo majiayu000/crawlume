@@ -26,6 +26,7 @@ import {
   type OidcSessionConfig,
 } from "../src/control-plane/oidc-session-service.js";
 import type { AuthenticatedProjectApiKey } from "../src/control-plane/api-key-service.js";
+import { assertEd25519KeyPair } from "../src/control-plane/ed25519-key-pair.js";
 import type {
   ControlPlaneDatabase,
   ControlPlaneQuery,
@@ -614,6 +615,29 @@ describe("PostgreSQL control-plane adapter", () => {
 });
 
 describe("control-plane runtime configuration", () => {
+  it("preserves WebCrypto failures as key-pair assertion causes", async () => {
+    const keys = await generateKeyPair("EdDSA");
+    const signFailure = await assertEd25519KeyPair(
+      keys.publicKey,
+      keys.publicKey,
+      "Signing failure",
+    ).catch((error: unknown) => error);
+    expect(signFailure).toMatchObject({
+      message: "Signing failure private key could not sign the key-pair probe.",
+      cause: expect.anything(),
+    });
+
+    const verifyFailure = await assertEd25519KeyPair(
+      keys.privateKey,
+      keys.privateKey,
+      "Verification failure",
+    ).catch((error: unknown) => error);
+    expect(verifyFailure).toMatchObject({
+      message: "Verification failure public key could not verify the key-pair probe.",
+      cause: expect.anything(),
+    });
+  });
+
   it("enables verified TLS for remote PostgreSQL and keeps Worker keys out of environment values", async () => {
     const files = await runtimeKeyFiles();
     try {
@@ -753,6 +777,30 @@ describe("control-plane runtime configuration", () => {
       await writeFile(files.humanPublicKeyPath, await readFile(files.publicKeyPath), { mode: 0o644 });
       await expect(loadControlPlaneRuntimeConfig(runtimeEnvironment(files)))
         .rejects.toThrow("Human access-token and Worker session signing public keys must be distinct");
+    } finally {
+      await rm(files.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects mismatched Human access-token signing keys", async () => {
+    const files = await runtimeKeyFiles();
+    try {
+      const third = await generateKeyPair("EdDSA", { extractable: true });
+      await writeFile(files.humanPublicKeyPath, await exportSPKI(third.publicKey), { mode: 0o644 });
+      await expect(loadControlPlaneRuntimeConfig(runtimeEnvironment(files)))
+        .rejects.toThrow("Human access-token signing private and public keys do not match");
+    } finally {
+      await rm(files.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects mismatched Worker session signing keys", async () => {
+    const files = await runtimeKeyFiles();
+    try {
+      const third = await generateKeyPair("EdDSA", { extractable: true });
+      await writeFile(files.publicKeyPath, await exportSPKI(third.publicKey), { mode: 0o644 });
+      await expect(loadControlPlaneRuntimeConfig(runtimeEnvironment(files)))
+        .rejects.toThrow("Worker session signing private and public keys do not match");
     } finally {
       await rm(files.directory, { recursive: true, force: true });
     }

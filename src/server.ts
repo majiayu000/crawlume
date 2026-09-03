@@ -31,6 +31,7 @@ import {
   type WorkerIdentityConfig,
 } from "./control-plane/api-key-service.js";
 import { HumanAuthHttpApi } from "./control-plane/human-auth-http-api.js";
+import { assertEd25519KeyPair } from "./control-plane/ed25519-key-pair.js";
 import {
   JobResultService,
   listProjectAuditEvents,
@@ -537,6 +538,8 @@ export async function loadControlPlaneRuntimeConfig(
   const workerPublicKey = await importSPKI(publicKeyPem, "EdDSA");
   const humanPrivateKey = await importPKCS8(humanPrivateKeyPem, "EdDSA");
   const humanPublicKey = await importSPKI(humanPublicKeyPem, "EdDSA");
+  await assertEd25519KeyPair(workerPrivateKey, workerPublicKey, "Worker session signing");
+  await assertEd25519KeyPair(humanPrivateKey, humanPublicKey, "Human access-token signing");
   if (await exportSPKI(workerPublicKey) === await exportSPKI(humanPublicKey)) {
     throw new Error("Human access-token and Worker session signing public keys must be distinct.");
   }
