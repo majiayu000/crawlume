@@ -225,7 +225,10 @@ function problem(
     retryable: status === 500,
     ...(errors === undefined ? {} : { errors }),
   };
-  return response(status, requestId, body, status === 401 ? { "www-authenticate": "Bearer" } : {});
+  return response(status, requestId, body, {
+    "content-type": "application/problem+json",
+    ...(status === 401 ? { "www-authenticate": "Bearer" } : {}),
+  });
 }
 
 export class ProjectApiKeyHttpApi {

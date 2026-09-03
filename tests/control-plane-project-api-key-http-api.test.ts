@@ -119,6 +119,7 @@ describe("Project API Key management HTTP API", () => {
       status: 201,
       headers: {
         "cache-control": "no-store",
+        "content-type": "application/json",
         location: `/v1/projects/${projectId}/api-keys/${keyId}`,
       },
       body: {
@@ -181,7 +182,11 @@ describe("Project API Key management HTTP API", () => {
     });
     await expect(invalid.api.handle(request())).resolves.toMatchObject({
       status: 401,
-      headers: { "cache-control": "no-store", "www-authenticate": "Bearer" },
+      headers: {
+        "cache-control": "no-store",
+        "content-type": "application/problem+json",
+        "www-authenticate": "Bearer",
+      },
       body: { code: "ACCESS_TOKEN_INVALID" },
     });
 
@@ -208,7 +213,11 @@ describe("Project API Key management HTTP API", () => {
     const { api, authenticateAccessToken } = await harness();
     await expect(api.handle(request({ method: "PATCH" }))).resolves.toMatchObject({
       status: 405,
-      headers: { allow: "GET, POST", "cache-control": "no-store" },
+      headers: {
+        allow: "GET, POST",
+        "cache-control": "no-store",
+        "content-type": "application/problem+json",
+      },
     });
 
     for (const bodyRequest of [
@@ -237,7 +246,10 @@ describe("Project API Key management HTTP API", () => {
     ]) {
       await expect(api.handle(bodyRequest)).resolves.toMatchObject({
         status: 400,
-        headers: { "cache-control": "no-store" },
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "application/problem+json",
+        },
         body: { code: "API_KEY_REQUEST_INVALID" },
       });
     }
