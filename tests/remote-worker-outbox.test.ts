@@ -1,7 +1,10 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -14,8 +17,12 @@ import {
 import {
   RemoteWorkerOutbox,
   RemoteWorkerOutboxClosedError,
+  RemoteWorkerOutboxDeliveryActiveError,
   RemoteWorkerOutboxDedupeConflictError,
   RemoteWorkerOutboxIntegrityError,
+  RemoteWorkerOutboxLeaseBlockedError,
+  RemoteWorkerOutboxOwnershipError,
+  RemoteWorkerOutboxPathError,
   type RemoteWorkerOutboxLease,
 } from "../src/remote-worker/outbox.js";
 
@@ -160,6 +167,38 @@ function rows(path: string): Array<Record<string, unknown>> {
   }
 }
 
+async function startChildOwner(path: string): Promise<ChildProcess> {
+  const moduleUrl = pathToFileURL(resolve("src/remote-worker/outbox.ts")).href;
+  const source = `
+    import { RemoteWorkerOutbox } from ${JSON.stringify(moduleUrl)};
+    new RemoteWorkerOutbox(${JSON.stringify(path)});
+    process.stdout.write("ready\\n");
+    process.stdin.resume();
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+    cwd: process.cwd(),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  await new Promise<void>((resolveReady, rejectReady) => {
+    const cleanup = () => {
+      child.stdout?.off("data", onData);
+      child.off("exit", onExit);
+    };
+    const onData = (chunk: Buffer) => {
+      if (!chunk.toString().includes("ready")) return;
+      cleanup();
+      resolveReady();
+    };
+    const onExit = (code: number | null) => {
+      cleanup();
+      rejectReady(new Error(`child outbox owner exited before ready: ${String(code)}`));
+    };
+    child.stdout?.on("data", onData);
+    child.on("exit", onExit);
+  });
+  return child;
+}
+
 afterEach(() => {
   for (const directory of directories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
@@ -169,7 +208,13 @@ afterEach(() => {
 describe("RemoteWorkerOutbox", () => {
   it("creates a private WAL database and atomically allocates independent Event/Publication sequences", () => {
     const path = outboxPath();
-    const outbox = new RemoteWorkerOutbox(path, () => 1_000);
+    const priorUmask = process.umask(0);
+    let outbox: RemoteWorkerOutbox;
+    try {
+      outbox = new RemoteWorkerOutbox(path, () => 1_000);
+    } finally {
+      process.umask(priorUmask);
+    }
 
     expect(outbox.enqueueEvent(lease, eventInput())).toMatchObject({
       kind: "event", localSequence: 1, state: "pending", createdAtMs: 1_000,
@@ -190,6 +235,50 @@ describe("RemoteWorkerOutbox", () => {
     database.close();
     expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects relative paths and existing shared parents without changing their mode", () => {
+    expect(() => new RemoteWorkerOutbox("relative/outbox.sqlite"))
+      .toThrow(RemoteWorkerOutboxPathError);
+    const shared = mkdtempSync(join(tmpdir(), "remote-worker-shared-"));
+    directories.push(shared);
+    chmodSync(shared, 0o755);
+
+    expect(() => new RemoteWorkerOutbox(join(shared, "outbox.sqlite")))
+      .toThrow(RemoteWorkerOutboxPathError);
+    expect(statSync(shared).mode & 0o777).toBe(0o755);
+
+    const links = mkdtempSync(join(tmpdir(), "remote-worker-links-"));
+    const privateTarget = mkdtempSync(join(tmpdir(), "remote-worker-private-"));
+    directories.push(links, privateTarget);
+    symlinkSync(privateTarget, join(links, "linked-private"), "dir");
+    expect(() => new RemoteWorkerOutbox(join(links, "linked-private", "outbox.sqlite")))
+      .toThrow(RemoteWorkerOutboxPathError);
+  });
+
+  it("allows only one live file owner and releases ownership on close", () => {
+    const path = outboxPath();
+    const first = new RemoteWorkerOutbox(path);
+    expect(() => new RemoteWorkerOutbox(path)).toThrow(RemoteWorkerOutboxOwnershipError);
+    expect(first.enqueueEvent(lease, eventInput())).toMatchObject({ state: "pending" });
+    first.close();
+
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(reopened.listEntries(lease)).toHaveLength(1);
+    reopened.close();
+  });
+
+  it("releases SQLite ownership when the owning process dies", async () => {
+    const path = outboxPath();
+    const child = await startChildOwner(path);
+    try {
+      expect(() => new RemoteWorkerOutbox(path)).toThrow(RemoteWorkerOutboxOwnershipError);
+    } finally {
+      child.kill("SIGKILL");
+      await once(child, "exit");
+    }
+    const reopened = new RemoteWorkerOutbox(path);
+    reopened.close();
   });
 
   it("deduplicates stable logical submissions and exposes state without exposing payload", () => {
@@ -224,7 +313,7 @@ describe("RemoteWorkerOutbox", () => {
 
     await expect(outbox.deliverNext({ lease, sessionToken, client: failedClient }))
       .rejects.toBeInstanceOf(RemoteWorkerTransportError);
-    expect(rows(path)[0]).toMatchObject({ state: "pending", acked_at_ms: null });
+    expect(outbox.listEntries(lease)[0]).toMatchObject({ state: "pending", ackedAtMs: null });
 
     const replayClient = client((async (_input, init) => {
       bodies.push(String(init?.body));
@@ -239,7 +328,7 @@ describe("RemoteWorkerOutbox", () => {
       local_sequence: 1,
       usage: { attempts: 1, bytes: 123 },
     });
-    expect(rows(path)[0]).toMatchObject({ state: "acked", acked_at_ms: 2_000 });
+    expect(outbox.listEntries(lease)[0]).toMatchObject({ state: "acked", ackedAtMs: 2_000 });
     expect(outbox.enqueueEvent(lease, eventInput())).toMatchObject({
       state: "acked", localSequence: 1, dedupeKey: "page-1",
     });
@@ -254,35 +343,80 @@ describe("RemoteWorkerOutbox", () => {
     reopened.close();
   });
 
-  it("commits inflight before the network call and never holds a SQLite transaction across it", async () => {
+  it("serializes same-generation delivery in id order without holding a transaction across the network", async () => {
     const path = outboxPath();
     const outbox = new RemoteWorkerOutbox(path);
     outbox.enqueueEvent(lease, eventInput());
-    let resolveResponse!: (response: Response) => void;
-    const waiting = new Promise<Response>((resolve) => {
-      resolveResponse = resolve;
-    });
-    let resolveDispatched!: () => void;
-    const reachedFetch = new Promise<void>((resolve) => {
-      resolveDispatched = resolve;
-    });
-    const delivery = outbox.deliverNext({
-      lease,
-      sessionToken,
-      client: client((async () => {
-        resolveDispatched();
-        return waiting;
-      }) as typeof fetch),
-    });
-    await reachedFetch;
+    outbox.enqueueEvent(lease, eventInput(undefined, "page-2"));
+    let releaseFirst!: (response: Response) => void;
+    let releaseSecond!: (response: Response) => void;
+    let markFirst!: () => void;
+    let markSecond!: () => void;
+    const firstResponse = new Promise<Response>((resolveResponse) => { releaseFirst = resolveResponse; });
+    const secondResponse = new Promise<Response>((resolveResponse) => { releaseSecond = resolveResponse; });
+    const firstReached = new Promise<void>((resolveReached) => { markFirst = resolveReached; });
+    const secondReached = new Promise<void>((resolveReached) => { markSecond = resolveReached; });
+    const dispatched: number[] = [];
+    const remote = client((async (_input, init) => {
+      const sequence = (JSON.parse(String(init?.body)) as { local_sequence: number }).local_sequence;
+      dispatched.push(sequence);
+      if (sequence === 1) { markFirst(); return firstResponse; }
+      markSecond();
+      return secondResponse;
+    }) as typeof fetch);
 
-    expect(rows(path)[0]).toMatchObject({ state: "inflight" });
-    const concurrent = new DatabaseSync(path, { timeout: 0 });
-    expect(() => concurrent.exec("BEGIN IMMEDIATE; ROLLBACK;")).not.toThrow();
-    concurrent.close();
-    resolveResponse(jsonResponse(eventResponse()));
-    await expect(delivery).resolves.toMatchObject({ state: "acked" });
+    const first = outbox.deliverNext({ lease, sessionToken, client: remote });
+    await firstReached;
+    const second = outbox.deliverNext({ lease, sessionToken, client: remote });
+    expect(() => outbox.close()).toThrow(RemoteWorkerOutboxDeliveryActiveError);
+    expect(dispatched).toEqual([1]);
+    expect(outbox.listEntries(lease).map(({ state }) => state)).toEqual(["inflight", "pending"]);
+    expect(outbox.enqueueEvent(
+      { jobId: otherJobId, leaseId: otherLeaseId, generation: 1 },
+      eventInput(),
+    )).toMatchObject({ state: "pending" });
+    releaseFirst(jsonResponse(eventResponse(lease, 1)));
+    await expect(first).resolves.toMatchObject({ state: "acked", localSequence: 1 });
+    await secondReached;
+    expect(dispatched).toEqual([1, 2]);
+    releaseSecond(jsonResponse(eventResponse(lease, 2)));
+    await expect(second).resolves.toMatchObject({ state: "acked", localSequence: 2 });
     outbox.close();
+  });
+
+  it("persists a heartbeat fence, blocks late success, and rejects new work after restart", async () => {
+    const path = outboxPath();
+    const outbox = new RemoteWorkerOutbox(path);
+    outbox.enqueueEvent(lease, eventInput());
+    outbox.enqueueEvent(lease, eventInput(undefined, "page-2"));
+    let release!: (response: Response) => void;
+    let dispatched!: () => void;
+    const response = new Promise<Response>((resolveResponse) => { release = resolveResponse; });
+    const reached = new Promise<void>((resolveReached) => { dispatched = resolveReached; });
+    let networkCalls = 0;
+    const remote = client((async () => {
+      networkCalls += 1;
+      dispatched();
+      return response;
+    }) as typeof fetch);
+    const first = outbox.deliverNext({ lease, sessionToken, client: remote });
+    await reached;
+    const second = outbox.deliverNext({ lease, sessionToken, client: remote });
+    outbox.blockLeaseGeneration(jobId, leaseId, 3, "JOB_LEASE_FENCED");
+    expect(outbox.listEntries(lease).map(({ state }) => state)).toEqual(["blocked", "blocked"]);
+    release(jsonResponse(eventResponse()));
+    await expect(first).rejects.toMatchObject({ code: "JOB_LEASE_FENCED" });
+    await expect(second).resolves.toBeNull();
+    expect(networkCalls).toBe(1);
+    outbox.close();
+
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(() => reopened.enqueueEvent(lease, eventInput(undefined, "page-3")))
+      .toThrow(RemoteWorkerOutboxLeaseBlockedError);
+    expect(reopened.enqueueEvent(lease, eventInput())).toMatchObject({
+      state: "blocked", blockedCode: "JOB_LEASE_FENCED", localSequence: 1,
+    });
+    reopened.close();
   });
 
   it("recovers inflight rows on process reopen and a malformed success never acknowledges", async () => {
@@ -295,7 +429,7 @@ describe("RemoteWorkerOutbox", () => {
     database.close();
 
     const reopened = new RemoteWorkerOutbox(path);
-    expect(rows(path)[0]).toMatchObject({ state: "pending" });
+    expect(reopened.listEntries(lease)[0]).toMatchObject({ state: "pending" });
     await expect(reopened.deliverNext({
       lease,
       sessionToken,
@@ -304,7 +438,7 @@ describe("RemoteWorkerOutbox", () => {
         publication: { ...publicationResponse().publication, local_sequence: 2 },
       })) as typeof fetch),
     })).rejects.toBeInstanceOf(RemoteWorkerProtocolError);
-    expect(rows(path)[0]).toMatchObject({ state: "pending", acked_at_ms: null });
+    expect(reopened.listEntries(lease)[0]).toMatchObject({ state: "pending", ackedAtMs: null });
     reopened.close();
   });
 
@@ -328,9 +462,9 @@ describe("RemoteWorkerOutbox", () => {
         )) as typeof fetch),
       })).rejects.toMatchObject({ status: 409, code });
 
-      expect(rows(path).slice(0, 2)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ lease_id: leaseId, state: "blocked", blocked_code: code }),
-        expect.objectContaining({ lease_id: leaseId, state: "blocked", blocked_code: code }),
+      expect(outbox.listEntries(lease)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ leaseId, state: "blocked", blockedCode: code }),
+        expect.objectContaining({ leaseId, state: "blocked", blockedCode: code }),
       ]));
       await expect(outbox.deliverNext({
         lease,
@@ -362,30 +496,32 @@ describe("RemoteWorkerOutbox", () => {
         publishResult: async () => { throw new Error("unexpected publication"); },
       };
       await expect(outbox.deliverNext({ lease, sessionToken, client: fakeClient })).rejects.toBe(failure);
-      expect(rows(path)[0]).toMatchObject({ state: "pending", blocked_code: null });
+      expect(outbox.listEntries(lease)[0]).toMatchObject({ state: "pending", blockedCode: null });
       outbox.close();
     }
   });
 
   it("detects payload tampering, stores no credentials, retains acknowledgements, and fails after close", async () => {
     const path = outboxPath();
-    const outbox = new RemoteWorkerOutbox(path);
-    outbox.enqueueEvent(lease, eventInput());
+    const initial = new RemoteWorkerOutbox(path);
+    initial.enqueueEvent(lease, eventInput());
+    initial.close();
     const database = new DatabaseSync(path);
     database.prepare("UPDATE remote_worker_outbox SET payload_json = replace(payload_json, '123', '124')")
       .run();
     database.close();
 
-    await expect(outbox.deliverNext({
+    const reopened = new RemoteWorkerOutbox(path);
+    await expect(reopened.deliverNext({
       lease,
       sessionToken,
       client: client((async () => { throw new Error("must not send corrupt payload"); }) as typeof fetch),
     })).rejects.toBeInstanceOf(RemoteWorkerOutboxIntegrityError);
+    reopened.close();
     expect(JSON.stringify(rows(path))).not.toContain(sessionToken);
     expect(JSON.stringify(rows(path))).not.toContain("private_key");
-    outbox.close();
-    expect(() => outbox.listPendingLeases()).toThrow(RemoteWorkerOutboxClosedError);
-    expect(() => outbox.enqueueEvent(lease, eventInput())).toThrow(RemoteWorkerOutboxClosedError);
+    expect(() => reopened.listPendingLeases()).toThrow(RemoteWorkerOutboxClosedError);
+    expect(() => reopened.enqueueEvent(lease, eventInput())).toThrow(RemoteWorkerOutboxClosedError);
   });
 
   it("leaves the pre-enqueue crash window empty for control-plane lease recovery", () => {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync } from "node:fs";
+import { dirname, isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
@@ -12,6 +12,7 @@ const schemaVersion = 1;
 const uuidSchema = z.uuid();
 const generationSchema = z.number().int().positive().safe();
 const dedupeKeySchema = z.string().trim().min(1).max(128);
+const blockedCodeSchema = z.string().trim().min(1).max(128);
 const contentHashSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u).refine((value) => Buffer.from(value, "base64url").toString("base64url") === value);
 const usageSchema = z.record(z.string(), z.number().finite().nonnegative()).refine((value) => {
   const entries = Object.entries(value);
@@ -84,6 +85,12 @@ type OutboxRow = {
   acked_at_ms: number | null;
   blocked_code: string | null;
 };
+type DeliveryOptions = Readonly<{
+  lease: RemoteWorkerOutboxLease;
+  sessionToken: string;
+  client: Pick<RemoteWorkerClient, "appendEvent" | "publishResult">;
+  signal?: AbortSignal | undefined;
+}>;
 
 export class RemoteWorkerOutboxClosedError extends Error {
   constructor() {
@@ -110,6 +117,34 @@ export class RemoteWorkerOutboxDedupeConflictError extends Error {
   constructor() {
     super("The Remote Worker outbox dedupe key is already bound to a different payload.");
     this.name = "RemoteWorkerOutboxDedupeConflictError";
+  }
+}
+
+export class RemoteWorkerOutboxLeaseBlockedError extends Error {
+  constructor(readonly code: string) {
+    super("The Remote Worker lease generation is blocked.");
+    this.name = "RemoteWorkerOutboxLeaseBlockedError";
+  }
+}
+
+export class RemoteWorkerOutboxOwnershipError extends Error {
+  constructor() {
+    super("The Remote Worker outbox already has a live owner.");
+    this.name = "RemoteWorkerOutboxOwnershipError";
+  }
+}
+
+export class RemoteWorkerOutboxDeliveryActiveError extends Error {
+  constructor() {
+    super("The Remote Worker outbox cannot close while delivery is active.");
+    this.name = "RemoteWorkerOutboxDeliveryActiveError";
+  }
+}
+
+export class RemoteWorkerOutboxPathError extends Error {
+  constructor() {
+    super("The Remote Worker outbox path is not a private owned file location.");
+    this.name = "RemoteWorkerOutboxPathError";
   }
 }
 
@@ -145,17 +180,61 @@ function entry(row: OutboxRow): RemoteWorkerOutboxEntry {
   });
 }
 
+function ownedWithMode(path: string, kind: "directory" | "file", mode: number): boolean {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return false;
+  }
+  const expectedKind = kind === "directory" ? stat.isDirectory() : stat.isFile();
+  const currentUid = process.getuid?.();
+  return expectedKind && !stat.isSymbolicLink() && (currentUid === undefined || stat.uid === currentUid) &&
+    (stat.mode & 0o777) === mode;
+}
+
+function prepareFilePath(path: string): boolean {
+  if (!isAbsolute(path)) throw new RemoteWorkerOutboxPathError();
+  const parent = dirname(path);
+  if (!existsSync(parent)) {
+    try {
+      mkdirSync(parent, { mode: 0o700 });
+    } catch {
+      throw new RemoteWorkerOutboxPathError();
+    }
+  }
+  if (!ownedWithMode(parent, "directory", 0o700)) throw new RemoteWorkerOutboxPathError();
+  const existing = existsSync(path);
+  if (existing && !ownedWithMode(path, "file", 0o600)) throw new RemoteWorkerOutboxPathError();
+  return existing;
+}
+
+function sqliteLockConflict(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    "errcode" in error && ((error as { errcode?: unknown }).errcode === 5 ||
+      (error as { errcode?: unknown }).errcode === 6);
+}
+
 export class RemoteWorkerOutbox {
   readonly #database: DatabaseSync;
+  readonly #deliveries = new Map<string, Promise<void>>();
   #closed = false;
 
   constructor(path: string, private readonly now: () => number = () => Date.now()) {
-    if (path !== ":memory:") {
-      const parent = dirname(path);
-      mkdirSync(parent, { recursive: true, mode: 0o700 });
-      chmodSync(parent, 0o700);
+    const memory = path === ":memory:";
+    const existed = memory ? true : prepareFilePath(path);
+    this.#database = new DatabaseSync(path, { timeout: 0 });
+    if (!memory && !existed) chmodSync(path, 0o600);
+    if (!memory) {
+      try {
+        this.#database.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;");
+      } catch (error) {
+        this.#database.close();
+        this.#closed = true;
+        if (sqliteLockConflict(error)) throw new RemoteWorkerOutboxOwnershipError();
+        throw error;
+      }
     }
-    this.#database = new DatabaseSync(path, { timeout: 5_000 });
     try {
       this.#database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
       const version = this.#database.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -184,6 +263,14 @@ export class RemoteWorkerOutbox {
           ) STRICT;
           CREATE INDEX remote_worker_outbox_delivery
             ON remote_worker_outbox(lease_id, lease_generation, state, id);
+          CREATE TABLE remote_worker_blocked_generations (
+            job_id TEXT NOT NULL,
+            lease_id TEXT NOT NULL,
+            lease_generation INTEGER NOT NULL CHECK(lease_generation > 0),
+            blocked_code TEXT NOT NULL,
+            blocked_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(job_id, lease_id, lease_generation)
+          ) STRICT;
           PRAGMA user_version = 1;
           COMMIT;
         `);
@@ -192,7 +279,6 @@ export class RemoteWorkerOutbox {
         UPDATE remote_worker_outbox SET state = 'pending'
         WHERE state = 'inflight'
       `).run();
-      if (path !== ":memory:") chmodSync(path, 0o600);
     } catch (error) {
       this.#database.close();
       this.#closed = true;
@@ -273,14 +359,32 @@ export class RemoteWorkerOutbox {
     return Object.freeze(rows.map(entry));
   }
 
-  async deliverNext(options: Readonly<{
-    lease: RemoteWorkerOutboxLease;
-    sessionToken: string;
-    client: Pick<RemoteWorkerClient, "appendEvent" | "publishResult">;
-    signal?: AbortSignal | undefined;
-  }>): Promise<RemoteWorkerOutboxEntry | null> {
+  blockLeaseGeneration(
+    jobIdValue: string,
+    leaseIdValue: string,
+    generationValue: number,
+    codeValue: string,
+  ): void {
+    this.#assertOpen();
+    const lease = parsed(leaseSchema, {
+      jobId: jobIdValue, leaseId: leaseIdValue, generation: generationValue,
+    });
+    const code = parsed(blockedCodeSchema, codeValue);
+    this.#transaction(() => { this.#blockInTransaction(lease, code); });
+  }
+
+  async deliverNext(options: DeliveryOptions): Promise<RemoteWorkerOutboxEntry | null> {
     this.#assertOpen();
     const lease = parsed(leaseSchema, options.lease);
+    const key = `${lease.jobId}\0${lease.leaseId}\0${lease.generation}`;
+    return this.#serializeDelivery(key, () => this.#deliverOne(options, lease));
+  }
+
+  async #deliverOne(
+    options: DeliveryOptions,
+    lease: z.infer<typeof leaseSchema>,
+  ): Promise<RemoteWorkerOutboxEntry | null> {
+    this.#assertOpen();
     const row = this.#transaction(() => {
       const selected = this.#database.prepare(`
         SELECT * FROM remote_worker_outbox
@@ -332,17 +436,20 @@ export class RemoteWorkerOutbox {
           SET state = 'acked', acked_at_ms = ?, blocked_code = NULL
           WHERE id = ? AND state = 'inflight'
         `).run(acknowledged, row.id);
-        if (Number(updated.changes) !== 1) throw new RemoteWorkerOutboxIntegrityError();
+        if (Number(updated.changes) !== 1) {
+          const code = this.#blockedCode(row.job_id, row.lease_id, row.lease_generation);
+          if (code !== null) throw new RemoteWorkerOutboxLeaseBlockedError(code);
+          throw new RemoteWorkerOutboxIntegrityError();
+        }
         return entry({ ...row, state: "acked", acked_at_ms: acknowledged, blocked_code: null });
       });
     } catch (error) {
       this.#transaction(() => {
         if (error instanceof RemoteWorkerHttpError && error.status === 409 &&
             (error.code === "JOB_LEASE_FENCED" || error.code === "JOB_RESULT_IDEMPOTENCY_CONFLICT")) {
-          this.#database.prepare(`
-            UPDATE remote_worker_outbox SET state = 'blocked', blocked_code = ?
-            WHERE lease_id = ? AND lease_generation = ? AND state IN ('pending', 'inflight')
-          `).run(error.code, row.lease_id, row.lease_generation);
+          this.#blockInTransaction({
+            jobId: row.job_id, leaseId: row.lease_id, generation: row.lease_generation,
+          }, error.code);
         } else {
           this.#database.prepare(`
             UPDATE remote_worker_outbox SET state = 'pending' WHERE id = ? AND state = 'inflight'
@@ -355,6 +462,7 @@ export class RemoteWorkerOutbox {
 
   close(): void {
     this.#assertOpen();
+    if (this.#deliveries.size > 0) throw new RemoteWorkerOutboxDeliveryActiveError();
     this.#database.close();
     this.#closed = true;
   }
@@ -374,6 +482,14 @@ export class RemoteWorkerOutbox {
           (binding.job_id !== lease.jobId || binding.lease_generation !== lease.generation)) {
         throw new RemoteWorkerOutboxInputError();
       }
+      const blockedBinding = this.#database.prepare(`
+        SELECT job_id, lease_generation FROM remote_worker_blocked_generations
+        WHERE lease_id = ? LIMIT 1
+      `).get(lease.leaseId) as { job_id: string; lease_generation: number } | undefined;
+      if (blockedBinding !== undefined &&
+          (blockedBinding.job_id !== lease.jobId || blockedBinding.lease_generation !== lease.generation)) {
+        throw new RemoteWorkerOutboxInputError();
+      }
       const existing = this.#database.prepare(`
         SELECT * FROM remote_worker_outbox
         WHERE lease_id = ? AND kind = ? AND dedupe_key = ?
@@ -386,6 +502,8 @@ export class RemoteWorkerOutbox {
         }
         return entry(existing);
       }
+      const blockedCode = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
+      if (blockedCode !== null) throw new RemoteWorkerOutboxLeaseBlockedError(blockedCode);
       const next = this.#database.prepare(`
         SELECT COALESCE(MAX(local_sequence), 0) + 1 AS local_sequence
         FROM remote_worker_outbox WHERE lease_id = ? AND kind = ?
@@ -406,6 +524,56 @@ export class RemoteWorkerOutbox {
       if (inserted === undefined) throw new Error("The Remote Worker outbox insert returned no row.");
       return entry(inserted);
     });
+  }
+
+  #blockedCode(jobId: string, leaseId: string, generation: number): string | null {
+    const row = this.#database.prepare(`
+      SELECT blocked_code FROM remote_worker_blocked_generations
+      WHERE job_id = ? AND lease_id = ? AND lease_generation = ?
+    `).get(jobId, leaseId, generation) as { blocked_code: string } | undefined;
+    return row?.blocked_code ?? null;
+  }
+
+  #blockInTransaction(lease: z.infer<typeof leaseSchema>, code: string): void {
+    const rowBinding = this.#database.prepare(`
+      SELECT job_id, lease_generation FROM remote_worker_outbox WHERE lease_id = ? LIMIT 1
+    `).get(lease.leaseId) as { job_id: string; lease_generation: number } | undefined;
+    const blockBinding = this.#database.prepare(`
+      SELECT job_id, lease_generation FROM remote_worker_blocked_generations
+      WHERE lease_id = ? LIMIT 1
+    `).get(lease.leaseId) as { job_id: string; lease_generation: number } | undefined;
+    if ([rowBinding, blockBinding].some((binding) => binding !== undefined &&
+        (binding.job_id !== lease.jobId || binding.lease_generation !== lease.generation))) {
+      throw new RemoteWorkerOutboxInputError();
+    }
+    const blockedAt = this.now();
+    if (!Number.isSafeInteger(blockedAt) || blockedAt < 0) throw new RemoteWorkerOutboxInputError();
+    this.#database.prepare(`
+      INSERT INTO remote_worker_blocked_generations(
+        job_id, lease_id, lease_generation, blocked_code, blocked_at_ms
+      ) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id, lease_id, lease_generation) DO NOTHING
+    `).run(lease.jobId, lease.leaseId, lease.generation, code, blockedAt);
+    const storedCode = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
+    if (storedCode === null) throw new RemoteWorkerOutboxIntegrityError();
+    this.#database.prepare(`
+      UPDATE remote_worker_outbox SET state = 'blocked', blocked_code = ?
+      WHERE job_id = ? AND lease_id = ? AND lease_generation = ?
+        AND state IN ('pending', 'inflight')
+    `).run(storedCode, lease.jobId, lease.leaseId, lease.generation);
+  }
+
+  async #serializeDelivery<Value>(key: string, operation: () => Promise<Value>): Promise<Value> {
+    const previous = this.#deliveries.get(key);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.#deliveries.set(key, current);
+    try {
+      if (previous !== undefined) await previous;
+      return await operation();
+    } finally {
+      release();
+      if (this.#deliveries.get(key) === current) this.#deliveries.delete(key);
+    }
   }
 
   #transaction<Value>(operation: () => Value): Value {
