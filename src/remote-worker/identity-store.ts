@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import { link, lstat, mkdir, open, readdir, unlink, type FileHandle } from "node:fs/promises";
@@ -56,6 +57,54 @@ function posixIdentity(): bigint {
 function samePinnedMetadata(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev && left.ino === right.ino &&
     left.uid === right.uid && left.mode === right.mode;
+}
+
+function runMacOsFileTool(executable: "/bin/chmod" | "/bin/ls", args: string[]): Promise<string> {
+  return new Promise((resolveResult, rejectResult) => {
+    execFile(executable, args, { encoding: "utf8", maxBuffer: 64 * 1024 }, (error, stdout) => {
+      if (error !== null) {
+        rejectResult(storeError());
+        return;
+      }
+      resolveResult(stdout);
+    });
+  });
+}
+
+async function extendedAclState(path: string): Promise<"absent" | "missing" | "present"> {
+  if (process.platform !== "darwin") return "absent";
+  let listing: string;
+  try {
+    listing = await runMacOsFileTool("/bin/ls", ["-lde", path]);
+  } catch {
+    try {
+      await lstat(path);
+    } catch (error) {
+      if (isFileSystemError(error, "ENOENT")) return "missing";
+    }
+    throw storeError();
+  }
+  return /(?:^|\n)\s+\d+:\s/u.test(listing) ? "present" : "absent";
+}
+
+async function requireNoExtendedAcl(path: string): Promise<void> {
+  if (await extendedAclState(path) !== "absent") throw storeError();
+}
+
+async function clearExtendedAcl(path: string): Promise<void> {
+  if (process.platform !== "darwin") return;
+  await runMacOsFileTool("/bin/chmod", ["-N", path]);
+  await requireNoExtendedAcl(path);
+}
+
+export function isSecureStateDirectoryAncestor(
+  ownerUserId: bigint,
+  mode: bigint,
+  effectiveUserId: bigint,
+): boolean {
+  if (ownerUserId === 0n && (mode & 0o1000n) !== 0n) return true;
+  return (ownerUserId === 0n || ownerUserId === effectiveUserId) &&
+    (mode & 0o022n) === 0n;
 }
 
 async function closeHandles(handles: readonly FileHandle[]): Promise<void> {
@@ -155,15 +204,17 @@ async function openStateDirectoryChain(
         throw storeError();
       }
       stateChain.push(pinned);
+      await requireNoExtendedAcl(path);
+      await requirePinnedDirectory(pinned);
       const stateDirectoryEntry = index === prefixes.length - 1;
       if (stateDirectoryEntry) {
         if (pinned.metadata.uid !== effectiveUserId ||
           (pinned.metadata.mode & 0o7777n) !== 0o700n) throw storeError();
-      } else if ((pinned.metadata.mode & 0o022n) !== 0n) {
-        const rootOwnedSticky = pinned.metadata.uid === 0n &&
-          (pinned.metadata.mode & 0o1000n) !== 0n;
-        if (!rootOwnedSticky) throw storeError();
-      }
+      } else if (!isSecureStateDirectoryAncestor(
+        pinned.metadata.uid,
+        pinned.metadata.mode,
+        effectiveUserId,
+      )) throw storeError();
     }
     await requirePinnedStateChain(stateChain);
     return stateChain;
@@ -198,8 +249,15 @@ async function openPinnedStore(stateDirectory: string): Promise<PinnedStore> {
     }
     await requirePinnedStateChain(stateChain);
     identityHandle = await openDirectory(identityPath);
-    if (created) await identityHandle.chmod(0o700);
+    const openedIdentityDirectory = await pinDirectory(identityPath, identityHandle);
+    if (created) {
+      await clearExtendedAcl(identityPath);
+      await identityHandle.chmod(0o700);
+      await requirePinnedDirectory(openedIdentityDirectory);
+    }
     const identityDirectory = await pinDirectory(identityPath, identityHandle);
+    await requireNoExtendedAcl(identityPath);
+    await requirePinnedDirectory(identityDirectory);
     if (identityDirectory.metadata.uid !== effectiveUserId ||
       (identityDirectory.metadata.mode & 0o7777n) !== 0o700n) throw storeError();
     const store = Object.freeze({ stateChain, identityDirectory, effectiveUserId });
@@ -259,15 +317,33 @@ async function securePathMetadata(
   fileName: string,
 ): Promise<BigIntStats | null> {
   await requirePinnedStore(store);
+  const path = join(store.identityDirectory.path, fileName);
   let metadata: BigIntStats;
   try {
-    metadata = await lstat(join(store.identityDirectory.path, fileName), { bigint: true });
+    metadata = await lstat(path, { bigint: true });
   } catch (error) {
     await requirePinnedStore(store);
     if (isFileSystemError(error, "ENOENT")) return null;
     throw storeError();
   }
   await requirePinnedStore(store);
+  const aclState = await extendedAclState(path);
+  if (aclState === "missing") {
+    await requirePinnedStore(store);
+    return null;
+  }
+  if (aclState === "present") throw storeError();
+  let verified: BigIntStats;
+  try {
+    verified = await lstat(path, { bigint: true });
+  } catch (error) {
+    await requirePinnedStore(store);
+    if (isFileSystemError(error, "ENOENT")) return null;
+    throw storeError();
+  }
+  await requirePinnedStore(store);
+  if (!samePinnedMetadata(metadata, verified) || metadata.size !== verified.size) throw storeError();
+  metadata = verified;
   if (!validSecretFileMetadata(metadata, store.effectiveUserId)) throw storeError();
   return metadata;
 }
@@ -478,10 +554,15 @@ async function publishSecretFile(
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600,
     );
+    await clearExtendedAcl(temporaryPath);
     await handle.chmod(0o600);
     temporaryMetadata = await handle.stat({ bigint: true });
     if (!validSecretFileMetadata(temporaryMetadata, store.effectiveUserId) ||
       temporaryMetadata.nlink !== 1n) throw storeError();
+    const temporaryPathMetadata = await securePathMetadata(store, temporaryName);
+    if (temporaryPathMetadata === null ||
+      !samePinnedMetadata(temporaryMetadata, temporaryPathMetadata) ||
+      temporaryMetadata.nlink !== temporaryPathMetadata.nlink) throw storeError();
     await handle.writeFile(contents);
     await handle.sync();
     const written = await handle.stat({ bigint: true });

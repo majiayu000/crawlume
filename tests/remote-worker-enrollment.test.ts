@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { createPublicKey, generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import {
   chmod,
@@ -24,6 +25,7 @@ import {
 } from "../src/remote-worker/enrollment.js";
 import {
   RemoteWorkerIdentityStoreError,
+  isSecureStateDirectoryAncestor,
   loadOrCreateWorkerIdentity,
   loadWorkerId,
   storeWorkerId,
@@ -46,6 +48,23 @@ async function identityDirectory(stateDirectory: string): Promise<string> {
   await mkdir(directory, { mode: 0o700 });
   await chmod(directory, 0o700);
   return directory;
+}
+
+function runMacOsFileTool(executable: "/bin/chmod" | "/bin/ls", args: string[]): Promise<string> {
+  return new Promise((resolveResult, rejectResult) => {
+    execFile(executable, args, { encoding: "utf8", maxBuffer: 64 * 1024 }, (error, stdout) => {
+      if (error !== null) {
+        rejectResult(error);
+        return;
+      }
+      resolveResult(stdout);
+    });
+  });
+}
+
+async function hasExtendedAcl(path: string): Promise<boolean> {
+  const listing = await runMacOsFileTool("/bin/ls", ["-lde", path]);
+  return /(?:^|\n)\s+\d+:\s/u.test(listing);
 }
 
 afterEach(async () => {
@@ -115,6 +134,15 @@ describe("in-memory Remote Worker identity", () => {
 });
 
 describe("filesystem Remote Worker identity", () => {
+  it("accepts only root-owned or effective-user-owned safe ancestors", () => {
+    expect(isSecureStateDirectoryAncestor(0n, 0o755n, 501n)).toBe(true);
+    expect(isSecureStateDirectoryAncestor(501n, 0o755n, 501n)).toBe(true);
+    expect(isSecureStateDirectoryAncestor(0n, 0o1777n, 501n)).toBe(true);
+    expect(isSecureStateDirectoryAncestor(502n, 0o755n, 501n)).toBe(false);
+    expect(isSecureStateDirectoryAncestor(501n, 0o775n, 501n)).toBe(false);
+    expect(isSecureStateDirectoryAncestor(502n, 0o1777n, 501n)).toBe(false);
+  });
+
   it("creates mode-0600 PKCS8 once and reloads the same signing identity", async () => {
     const stateDirectory = await temporaryStateDirectory();
     const first = await loadOrCreateWorkerIdentity(stateDirectory);
@@ -123,6 +151,10 @@ describe("filesystem Remote Worker identity", () => {
 
     expect((await lstat(directory)).mode & 0o777).toBe(0o700);
     expect((await lstat(privateKeyPath)).mode & 0o777).toBe(0o600);
+    if (process.platform === "darwin") {
+      expect(await hasExtendedAcl(directory)).toBe(false);
+      expect(await hasExtendedAcl(privateKeyPath)).toBe(false);
+    }
     const privateKeyPkcs8 = await readFile(privateKeyPath);
     expect(InMemoryWorkerIdentity.fromPkcs8Der(privateKeyPkcs8).publicKeySpki)
       .toBe(first.identity.publicKeySpki);
@@ -144,6 +176,35 @@ describe("filesystem Remote Worker identity", () => {
       publicKey,
       Buffer.from(second.identity.signSessionChallenge(challenge, payload), "base64url"),
     )).toBe(true);
+  });
+
+  it("rejects a mode-safe identity inherited from a readable macOS ACL", async () => {
+    if (process.platform !== "darwin") return;
+    const stateDirectory = await temporaryStateDirectory();
+    await runMacOsFileTool("/bin/chmod", [
+      "+a",
+      "everyone allow read,readattr,readextattr,readsecurity,file_inherit,directory_inherit",
+      stateDirectory,
+    ]);
+    const directory = await identityDirectory(stateDirectory);
+    const privateKeyPath = join(directory, "private-key.pk8");
+    const keys = generateKeyPairSync("ed25519");
+    const privateKeyPkcs8 = keys.privateKey.export({ format: "der", type: "pkcs8" });
+    try {
+      await writeFile(privateKeyPath, privateKeyPkcs8, { mode: 0o600 });
+      await chmod(privateKeyPath, 0o600);
+
+      expect((await lstat(stateDirectory)).mode & 0o777).toBe(0o700);
+      expect((await lstat(directory)).mode & 0o777).toBe(0o700);
+      expect((await lstat(privateKeyPath)).mode & 0o777).toBe(0o600);
+      expect(await hasExtendedAcl(stateDirectory)).toBe(true);
+      expect(await hasExtendedAcl(directory)).toBe(true);
+      expect(await hasExtendedAcl(privateKeyPath)).toBe(true);
+      await expect(loadOrCreateWorkerIdentity(stateDirectory))
+        .rejects.toThrow(RemoteWorkerIdentityStoreError);
+    } finally {
+      privateKeyPkcs8.fill(0);
+    }
   });
 
   it("publishes one identity when creators race", async () => {
@@ -365,10 +426,10 @@ describe("filesystem Remote Worker identity", () => {
     await expect(loadWorkerId(stateDirectory)).resolves.toBeNull();
     await storeWorkerId(stateDirectory, workerId);
     await expect(loadWorkerId(stateDirectory)).resolves.toBe(workerId);
-    expect((await lstat(join(stateDirectory, "worker-identity", "worker-id"))).mode & 0o777)
-      .toBe(0o600);
-    expect(await readFile(join(stateDirectory, "worker-identity", "worker-id"), "utf8"))
-      .toBe(`${workerId}\n`);
+    const workerIdPath = join(stateDirectory, "worker-identity", "worker-id");
+    expect((await lstat(workerIdPath)).mode & 0o777).toBe(0o600);
+    if (process.platform === "darwin") expect(await hasExtendedAcl(workerIdPath)).toBe(false);
+    expect(await readFile(workerIdPath, "utf8")).toBe(`${workerId}\n`);
 
     await expect(storeWorkerId(stateDirectory, workerId)).resolves.toBeUndefined();
     await expect(storeWorkerId(
