@@ -125,13 +125,16 @@ describe("filesystem Remote Worker identity", () => {
     expect((await lstat(privateKeyPath)).mode & 0o777).toBe(0o600);
     const privateKeyPkcs8 = await readFile(privateKeyPath);
     expect(InMemoryWorkerIdentity.fromPkcs8Der(privateKeyPkcs8).publicKeySpki)
-      .toBe(first.publicKeySpki);
+      .toBe(first.identity.publicKeySpki);
+    expect(first.createdByThisCall).toBe(true);
+    expect(Object.isFrozen(first)).toBe(true);
 
     const second = await loadOrCreateWorkerIdentity(stateDirectory);
-    expect(second.publicKeySpki).toBe(first.publicKeySpki);
+    expect(second.identity.publicKeySpki).toBe(first.identity.publicKeySpki);
+    expect(second.createdByThisCall).toBe(false);
     const payload = workerSigningPayload(challenge);
     const publicKey = createPublicKey({
-      key: Buffer.from(second.publicKeySpki, "base64url"),
+      key: Buffer.from(second.identity.publicKeySpki, "base64url"),
       format: "der",
       type: "spki",
     });
@@ -139,7 +142,7 @@ describe("filesystem Remote Worker identity", () => {
       null,
       Buffer.from(payload, "utf8"),
       publicKey,
-      Buffer.from(second.signSessionChallenge(challenge, payload), "base64url"),
+      Buffer.from(second.identity.signSessionChallenge(challenge, payload), "base64url"),
     )).toBe(true);
   });
 
@@ -149,11 +152,11 @@ describe("filesystem Remote Worker identity", () => {
       Array.from({ length: 12 }, async () => loadOrCreateWorkerIdentity(stateDirectory)),
     );
 
-    expect(new Set(identities.map(({ publicKeySpki }) => publicKeySpki))).toHaveLength(1);
-    expect(await loadOrCreateWorkerIdentity(stateDirectory)).toHaveProperty(
-      "publicKeySpki",
-      identities[0]?.publicKeySpki,
-    );
+    expect(new Set(identities.map(({ identity }) => identity.publicKeySpki))).toHaveLength(1);
+    expect(identities.filter(({ createdByThisCall }) => createdByThisCall)).toHaveLength(1);
+    const reloaded = await loadOrCreateWorkerIdentity(stateDirectory);
+    expect(reloaded.identity.publicKeySpki).toBe(identities[0]?.identity.publicKeySpki);
+    expect(reloaded.createdByThisCall).toBe(false);
     const directory = join(stateDirectory, "worker-identity");
     expect((await lstat(join(directory, "private-key.pk8"))).nlink).toBe(1);
     expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);

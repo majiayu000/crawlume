@@ -465,7 +465,7 @@ async function publishSecretFile(
   store: PinnedStore,
   targetFileName: string,
   contents: Uint8Array,
-): Promise<void> {
+): Promise<boolean> {
   const temporaryName = temporaryFileName(targetFileName);
   const temporaryPath = join(store.identityDirectory.path, temporaryName);
   let handle: FileHandle | undefined;
@@ -511,18 +511,18 @@ async function publishSecretFile(
   }
 
   let publicationFailed = false;
+  let createdByThisCall = false;
   try {
     await requirePinnedStore(store);
-    let linked = false;
     try {
       await link(temporaryPath, join(store.identityDirectory.path, targetFileName));
-      linked = true;
+      createdByThisCall = true;
     } catch (error) {
       if (!isFileSystemError(error, "EEXIST") && !isFileSystemError(error, "ENOENT")) throw error;
       if (await securePathMetadata(store, targetFileName) === null) throw error;
     }
     await syncPinnedDirectory(store.identityDirectory);
-    if (!linked) await removeOwnTemporaryFile(store, temporaryName, temporaryMetadata);
+    if (!createdByThisCall) await removeOwnTemporaryFile(store, temporaryName, temporaryMetadata);
     if (!await cleanupPublishedTemporaryFiles(store, targetFileName)) throw storeError();
     const finalMetadata = await securePathMetadata(store, targetFileName);
     if (finalMetadata === null || finalMetadata.nlink !== 1n) throw storeError();
@@ -542,6 +542,7 @@ async function publishSecretFile(
     }
     if (publicationFailed || cleanupFailed) throw storeError();
   }
+  return createdByThisCall;
 }
 
 function identityFromPkcs8(pkcs8Der: Buffer): InMemoryWorkerIdentity {
@@ -556,7 +557,7 @@ function identityFromPkcs8(pkcs8Der: Buffer): InMemoryWorkerIdentity {
 
 export async function loadOrCreateWorkerIdentity(
   stateDirectory: string,
-): Promise<InMemoryWorkerIdentity> {
+): Promise<Readonly<{ identity: InMemoryWorkerIdentity; createdByThisCall: boolean }>> {
   return withPinnedStore(stateDirectory, async (store) => {
     await cleanupPublishedTemporaryFiles(store, privateKeyFileName);
     const existing = await readStableSecureFile(
@@ -564,13 +565,19 @@ export async function loadOrCreateWorkerIdentity(
       privateKeyFileName,
       maximumPrivateKeyBytes,
     );
-    if (existing !== null) return identityFromPkcs8(existing);
+    if (existing !== null) {
+      return Object.freeze({
+        identity: identityFromPkcs8(existing),
+        createdByThisCall: false,
+      });
+    }
 
     let generated: Buffer | undefined;
+    let createdByThisCall: boolean;
     try {
       const keys = generateKeyPairSync("ed25519");
       generated = keys.privateKey.export({ format: "der", type: "pkcs8" });
-      await publishSecretFile(store, privateKeyFileName, generated);
+      createdByThisCall = await publishSecretFile(store, privateKeyFileName, generated);
     } catch {
       throw storeError();
     } finally {
@@ -582,7 +589,7 @@ export async function loadOrCreateWorkerIdentity(
       maximumPrivateKeyBytes,
     );
     if (persisted === null) throw storeError();
-    return identityFromPkcs8(persisted);
+    return Object.freeze({ identity: identityFromPkcs8(persisted), createdByThisCall });
   });
 }
 
