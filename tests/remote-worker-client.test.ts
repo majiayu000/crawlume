@@ -295,6 +295,19 @@ describe("Remote Worker HTTP client", () => {
     expect(String(calls[0]?.input)).toContain(`/v1/workers/${workerId}/claims`);
   });
 
+  it("rejects a claimed Job that is not running", async () => {
+    const { fetcher } = queuedFetch(
+      jsonResponse({ request_id: requestId, job: workerJob("completed"), lease: leaseResponse() }),
+    );
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.claim({ workerId, sessionToken, waitMs: 0 }))
+      .rejects.toMatchObject({
+        name: "RemoteWorkerOutcomeUnknownError",
+        metadata: { operation: "claim", workerId },
+      });
+  });
+
   it("heartbeats and reports both terminal outcomes with the exact fenced generation", async () => {
     const { calls, fetcher } = queuedFetch(
       jsonResponse({ request_id: requestId, lease: leaseResponse() }),

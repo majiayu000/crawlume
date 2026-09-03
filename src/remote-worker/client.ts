@@ -573,7 +573,9 @@ export class RemoteWorkerClient {
         );
         if (result.status === 204) return null;
         const parsed = response(claimResponseSchema, result.body);
-        if (parsed.lease.job_id !== parsed.job.id) throw new RemoteWorkerProtocolError();
+        if (parsed.lease.job_id !== parsed.job.id || parsed.job.status !== "running") {
+          throw new RemoteWorkerProtocolError();
+        }
         return Object.freeze({
           requestId: parsed.request_id,
           job: job(parsed.job),
