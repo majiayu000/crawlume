@@ -17,9 +17,13 @@ const userId = "33333333-3333-4333-8333-333333333333";
 const requestId = "44444444-4444-4444-8444-444444444444";
 const jobId = "55555555-5555-4555-8555-555555555555";
 const leaseId = "66666666-6666-4666-8666-666666666666";
+const eventId = "77777777-7777-4777-8777-777777777777";
+const publicationId = "88888888-8888-4888-8888-888888888888";
+const artifactId = "99999999-9999-4999-8999-999999999999";
 const enrollmentToken = `dya_we_${"E".repeat(43)}`;
 const sessionToken = "aaa.bbb.ccc";
 const challenge = `dya_wc_${"C".repeat(43)}`;
+const contentHash = Buffer.alloc(32, 7).toString("base64url");
 
 type FetchCall = Readonly<{ input: URL | RequestInfo; init?: RequestInit }>;
 
@@ -93,6 +97,56 @@ function leaseResponse() {
     generation: 3,
     heartbeat_deadline: "2026-09-03T01:00:30.000Z",
     lease_deadline: "2026-09-03T01:05:00.000Z",
+  };
+}
+
+function eventResponse() {
+  return {
+    request_id: requestId,
+    event: {
+      id: eventId,
+      job_id: jobId,
+      lease_id: leaseId,
+      lease_generation: 3,
+      local_sequence: 1,
+      sequence: 9,
+      event_type: "page.fetched",
+      page_status: 200,
+      error_code: null,
+      provider: "http",
+      byte_count: 123,
+      duration_ms: 45,
+      content_hash: contentHash,
+      usage: { attempts: 1, bytes: 123 },
+      occurred_at: "2026-09-03T01:00:10.000Z",
+      recorded_at: "2026-09-03T01:00:11.000Z",
+    },
+  };
+}
+
+function publicationResponse() {
+  return {
+    request_id: requestId,
+    publication: {
+      id: publicationId,
+      job_id: jobId,
+      lease_id: leaseId,
+      lease_generation: 3,
+      local_sequence: 1,
+      sequence: 4,
+      completeness: "complete",
+      recorded_at: "2026-09-03T01:00:12.000Z",
+      artifact: {
+        id: artifactId,
+        version: 1,
+        content_hash: contentHash,
+        byte_count: 123,
+        media_type: "text/markdown",
+        storage: "worker_local",
+        object_key: null,
+        created_at: "2026-09-03T01:00:12.000Z",
+      },
+    },
   };
 }
 
@@ -277,6 +331,199 @@ describe("Remote Worker HTTP client", () => {
       { generation: 3, status: "completed", result_completeness: "partial", error_code: null },
       { generation: 3, status: "failed", result_completeness: null, error_code: "PROVIDER_FAILED" },
     ]);
+  });
+
+  it("appends Events and publishes Artifact metadata as exact replayable one-shot requests", async () => {
+    const controller = new AbortController();
+    const { calls, fetcher } = queuedFetch(
+      jsonResponse(eventResponse()),
+      jsonResponse(publicationResponse()),
+    );
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    const event = await client.appendEvent({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      localSequence: 1,
+      eventType: " page.fetched ",
+      pageStatus: 200,
+      errorCode: null,
+      provider: " http ",
+      byteCount: 123,
+      durationMs: 45,
+      contentHash,
+      usage: { bytes: 123, attempts: 1 },
+      occurredAt: new Date("2026-09-03T01:00:10.000Z"),
+      signal: controller.signal,
+    });
+    const publication = await client.publishResult({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      localSequence: 1,
+      contentHash,
+      byteCount: 123,
+      mediaType: " text/markdown ",
+      completeness: "complete",
+      storage: "worker_local",
+    });
+
+    expect(event).toMatchObject({
+      requestId,
+      event: {
+        id: eventId,
+        jobId,
+        leaseId,
+        leaseGeneration: 3,
+        localSequence: 1,
+        eventType: "page.fetched",
+        usage: { attempts: 1, bytes: 123 },
+      },
+    });
+    expect(publication).toMatchObject({
+      requestId,
+      publication: {
+        id: publicationId,
+        jobId,
+        leaseId,
+        leaseGeneration: 3,
+        localSequence: 1,
+        artifact: {
+          id: artifactId,
+          contentHash,
+          byteCount: 123,
+          mediaType: "text/markdown",
+          storage: "worker_local",
+          objectKey: null,
+        },
+      },
+    });
+    expect(calls.map((call) => String(call.input))).toEqual([
+      `https://control.example/v1/job-leases/${leaseId}/events`,
+      `https://control.example/v1/job-leases/${leaseId}/publications`,
+    ]);
+    expect(calls.map((call) => call.init?.method)).toEqual(["POST", "POST"]);
+    expect(calls[0]?.init).toMatchObject({
+      signal: controller.signal,
+      redirect: "error",
+      headers: { authorization: `Bearer ${sessionToken}` },
+    });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      generation: 3,
+      local_sequence: 1,
+      event_type: "page.fetched",
+      page_status: 200,
+      error_code: null,
+      provider: "http",
+      byte_count: 123,
+      duration_ms: 45,
+      content_hash: contentHash,
+      usage: { attempts: 1, bytes: 123 },
+      occurred_at: "2026-09-03T01:00:10.000Z",
+    });
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+      generation: 3,
+      local_sequence: 1,
+      content_hash: contentHash,
+      byte_count: 123,
+      media_type: "text/markdown",
+      completeness: "complete",
+      storage: "worker_local",
+    });
+  });
+
+  it("rejects uncorrelated Event and Publication success bodies without outcome-unknown wrapping", async () => {
+    const mismatchedEvent = eventResponse();
+    mismatchedEvent.event.local_sequence = 2;
+    const mismatchedPublication = publicationResponse();
+    mismatchedPublication.publication.artifact.byte_count = 124;
+    const { fetcher } = queuedFetch(
+      jsonResponse(mismatchedEvent),
+      jsonResponse(mismatchedPublication),
+      new Error("network failed after dispatch"),
+    );
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+    const event = {
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      localSequence: 1,
+      eventType: "page.fetched",
+      pageStatus: 200,
+      errorCode: null,
+      provider: "http",
+      byteCount: 123,
+      durationMs: 45,
+      contentHash,
+      usage: { attempts: 1, bytes: 123 },
+      occurredAt: new Date("2026-09-03T01:00:10.000Z"),
+    } as const;
+
+    await expect(client.appendEvent(event)).rejects.toBeInstanceOf(RemoteWorkerProtocolError);
+    await expect(client.publishResult({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      localSequence: 1,
+      contentHash,
+      byteCount: 123,
+      mediaType: "text/markdown",
+      completeness: "complete",
+      storage: "worker_local",
+    })).rejects.toBeInstanceOf(RemoteWorkerProtocolError);
+    await expect(client.appendEvent(event)).rejects.toBeInstanceOf(RemoteWorkerTransportError);
+
+    const controller = new AbortController();
+    const reason = new Error("caller stopped replayable submission");
+    const abortingClient = new RemoteWorkerClient("https://control.example/v1/", {
+      fetch: (async () => {
+        controller.abort(reason);
+        throw reason;
+      }) as typeof fetch,
+    });
+    await expect(abortingClient.appendEvent({ ...event, signal: controller.signal }))
+      .rejects.toBe(reason);
+  });
+
+  it("uses the documented Event and Publication status allowlists", async () => {
+    const undocumented = jsonResponse(problem({ status: 429 }), 429, "application/problem+json");
+    const fenced = jsonResponse(problem(), 409, "application/problem+json");
+    const { fetcher } = queuedFetch(undocumented, fenced);
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.appendEvent({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      localSequence: 1,
+      eventType: "page.fetched",
+      pageStatus: 200,
+      errorCode: null,
+      provider: null,
+      byteCount: 0,
+      durationMs: 0,
+      contentHash: null,
+      usage: {},
+      occurredAt: new Date("2026-09-03T01:00:10.000Z"),
+    })).rejects.toBeInstanceOf(RemoteWorkerProtocolError);
+    await expect(client.publishResult({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      localSequence: 1,
+      contentHash,
+      byteCount: 123,
+      mediaType: "text/markdown",
+      completeness: "complete",
+      storage: "worker_local",
+    })).rejects.toMatchObject({ status: 409, code: "JOB_LEASE_FENCED" });
   });
 
   it("validates Problem Details but exposes only non-sensitive error metadata", async () => {

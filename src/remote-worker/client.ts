@@ -24,7 +24,6 @@ const capabilityManifestSchema = z.record(z.string(), z.unknown()).refine((value
     return false;
   }
 });
-
 const workerSchema = z.object({
   id: uuidSchema,
   project_id: uuidSchema,
@@ -37,12 +36,10 @@ const workerSchema = z.object({
   created_at: dateTimeSchema,
   disabled_at: dateTimeSchema.nullable(),
 }).strict();
-
 const workerResponseSchema = z.object({
   request_id: uuidSchema,
   worker: workerSchema,
 }).strict();
-
 const challengeResponseSchema = z.object({
   request_id: uuidSchema,
   challenge: z.object({
@@ -52,7 +49,6 @@ const challengeResponseSchema = z.object({
     expires_at: dateTimeSchema,
   }).strict(),
 }).strict();
-
 const sessionResponseSchema = z.object({
   request_id: uuidSchema,
   session: z.object({
@@ -60,7 +56,6 @@ const sessionResponseSchema = z.object({
     expires_at: dateTimeSchema,
   }).strict(),
 }).strict();
-
 const leaseSchema = z.object({
   id: uuidSchema,
   job_id: uuidSchema,
@@ -68,7 +63,6 @@ const leaseSchema = z.object({
   heartbeat_deadline: dateTimeSchema,
   lease_deadline: dateTimeSchema,
 }).strict();
-
 const jobSchema = z.object({
   id: uuidSchema,
   type: z.string(),
@@ -95,22 +89,57 @@ const jobSchema = z.object({
   result_completeness: z.enum(["complete", "partial"]).nullable(),
   error_code: z.string().nullable(),
 }).strict();
-
 const claimResponseSchema = z.object({
   request_id: uuidSchema,
   job: jobSchema,
   lease: leaseSchema,
 }).strict();
-
 const heartbeatResponseSchema = z.object({
   request_id: uuidSchema,
   lease: leaseSchema,
 }).strict();
-
 const completionResponseSchema = z.object({
   request_id: uuidSchema,
   job: jobSchema,
 }).strict();
+const contentHashSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u).refine((value) => Buffer.from(value, "base64url").toString("base64url") === value);
+const usageSchema = z.record(z.string(), z.number().finite().nonnegative()).refine((value) => {
+  const entries = Object.entries(value);
+  return entries.length <= 32 && entries.every(([key]) => key.trim().length > 0 && key.length <= 64);
+});
+const eventInputSchema = z.object({
+  localSequence: z.number().int().positive().safe(), eventType: z.string().trim().min(1).max(64),
+  pageStatus: z.number().int().min(100).max(599).nullable(), errorCode: z.string().trim().min(1).max(128).nullable(),
+  provider: z.string().trim().min(1).max(128).nullable(),
+  byteCount: z.number().int().nonnegative().safe(), durationMs: z.number().int().nonnegative().safe(),
+  contentHash: contentHashSchema.nullable(), usage: usageSchema, occurredAt: z.date(),
+}).strict();
+const publicationInputSchema = z.object({
+  localSequence: z.number().int().positive().safe(), contentHash: contentHashSchema,
+  byteCount: z.number().int().nonnegative().safe(), mediaType: z.string().trim().min(1).max(255),
+  completeness: z.enum(["complete", "partial"]), storage: z.enum(["worker_local", "cloud_object"]),
+}).strict();
+const eventSchema = z.object({
+  id: uuidSchema, job_id: uuidSchema, lease_id: uuidSchema, lease_generation: generationSchema,
+  local_sequence: z.number().int().positive().safe(), sequence: z.number().int().positive().safe(),
+  event_type: z.string().min(1).max(64), page_status: z.number().int().min(100).max(599).nullable(), error_code: z.string().min(1).max(128).nullable(),
+  provider: z.string().min(1).max(128).nullable(),
+  byte_count: z.number().int().nonnegative().safe(), duration_ms: z.number().int().nonnegative().safe(),
+  content_hash: contentHashSchema.nullable(), usage: usageSchema,
+  occurred_at: dateTimeSchema, recorded_at: dateTimeSchema,
+}).strict();
+const eventResponseSchema = z.object({ request_id: uuidSchema, event: eventSchema }).strict();
+const artifactSchema = z.object({
+  id: uuidSchema, version: z.number().int().positive().safe(), content_hash: contentHashSchema,
+  byte_count: z.number().int().nonnegative().safe(), media_type: z.string().min(1).max(255),
+  storage: z.enum(["worker_local", "cloud_object"]), object_key: z.string().nullable(), created_at: dateTimeSchema,
+}).strict();
+const publicationSchema = z.object({
+  id: uuidSchema, job_id: uuidSchema, lease_id: uuidSchema, lease_generation: generationSchema,
+  local_sequence: z.number().int().positive().safe(), sequence: z.number().int().positive().safe(),
+  completeness: z.enum(["complete", "partial"]), recorded_at: dateTimeSchema, artifact: artifactSchema,
+}).strict();
+const publicationResponseSchema = z.object({ request_id: uuidSchema, publication: publicationSchema }).strict();
 
 const problemSchema = z.object({
   type: z.string().url(),
@@ -145,6 +174,8 @@ type RemoteWorkerOperation =
   | "session"
   | "claim"
   | "heartbeat"
+  | "event"
+  | "publication"
   | "complete";
 
 const operationContracts: Readonly<Record<RemoteWorkerOperation, Readonly<{
@@ -156,6 +187,8 @@ const operationContracts: Readonly<Record<RemoteWorkerOperation, Readonly<{
   session: Object.freeze({ success: [201], errors: [400, 413, 415, 422, 500] }),
   claim: Object.freeze({ success: [200, 204], errors: [400, 401, 403, 413, 415, 422, 500] }),
   heartbeat: Object.freeze({ success: [200], errors: [400, 401, 409, 413, 415, 422, 500] }),
+  event: Object.freeze({ success: [200], errors: [400, 401, 403, 409, 413, 415, 422, 500] }),
+  publication: Object.freeze({ success: [200], errors: [400, 401, 403, 409, 413, 415, 422, 500] }),
   complete: Object.freeze({ success: [200], errors: [400, 401, 409, 413, 415, 422, 500] }),
 });
 
@@ -444,6 +477,9 @@ function job(value: z.infer<typeof jobSchema>): RemoteWorkerJob {
     errorCode: value.error_code,
   }) as RemoteWorkerJob;
 }
+function canonicalUsage(value: Readonly<Record<string, number>>): Readonly<Record<string, number>> {
+  return Object.freeze(Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))));
+}
 
 export class RemoteWorkerClient {
   readonly #baseUrl: URL;
@@ -564,6 +600,58 @@ export class RemoteWorkerClient {
       throw new RemoteWorkerProtocolError();
     }
     return Object.freeze({ requestId: parsed.request_id, lease: lease(parsed.lease) });
+  }
+
+  async appendEvent(options: Readonly<{ sessionToken: string; leaseId: string; expectedJobId: string;
+    generation: number; localSequence: number; eventType: string; pageStatus: number | null;
+    errorCode: string | null; provider: string | null; byteCount: number; durationMs: number;
+    contentHash: string | null; usage: Readonly<Record<string, number>>; occurredAt: Date;
+    signal?: AbortSignal | undefined }>) {
+    const token = input(sessionTokenSchema, options.sessionToken), leaseId = input(uuidSchema, options.leaseId);
+    const expectedJobId = input(uuidSchema, options.expectedJobId), generation = input(generationSchema, options.generation);
+    const event = input(eventInputSchema, { localSequence: options.localSequence, eventType: options.eventType, pageStatus: options.pageStatus, errorCode: options.errorCode, provider: options.provider, byteCount: options.byteCount, durationMs: options.durationMs, contentHash: options.contentHash, usage: options.usage, occurredAt: options.occurredAt }), usage = canonicalUsage(event.usage);
+    const body = { generation, local_sequence: event.localSequence, event_type: event.eventType,
+      page_status: event.pageStatus, error_code: event.errorCode, provider: event.provider,
+      byte_count: event.byteCount, duration_ms: event.durationMs, content_hash: event.contentHash,
+      usage, occurred_at: event.occurredAt.toISOString() };
+    const parsed = response(eventResponseSchema, (await this.request(
+      "event", `job-leases/${leaseId}/events`, "POST", body, token, options.signal,
+    )).body), value = parsed.event;
+    if (value.job_id !== expectedJobId || value.lease_id !== leaseId || value.lease_generation !== generation ||
+        value.local_sequence !== event.localSequence || value.event_type !== event.eventType || value.page_status !== event.pageStatus ||
+        value.error_code !== event.errorCode || value.provider !== event.provider || value.byte_count !== event.byteCount ||
+        value.duration_ms !== event.durationMs || value.content_hash !== event.contentHash || value.occurred_at !== body.occurred_at ||
+        JSON.stringify(canonicalUsage(value.usage)) !== JSON.stringify(usage)) throw new RemoteWorkerProtocolError();
+    return Object.freeze({ requestId: parsed.request_id, event: Object.freeze({ id: value.id, jobId: value.job_id,
+      leaseId: value.lease_id, leaseGeneration: value.lease_generation, localSequence: value.local_sequence,
+      sequence: value.sequence, eventType: value.event_type, pageStatus: value.page_status, errorCode: value.error_code,
+      provider: value.provider, byteCount: value.byte_count, durationMs: value.duration_ms, contentHash: value.content_hash,
+      usage: canonicalUsage(value.usage), occurredAt: new Date(value.occurred_at), recordedAt: new Date(value.recorded_at) }) });
+  }
+
+  async publishResult(options: Readonly<{ sessionToken: string; leaseId: string; expectedJobId: string;
+    generation: number; localSequence: number; contentHash: string; byteCount: number; mediaType: string;
+    completeness: "complete" | "partial"; storage: "worker_local" | "cloud_object";
+    signal?: AbortSignal | undefined }>) {
+    const token = input(sessionTokenSchema, options.sessionToken), leaseId = input(uuidSchema, options.leaseId);
+    const expectedJobId = input(uuidSchema, options.expectedJobId), generation = input(generationSchema, options.generation);
+    const publication = input(publicationInputSchema, { localSequence: options.localSequence, contentHash: options.contentHash, byteCount: options.byteCount, mediaType: options.mediaType, completeness: options.completeness, storage: options.storage });
+    const body = { generation, local_sequence: publication.localSequence, content_hash: publication.contentHash,
+      byte_count: publication.byteCount, media_type: publication.mediaType, completeness: publication.completeness, storage: publication.storage };
+    const parsed = response(publicationResponseSchema, (await this.request(
+      "publication", `job-leases/${leaseId}/publications`, "POST", body, token, options.signal,
+    )).body), value = parsed.publication;
+    if (value.job_id !== expectedJobId || value.lease_id !== leaseId || value.lease_generation !== generation ||
+        value.local_sequence !== publication.localSequence || value.completeness !== publication.completeness ||
+        value.artifact.content_hash !== publication.contentHash || value.artifact.byte_count !== publication.byteCount ||
+        value.artifact.media_type !== publication.mediaType || value.artifact.storage !== publication.storage) throw new RemoteWorkerProtocolError();
+    const artifact = value.artifact;
+    return Object.freeze({ requestId: parsed.request_id, publication: Object.freeze({ id: value.id, jobId: value.job_id,
+      leaseId: value.lease_id, leaseGeneration: value.lease_generation, localSequence: value.local_sequence,
+      sequence: value.sequence, completeness: value.completeness, recordedAt: new Date(value.recorded_at),
+      artifact: Object.freeze({ id: artifact.id, version: artifact.version, contentHash: artifact.content_hash,
+        byteCount: artifact.byte_count, mediaType: artifact.media_type, storage: artifact.storage,
+        objectKey: artifact.object_key, createdAt: new Date(artifact.created_at) }) }) });
   }
 
   async complete(options: Readonly<{
