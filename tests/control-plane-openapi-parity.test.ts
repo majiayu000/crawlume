@@ -4,10 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { z } from "zod";
 
-import { humanAuthRouterOperations } from "../src/control-plane/human-auth-http-api.js";
 import { ControlPlaneHttpApi } from "../src/control-plane/project-http-api.js";
-import { projectApiKeyRouteDefinitions } from "../src/control-plane/router-contract.js";
-import { workerBootstrapRouterOperations } from "../src/control-plane/worker-bootstrap-http-api.js";
 
 type OpenApiOperation = Readonly<{
   method: string;
@@ -236,7 +233,7 @@ describe("control-plane OpenAPI Router parity", () => {
       {
         source: projectSource, method: "DELETE", path: "/projects/{project_id}/api-keys/{key_id}",
         operationId: "revokeProjectApiKey", security: human,
-        statuses: ["204", "401", "403", "404", "500"], successStatus: "204",
+        statuses: ["204", "400", "401", "403", "404", "500"], successStatus: "204",
         successMediaType: null,
       },
       {
@@ -295,27 +292,15 @@ describe("control-plane OpenAPI Router parity", () => {
       }
     }
     expect(contracts).toHaveLength(15);
-    const projectApiKeyOperations: Pick<
-      OpenApiOperation,
-      "method" | "operationId" | "path"
-    >[] = [];
-    for (const { operations } of projectApiKeyRouteDefinitions) {
-      projectApiKeyOperations.push(...operations);
-    }
-    const implementedBootstrap: Pick<
-      OpenApiOperation,
-      "method" | "operationId" | "path"
-    >[] = [
-      ...humanAuthRouterOperations,
-      ...projectApiKeyOperations,
-      ...workerBootstrapRouterOperations,
-    ];
-    const implementedIds = new Set(implementedBootstrap.map(({ operationId }) => operationId));
-    const documentedImplemented = contracts
-      .filter(({ operationId }) => implementedIds.has(operationId))
+    const documentedPlanned = [projectSource, workerSource]
+      .flatMap((source) => openApiOperations(
+        source,
+        readFileSync(new URL(`../docs/${source}`, import.meta.url), "utf8"),
+      ))
+      .filter(({ planned }) => planned)
       .map(operationKey)
       .sort();
-    expect(implementedBootstrap.map(operationKey).sort()).toEqual(documentedImplemented);
+    expect(documentedPlanned).toEqual(contracts.map(operationKey).sort());
   });
 
   it("documents bootstrap browser bindings, one-time credentials, and idempotency boundaries", () => {
@@ -365,6 +350,22 @@ describe("control-plane OpenAPI Router parity", () => {
       minLength: 1,
       maxLength: 200,
     });
+    const projectRequestBody = objectValue("Project creation body", createProject.requestBody);
+    const projectRequestContent = objectValue(
+      "Project creation content",
+      projectRequestBody.content,
+    );
+    const projectRequestMedia = objectValue(
+      "Project creation JSON",
+      projectRequestContent["application/json"],
+    );
+    const projectRequestSchema = objectValue("Project creation schema", projectRequestMedia.schema);
+    const projectRequestProperties = objectValue(
+      "Project creation properties",
+      projectRequestSchema.properties,
+    );
+    expect(objectValue("Project slug", projectRequestProperties.slug)).not.toHaveProperty("maxLength");
+    expect(objectValue("Project name", projectRequestProperties.name)).not.toHaveProperty("maxLength");
 
     const createApiKey = operationValue(
       projectSource,
@@ -391,6 +392,18 @@ describe("control-plane OpenAPI Router parity", () => {
     });
     expect(objectValue("API Key one-time secret", apiKeyProperties.secret)).not.toHaveProperty("example");
     expect(objectValue("API Key 201 headers", apiKeyCreated.headers)).toHaveProperty("Cache-Control");
+    const listApiKeys = operationValue(
+      projectSource,
+      project,
+      "/projects/{project_id}/api-keys",
+      "GET",
+    );
+    const listApiKeyParameters = parseValue(
+      "API Key list parameters",
+      z.array(objectSchema),
+      listApiKeys.parameters,
+    );
+    expect(listApiKeyParameters).toContainEqual({ $ref: "#/components/parameters/OpaqueCursor" });
 
     const createEnrollment = operationValue(
       workerSource,
@@ -414,6 +427,19 @@ describe("control-plane OpenAPI Router parity", () => {
       .toMatchObject({ readOnly: true, "x-sensitive": true });
     expect(objectValue("one-time enrollment token", enrollmentProperties.enrollment_token))
       .not.toHaveProperty("example");
+    const consumeEnrollment = operationValue(
+      workerSource,
+      worker,
+      "/worker-enrollments",
+      "POST",
+    );
+    expect(consumeEnrollment.description).toContain("Consumes the one-time enrollment credential");
+    expect(consumeEnrollment.description).toContain("non-idempotent");
+    expect(consumeEnrollment.description).toContain("must not be retried automatically");
+    const consumeEnrollmentParameters = consumeEnrollment.parameters === undefined
+      ? []
+      : parseValue("Worker enrollment consumption parameters", z.array(objectSchema), consumeEnrollment.parameters);
+    expect(consumeEnrollmentParameters.some(({ name }) => name === "Idempotency-Key")).toBe(false);
 
     for (const [document, source, path] of [
       [project, projectSource, "/auth/oidc/begin"],
@@ -422,7 +448,9 @@ describe("control-plane OpenAPI Router parity", () => {
       const operation = operationValue(source, document, path, path.includes("begin") ? "GET" : "POST");
       const responses = objectValue(`${path} responses`, operation.responses);
       const limited = resolvedResponse(source, document, responses["429"]);
-      expect(objectValue(`${path} 429 headers`, limited.headers)).toHaveProperty("Retry-After");
+      const headers = objectValue(`${path} 429 headers`, limited.headers);
+      expect(headers).toHaveProperty("Retry-After");
+      expect(headers).toHaveProperty("Cache-Control");
     }
   });
 

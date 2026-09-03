@@ -253,6 +253,7 @@ paths:
       operationId: enrollWorker
       x-status: Planned
       summary: Consume an enrollment credential and bind an Ed25519 Worker identity
+      description: Consumes the one-time enrollment credential. This operation is non-idempotent and must not be retried automatically.
       security:
         - WorkerEnrollmentToken: []
       requestBody:
@@ -908,6 +909,7 @@ components:
       description: Too many anonymous challenge attempts for this Worker
       headers:
         Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

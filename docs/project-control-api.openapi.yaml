@@ -209,8 +209,8 @@ paths:
               additionalProperties: false
               required: [slug, name]
               properties:
-                slug: { type: string, minLength: 1, maxLength: 200, pattern: '\S' }
-                name: { type: string, minLength: 1, maxLength: 200, pattern: '\S' }
+                slug: { type: string, minLength: 1, pattern: '\S' }
+                name: { type: string, minLength: 1, pattern: '\S' }
       responses:
         '201':
           description: Newly created Project or the original Project for an identical replay
@@ -692,10 +692,7 @@ paths:
           in: path
           required: true
           schema: { $ref: '#/components/schemas/Uuid' }
-        - name: cursor
-          in: query
-          required: false
-          schema: { type: string }
+        - $ref: '#/components/parameters/OpaqueCursor'
         - name: limit
           in: query
           required: false
@@ -748,6 +745,7 @@ paths:
       responses:
         '204':
           description: The API Key was revoked
+        '400': { $ref: '#/components/responses/MalformedRequest' }
         '401': { $ref: '#/components/responses/HumanUnauthorized' }
         '403': { $ref: '#/components/responses/HumanForbidden' }
         '404': { $ref: '#/components/responses/ApiKeyNotFound' }
@@ -843,22 +841,24 @@ components:
     OrganizationSummary:
       type: object
       additionalProperties: false
-      required: [id, slug, name, kind, role]
+      required: [id, slug, name, kind, role, created_at]
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
         slug: { type: string }
         name: { type: string }
         kind: { type: string, enum: [personal, business] }
         role: { type: string, enum: [owner, admin, member] }
+        created_at: { type: string, format: date-time }
     ProjectSummary:
       type: object
       additionalProperties: false
-      required: [id, organization_id, slug, name]
+      required: [id, organization_id, slug, name, created_at]
       properties:
         id: { $ref: '#/components/schemas/Uuid' }
         organization_id: { $ref: '#/components/schemas/Uuid' }
         slug: { type: string }
         name: { type: string }
+        created_at: { type: string, format: date-time }
     CursorPagination:
       type: object
       additionalProperties: false
@@ -1383,7 +1383,7 @@ components:
       description: The human Access Token is missing, invalid, expired, or revoked
       headers:
         WWW-Authenticate:
-          schema: { type: string }
+          schema: { type: string, const: Bearer }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
