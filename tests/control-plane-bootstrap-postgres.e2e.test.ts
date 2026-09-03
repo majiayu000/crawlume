@@ -44,6 +44,7 @@ function databaseUrl(name: string): string {
 
 type TokenRequest = Readonly<{
   method: string | undefined;
+  redirect: RequestRedirect | undefined;
   headers: Headers;
   form: URLSearchParams;
 }>;
@@ -145,6 +146,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
     let providerNonce: string | null = null;
     let authorizationCodeChallenge: string | null = null;
     let tokenRequest: TokenRequest | null = null;
+    let tokenExchangeCalls = 0;
 
     const controlledFetch: typeof fetch = async (input, init) => {
       const requestedUrl = input instanceof Request
@@ -152,11 +154,16 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         : input instanceof URL
           ? input
           : new URL(input);
-      if (requestedUrl.toString() !== tokenEndpoint) return originalFetch(input, init);
+      if (requestedUrl.toString() !== tokenEndpoint) {
+        throw new Error(`Unexpected OIDC fetch request: ${requestedUrl.toString()}`);
+      }
+      tokenExchangeCalls += 1;
+      if (tokenExchangeCalls !== 1) throw new Error("OIDC token endpoint was called more than once.");
       if (providerNonce === null) throw new Error("The OIDC nonce was not captured before exchange.");
       const form = new URLSearchParams(String(init?.body ?? ""));
       tokenRequest = Object.freeze({
         method: init?.method,
+        redirect: init?.redirect,
         headers: new Headers(init?.headers),
         form,
       });
@@ -206,7 +213,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       });
       inspectionPool = new Pool({ connectionString: databaseUrl(databaseName), max: 1 });
 
-      const begin = await fetch(`${runtime.origin}/v1/auth/oidc/begin`, {
+      const begin = await originalFetch(`${runtime.origin}/v1/auth/oidc/begin`, {
         redirect: "manual",
       });
       expect(begin.status).toBe(302);
@@ -234,7 +241,9 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/u);
       expect(providerNonce).toMatch(/^[A-Za-z0-9_-]{43}$/u);
       expect(authorizationCodeChallenge).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-      const beginCookie = begin.headers.get("set-cookie");
+      const beginCookies = begin.headers.getSetCookie();
+      expect(beginCookies).toHaveLength(1);
+      const beginCookie = beginCookies[0];
       expect(beginCookie).toContain(
         `__Secure-diaoyan_oidc_state=${state}; Path=/v1/auth/oidc/callback;`,
       );
@@ -244,23 +253,28 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         throw new Error("OIDC begin did not return state browser binding material.");
       }
 
-      const callback = await fetch(
+      const callback = await originalFetch(
         `${runtime.origin}/v1/auth/oidc/callback?state=${state}&code=bootstrap-code`,
         { headers: { cookie: stateCookie } },
       );
       expect(callback.status).toBe(200);
       expect(callback.headers.get("cache-control")).toBe("no-store");
-      const callbackCookies = callback.headers.get("set-cookie");
-      expect(callbackCookies).toContain(
+      const callbackCookies = callback.headers.getSetCookie();
+      expect(callbackCookies).toHaveLength(2);
+      const clearedStateCookie = callbackCookies.find((cookie) =>
+        cookie.startsWith("__Secure-diaoyan_oidc_state=")
+      );
+      const refreshCookie = callbackCookies.find((cookie) =>
+        cookie.startsWith("__Secure-diaoyan_refresh=")
+      );
+      expect(clearedStateCookie).toContain(
         "__Secure-diaoyan_oidc_state=; Path=/v1/auth/oidc/callback; Max-Age=0;",
       );
-      expect(callbackCookies).toContain(
-        "__Secure-diaoyan_refresh=dya_rt_",
-      );
-      expect(callbackCookies).toContain(
-        "Path=/v1/auth/refresh;",
-      );
-      expect(callbackCookies).toContain("Secure; HttpOnly; SameSite=Strict");
+      expect(clearedStateCookie).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+      expect(clearedStateCookie).toContain("Secure; HttpOnly; SameSite=Lax");
+      expect(refreshCookie).toMatch(/^__Secure-diaoyan_refresh=dya_rt_[A-Za-z0-9_-]{43};/u);
+      expect(refreshCookie).toContain("Path=/v1/auth/refresh;");
+      expect(refreshCookie).toContain("Secure; HttpOnly; SameSite=Strict");
       const login = await jsonBody<LoginResponse>(callback);
       expect(login).toMatchObject({
         user: {
@@ -276,6 +290,8 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         throw new Error("The OIDC token exchange was not observed.");
       }
       expect(observedTokenRequest.method).toBe("POST");
+      expect(observedTokenRequest.redirect).toBe("error");
+      expect(tokenExchangeCalls).toBe(1);
       expect(observedTokenRequest.headers.get("content-type"))
         .toBe("application/x-www-form-urlencoded");
       expect(observedTokenRequest.headers.get("authorization")).toBeNull();
@@ -292,7 +308,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         .toBe(authorizationCodeChallenge);
 
       const humanHeaders = { authorization: `Bearer ${login.access_token}` };
-      const organizationsResponse = await fetch(`${runtime.origin}/v1/organizations`, {
+      const organizationsResponse = await originalFetch(`${runtime.origin}/v1/organizations`, {
         headers: humanHeaders,
       });
       expect(organizationsResponse.status).toBe(200);
@@ -303,7 +319,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const organizationId = organizations.organizations[0]?.id;
       if (organizationId === undefined) throw new Error("OIDC provisioning created no Organization.");
 
-      const projectResponse = await fetch(
+      const projectResponse = await originalFetch(
         `${runtime.origin}/v1/organizations/${organizationId}/projects`,
         {
           method: "POST",
@@ -320,7 +336,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const project = await jsonBody<ProjectResponse>(projectResponse);
       expect(project.project).toMatchObject({ organization_id: organizationId, slug: "bootstrap" });
 
-      const keyResponse = await fetch(
+      const keyResponse = await originalFetch(
         `${runtime.origin}/v1/projects/${project.project.id}/api-keys`,
         {
           method: "POST",
@@ -333,7 +349,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const apiKey = await jsonBody<ApiKeyResponse>(keyResponse);
       expect(apiKey.secret).toMatch(/^dya_live_[a-f0-9]{8}_[A-Za-z0-9_-]{43}$/u);
 
-      const keyListResponse = await fetch(
+      const keyListResponse = await originalFetch(
         `${runtime.origin}/v1/projects/${project.project.id}/api-keys`,
         { headers: humanHeaders },
       );
@@ -342,7 +358,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       expect(keyListText).not.toContain(apiKey.secret);
       expect(JSON.parse(keyListText)).not.toHaveProperty("secret");
 
-      const enrollmentResponse = await fetch(
+      const enrollmentResponse = await originalFetch(
         `${runtime.origin}/v1/projects/${project.project.id}/worker-enrollments`,
         {
           method: "POST",
@@ -359,7 +375,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const publicKeySpki = workerKeys.publicKey
         .export({ format: "der", type: "spki" })
         .toString("base64url");
-      const workerResponse = await fetch(`${runtime.origin}/v1/worker-enrollments`, {
+      const workerResponse = await originalFetch(`${runtime.origin}/v1/worker-enrollments`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${enrollment.enrollment_token}`,
@@ -375,7 +391,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const worker = await jsonBody<WorkerResponse>(workerResponse);
       expect(worker.worker).toMatchObject({ project_id: project.project.id, status: "active" });
 
-      const challengeResponse = await fetch(
+      const challengeResponse = await originalFetch(
         `${runtime.origin}/v1/worker-sessions/challenges`,
         {
           method: "POST",
@@ -394,7 +410,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         workerKeys.privateKey,
       ).toString("base64url");
 
-      const sessionResponse = await fetch(`${runtime.origin}/v1/worker-sessions`, {
+      const sessionResponse = await originalFetch(`${runtime.origin}/v1/worker-sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -408,7 +424,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const session = await jsonBody<SessionResponse>(sessionResponse);
       expect(session.session.token).toMatch(/^[^.]+\.[^.]+\.[^.]+$/u);
 
-      const claimResponse = await fetch(
+      const claimResponse = await originalFetch(
         `${runtime.origin}/v1/workers/${worker.worker.id}/claims`,
         {
           method: "POST",
