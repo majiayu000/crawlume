@@ -178,12 +178,34 @@ describe("filesystem Remote Worker identity", () => {
     )).toBe(true);
   });
 
+  it("allows a deny-only macOS ACL on a safe ancestor", async () => {
+    if (process.platform !== "darwin") return;
+    const ancestor = await temporaryStateDirectory();
+    await runMacOsFileTool("/bin/chmod", ["+a", "everyone deny delete", ancestor]);
+    const stateDirectory = join(ancestor, "state");
+    await mkdir(stateDirectory, { mode: 0o700 });
+    await chmod(stateDirectory, 0o700);
+
+    try {
+      const listing = await runMacOsFileTool("/bin/ls", ["-lde", ancestor]);
+      expect(listing).toMatch(/\bdeny\b/u);
+      expect(listing).not.toMatch(/\ballow\b/u);
+      const first = await loadOrCreateWorkerIdentity(stateDirectory);
+      const second = await loadOrCreateWorkerIdentity(stateDirectory);
+      expect(first.createdByThisCall).toBe(true);
+      expect(second.createdByThisCall).toBe(false);
+      expect(second.identity.publicKeySpki).toBe(first.identity.publicKeySpki);
+    } finally {
+      await runMacOsFileTool("/bin/chmod", ["-N", ancestor]);
+    }
+  });
+
   it("rejects a mode-safe identity inherited from a readable macOS ACL", async () => {
     if (process.platform !== "darwin") return;
     const stateDirectory = await temporaryStateDirectory();
     await runMacOsFileTool("/bin/chmod", [
       "+a",
-      "everyone allow read,readattr,readextattr,readsecurity,file_inherit,directory_inherit",
+      "everyone allow read,write,readattr,readextattr,readsecurity,file_inherit,directory_inherit",
       stateDirectory,
     ]);
     const directory = await identityDirectory(stateDirectory);

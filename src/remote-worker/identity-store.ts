@@ -71,7 +71,7 @@ function runMacOsFileTool(executable: "/bin/chmod" | "/bin/ls", args: string[]):
   });
 }
 
-async function extendedAclState(path: string): Promise<"absent" | "missing" | "present"> {
+async function grantingAclState(path: string): Promise<"absent" | "granting" | "missing"> {
   if (process.platform !== "darwin") return "absent";
   let listing: string;
   try {
@@ -84,17 +84,20 @@ async function extendedAclState(path: string): Promise<"absent" | "missing" | "p
     }
     throw storeError();
   }
-  return /(?:^|\n)\s+\d+:\s/u.test(listing) ? "present" : "absent";
+  const entries = listing.match(/^\s+\d+:\s.*$/gmu) ?? [];
+  return entries.every((entry) => /\bdeny\b/u.test(entry) && !/\ballow\b/u.test(entry))
+    ? "absent"
+    : "granting";
 }
 
-async function requireNoExtendedAcl(path: string): Promise<void> {
-  if (await extendedAclState(path) !== "absent") throw storeError();
+async function requireNoGrantingAcl(path: string): Promise<void> {
+  if (await grantingAclState(path) !== "absent") throw storeError();
 }
 
 async function clearExtendedAcl(path: string): Promise<void> {
   if (process.platform !== "darwin") return;
   await runMacOsFileTool("/bin/chmod", ["-N", path]);
-  await requireNoExtendedAcl(path);
+  await requireNoGrantingAcl(path);
 }
 
 export function isSecureStateDirectoryAncestor(
@@ -204,7 +207,7 @@ async function openStateDirectoryChain(
         throw storeError();
       }
       stateChain.push(pinned);
-      await requireNoExtendedAcl(path);
+      await requireNoGrantingAcl(path);
       await requirePinnedDirectory(pinned);
       const stateDirectoryEntry = index === prefixes.length - 1;
       if (stateDirectoryEntry) {
@@ -256,7 +259,7 @@ async function openPinnedStore(stateDirectory: string): Promise<PinnedStore> {
       await requirePinnedDirectory(openedIdentityDirectory);
     }
     const identityDirectory = await pinDirectory(identityPath, identityHandle);
-    await requireNoExtendedAcl(identityPath);
+    await requireNoGrantingAcl(identityPath);
     await requirePinnedDirectory(identityDirectory);
     if (identityDirectory.metadata.uid !== effectiveUserId ||
       (identityDirectory.metadata.mode & 0o7777n) !== 0o700n) throw storeError();
@@ -327,12 +330,12 @@ async function securePathMetadata(
     throw storeError();
   }
   await requirePinnedStore(store);
-  const aclState = await extendedAclState(path);
+  const aclState = await grantingAclState(path);
   if (aclState === "missing") {
     await requirePinnedStore(store);
     return null;
   }
-  if (aclState === "present") throw storeError();
+  if (aclState === "granting") throw storeError();
   let verified: BigIntStats;
   try {
     verified = await lstat(path, { bigint: true });
