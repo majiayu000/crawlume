@@ -776,6 +776,62 @@ describe("RemoteWorkerOutbox", () => {
     expect(() => reopened.getExecution(lease)).toThrow(RemoteWorkerOutboxIntegrityError); reopened.close();
   });
 
+  it("rejects a same-fingerprint row reinserted under a new primary key", () => {
+    const path = outboxPath();
+    const initial = new RemoteWorkerOutbox(path); initial.stageOutcome(lease, successOutcome()); initial.close();
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TEMP TABLE replacement AS SELECT * FROM remote_worker_outbox WHERE kind='event';
+      DELETE FROM remote_worker_outbox WHERE kind='event';
+      INSERT INTO remote_worker_outbox(job_id,lease_id,lease_generation,kind,dedupe_key,local_sequence,payload_json,
+        payload_hash,state,created_at_ms,acked_at_ms,blocked_code)
+      SELECT job_id,lease_id,lease_generation,kind,dedupe_key,local_sequence,payload_json,payload_hash,state,
+        created_at_ms,acked_at_ms,blocked_code FROM replacement`);
+    expect(database.prepare("SELECT kind FROM remote_worker_outbox ORDER BY id").all())
+      .toEqual([{ kind: "publication" }, { kind: "event" }]);
+    database.close();
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(() => reopened.getExecution(lease)).toThrow(RemoteWorkerOutboxIntegrityError);
+    expect(() => reopened.listRecoverableExecutions()).toThrow(RemoteWorkerOutboxIntegrityError);
+    reopened.close();
+  });
+
+  it("rejects primary-key-only mutation that reverses delivery order", () => {
+    const path = outboxPath();
+    const initial = new RemoteWorkerOutbox(path); initial.stageOutcome(lease, successOutcome()); initial.close();
+    const database = new DatabaseSync(path);
+    database.exec("UPDATE remote_worker_outbox SET id=-id; UPDATE remote_worker_outbox SET id=CASE kind WHEN 'publication' THEN 1 ELSE 2 END");
+    expect(database.prepare("SELECT kind FROM remote_worker_outbox ORDER BY id").all())
+      .toEqual([{ kind: "publication" }, { kind: "event" }]);
+    database.close();
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(() => reopened.getExecution(lease)).toThrow(RemoteWorkerOutboxIntegrityError);
+    expect(() => reopened.listRecoverableExecutions()).toThrow(RemoteWorkerOutboxIntegrityError);
+    reopened.close();
+  });
+
+  it("rejects outbox owner relinking even when execution plan hashes are exchanged", () => {
+    const path = outboxPath();
+    const relinkedLease = { ...failureLease, generation: lease.generation } as const;
+    const initial = new RemoteWorkerOutbox(path, () => 4_000);
+    initial.stageOutcome(lease, successOutcome()); initial.stageOutcome(relinkedLease, successOutcome()); initial.close();
+    const database = new DatabaseSync(path);
+    const plan = database.prepare("SELECT plan_hash FROM remote_worker_executions WHERE lease_id=?");
+    const first = plan.get(leaseId) as { plan_hash: Uint8Array }, second = plan.get(otherLeaseId) as { plan_hash: Uint8Array };
+    const move = database.prepare("UPDATE remote_worker_outbox SET job_id=?,lease_id=?,lease_generation=? WHERE lease_id=?");
+    database.exec("BEGIN IMMEDIATE");
+    move.run("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "dddddddd-dddd-4ddd-8ddd-dddddddddddd", 9, leaseId);
+    move.run(jobId, leaseId, lease.generation, otherLeaseId);
+    move.run(otherJobId, otherLeaseId, relinkedLease.generation, "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    database.prepare("UPDATE remote_worker_executions SET plan_hash=? WHERE lease_id=?").run(second.plan_hash, leaseId);
+    database.prepare("UPDATE remote_worker_executions SET plan_hash=? WHERE lease_id=?").run(first.plan_hash, otherLeaseId);
+    database.exec("COMMIT"); database.close();
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(() => reopened.getExecution(lease)).toThrow(RemoteWorkerOutboxIntegrityError);
+    expect(() => reopened.getExecution(relinkedLease)).toThrow(RemoteWorkerOutboxIntegrityError);
+    expect(() => reopened.listRecoverableExecutions()).toThrow(RemoteWorkerOutboxIntegrityError);
+    reopened.close();
+  });
+
   it("detects payload tampering, stores no credentials, retains acknowledgements, and fails after close", async () => {
     const path = outboxPath();
     const initial = new RemoteWorkerOutbox(path);

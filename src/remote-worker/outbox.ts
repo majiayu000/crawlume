@@ -184,8 +184,10 @@ function entry(row: OutboxRow): RemoteWorkerOutboxEntry {
   });
 }
 function planBinding(row: OutboxRow): Readonly<Record<string, string | number>> {
-  return Object.freeze({ kind: row.kind, dedupe_key: row.dedupe_key, local_sequence: row.local_sequence,
-    payload_hash: Buffer.from(row.payload_hash).toString("base64url") });
+  return Object.freeze({ id: row.id, job_id: row.job_id, lease_id: row.lease_id,
+    lease_generation: row.lease_generation, kind: row.kind, dedupe_key: row.dedupe_key,
+    local_sequence: row.local_sequence, payload_hash: Buffer.from(row.payload_hash).toString("base64url"),
+    created_at_ms: row.created_at_ms });
 }
 
 function ownedWithMode(path: string, kind: "directory" | "file", mode: number): boolean {
