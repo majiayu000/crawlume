@@ -8,6 +8,7 @@ servers:
 security:
   - WorkerSession: []
 x-max-body-bytes: 65536
+x-max-response-body-bytes: 262144
 paths:
   /workers/{worker_id}/claims:
     post:

@@ -135,6 +135,11 @@ describe("control-plane OpenAPI Router parity", () => {
     )).toThrow("malformed.openapi.yaml is not valid YAML");
   });
 
+  it("bounds decoded Worker control responses for Remote Worker clients", () => {
+    const document = loadOpenApi("worker-control-api.openapi.yaml");
+    expect(document["x-max-response-body-bytes"]).toBe(256 * 1_024);
+  });
+
   it("requires every operationId to be integrated or explicitly Planned", () => {
     const documented = [
       "project-control-api.openapi.yaml",
