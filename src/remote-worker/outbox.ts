@@ -183,6 +183,10 @@ function entry(row: OutboxRow): RemoteWorkerOutboxEntry {
     blockedCode: row.blocked_code,
   });
 }
+function planBinding(row: OutboxRow): Readonly<Record<string, string | number>> {
+  return Object.freeze({ kind: row.kind, dedupe_key: row.dedupe_key, local_sequence: row.local_sequence,
+    payload_hash: Buffer.from(row.payload_hash).toString("base64url") });
+}
 
 function ownedWithMode(path: string, kind: "directory" | "file", mode: number): boolean {
   let stat;
@@ -352,9 +356,6 @@ export class RemoteWorkerOutbox {
         input.terminal.resultCompleteness !== input.publication.completeness)) throw new RemoteWorkerOutboxInputError();
     input.event.occurredAt.toISOString();
     const terminal = encodedPayload(input.terminal), artifactHash = artifact === null ? null : createHash("sha256").update(artifact).digest();
-    const plan = encodedPayload({ version: 1, outcome: input.outcome, event_dedupe_key: input.event.dedupeKey,
-      publication_dedupe_key: input.outcome === "success" ? input.publication.dedupeKey : null,
-      terminal_json: terminal.json, artifact_hash: artifactHash?.toString("base64url") ?? null });
     return this.#transaction(() => {
       const blocked = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
       if (blocked !== null) throw new RemoteWorkerOutboxLeaseBlockedError(blocked);
@@ -363,19 +364,12 @@ export class RemoteWorkerOutbox {
         const count = this.#database.prepare("SELECT COUNT(*) AS count FROM remote_worker_outbox WHERE job_id=? AND lease_id=? AND lease_generation=?")
           .get(lease.jobId, lease.leaseId, lease.generation) as { count: number };
         if (count.count !== 0) throw new RemoteWorkerExecutionConflictError();
-      } else {
-        const same = existing.outcome === input.outcome && existing.event_dedupe_key === input.event.dedupeKey &&
-          existing.publication_dedupe_key === (input.outcome === "success" ? input.publication.dedupeKey : null) &&
-          existing.terminal_json === terminal.json && Buffer.from(existing.plan_hash).equals(plan.hash) &&
-          ((artifact === null && existing.artifact_bytes === null) || (artifact !== null && existing.artifact_bytes !== null &&
-            Buffer.from(existing.artifact_bytes).equals(artifact)));
-        if (!same) throw new RemoteWorkerExecutionConflictError();
-        this.#execution(existing);
       }
+      let eventRow: OutboxRow, publicationRow: OutboxRow | null = null;
       try {
-        this.#enqueueInTransaction(lease, "event", input.event.dedupeKey,
+        eventRow = this.#enqueueInTransaction(lease, "event", input.event.dedupeKey,
           (sequence) => this.#eventPayload(lease, input.event, sequence));
-        if (input.outcome === "success") this.#enqueueInTransaction(
+        if (input.outcome === "success") publicationRow = this.#enqueueInTransaction(
           lease, "publication", input.publication.dedupeKey,
           (sequence) => this.#publicationPayload(lease, input.publication, sequence),
         );
@@ -383,7 +377,18 @@ export class RemoteWorkerOutbox {
         if (error instanceof RemoteWorkerOutboxDedupeConflictError) throw new RemoteWorkerExecutionConflictError();
         throw error;
       }
-      if (existing !== null) return this.#execution(existing);
+      const plan = encodedPayload({ version: 1, outcome: input.outcome, event: planBinding(eventRow),
+        publication: publicationRow === null ? null : planBinding(publicationRow), terminal_json: terminal.json,
+        artifact_hash: artifactHash?.toString("base64url") ?? null });
+      if (existing !== null) {
+        const same = existing.outcome === input.outcome && existing.event_dedupe_key === input.event.dedupeKey &&
+          existing.publication_dedupe_key === (input.outcome === "success" ? input.publication.dedupeKey : null) &&
+          existing.terminal_json === terminal.json && Buffer.from(existing.plan_hash).equals(plan.hash) &&
+          ((artifact === null && existing.artifact_bytes === null) || (artifact !== null && existing.artifact_bytes !== null &&
+            Buffer.from(existing.artifact_bytes).equals(artifact)));
+        if (!same) throw new RemoteWorkerExecutionConflictError();
+        return this.#execution(existing);
+      }
       const stagedAt = this.#timestamp();
       const inserted = this.#database.prepare(`INSERT INTO remote_worker_executions(
         job_id,lease_id,lease_generation,outcome,event_dedupe_key,publication_dedupe_key,
@@ -591,11 +596,11 @@ export class RemoteWorkerOutbox {
     this.#assertOpen();
     return this.#transaction(() => {
       if (this.#executionRow(lease) !== null) throw new RemoteWorkerExecutionStateError();
-      return this.#enqueueInTransaction(lease, kind, dedupeKey, payload);
+      return entry(this.#enqueueInTransaction(lease, kind, dedupeKey, payload));
     });
   }
   #enqueueInTransaction(lease: z.infer<typeof leaseSchema>, kind: "event" | "publication", dedupeKey: string,
-    payload: (localSequence: number) => Readonly<{ json: string; hash: Buffer }>): RemoteWorkerOutboxEntry {
+    payload: (localSequence: number) => Readonly<{ json: string; hash: Buffer }>): OutboxRow {
       const binding = this.#database.prepare(`
         SELECT job_id, lease_generation FROM remote_worker_outbox WHERE lease_id = ? LIMIT 1
       `).get(lease.leaseId) as { job_id: string; lease_generation: number } | undefined;
@@ -623,7 +628,7 @@ export class RemoteWorkerOutbox {
             !Buffer.from(existing.payload_hash).equals(expected.hash)) {
           throw new RemoteWorkerOutboxDedupeConflictError();
         }
-        return entry(existing);
+        return existing;
       }
       const next = this.#database.prepare(`
         SELECT COALESCE(MAX(local_sequence), 0) + 1 AS local_sequence
@@ -643,7 +648,7 @@ export class RemoteWorkerOutbox {
         encoded.json, encoded.hash, createdAt,
       ) as OutboxRow | undefined;
       if (inserted === undefined) throw new Error("The Remote Worker outbox insert returned no row.");
-      return entry(inserted);
+      return inserted;
   }
 
   #blockedCode(jobId: string, leaseId: string, generation: number): string | null {
@@ -723,17 +728,17 @@ export class RemoteWorkerOutbox {
     const count = this.#database.prepare("SELECT COUNT(*) AS count FROM remote_worker_outbox WHERE job_id=? AND lease_id=? AND lease_generation=?")
       .get(row.job_id, row.lease_id, row.lease_generation) as { count: number };
     if (count.count !== (row.outcome === "success" ? 2 : 1)) throw new RemoteWorkerOutboxIntegrityError();
+    const eventRow = this.#verifiedOutbox(row, "event", row.event_dedupe_key);
+    const publicationRow = row.publication_dedupe_key === null ? null :
+      this.#verifiedOutbox(row, "publication", row.publication_dedupe_key);
     let terminal: RemoteWorkerTerminal;
     try {
-      const plan = encodedPayload({ version: 1, outcome: row.outcome, event_dedupe_key: row.event_dedupe_key,
-        publication_dedupe_key: row.publication_dedupe_key, terminal_json: row.terminal_json,
+      const plan = encodedPayload({ version: 1, outcome: row.outcome, event: planBinding(eventRow),
+        publication: publicationRow === null ? null : planBinding(publicationRow), terminal_json: row.terminal_json,
         artifact_hash: row.artifact_hash === null ? null : Buffer.from(row.artifact_hash).toString("base64url") });
       if (!plan.hash.equals(Buffer.from(row.plan_hash))) throw new Error();
       terminal = terminalSchema.parse(JSON.parse(row.terminal_json));
     } catch { throw new RemoteWorkerOutboxIntegrityError(); }
-    const eventRow = this.#verifiedOutbox(row, "event", row.event_dedupe_key);
-    const publicationRow = row.publication_dedupe_key === null ? null :
-      this.#verifiedOutbox(row, "publication", row.publication_dedupe_key);
     const artifact = row.artifact_bytes === null ? null : Buffer.from(row.artifact_bytes);
     if ((row.outcome === "failure" && (terminal.status !== "failed" || publicationRow !== null || artifact !== null)) ||
         (row.outcome === "success" && (terminal.status !== "completed" || publicationRow === null || artifact === null ||

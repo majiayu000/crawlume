@@ -755,6 +755,27 @@ describe("RemoteWorkerOutbox", () => {
     }
   });
 
+  it.each(["event", "publication"] as const)("detects a schema-valid %s replacement row", (kind) => {
+    const path = outboxPath();
+    const initial = new RemoteWorkerOutbox(path); initial.stageOutcome(lease, successOutcome()); initial.close();
+    const database = new DatabaseSync(path);
+    const planned = database.prepare("SELECT * FROM remote_worker_outbox WHERE kind=?").get(kind) as {
+      job_id: string; lease_id: string; lease_generation: number; dedupe_key: string; payload_json: string; state: string; created_at_ms: number;
+    };
+    const payload = JSON.parse(planned.payload_json) as Record<string, unknown>;
+    payload.local_sequence = 2; payload[kind === "event" ? "provider" : "media_type"] = kind === "event" ? "browser" : "application/json";
+    const replacement = JSON.stringify(payload);
+    database.prepare("DELETE FROM remote_worker_outbox WHERE kind=?").run(kind);
+    database.prepare(`INSERT INTO remote_worker_outbox(job_id,lease_id,lease_generation,kind,dedupe_key,
+      local_sequence,payload_json,payload_hash,state,created_at_ms) VALUES(?,?,?,?,?,2,?,?,?,?)`).run(
+      planned.job_id, planned.lease_id, planned.lease_generation, kind, planned.dedupe_key, replacement,
+      createHash("sha256").update(replacement).digest(), planned.state, planned.created_at_ms,
+    );
+    database.close();
+    const reopened = new RemoteWorkerOutbox(path);
+    expect(() => reopened.getExecution(lease)).toThrow(RemoteWorkerOutboxIntegrityError); reopened.close();
+  });
+
   it("detects payload tampering, stores no credentials, retains acknowledgements, and fails after close", async () => {
     const path = outboxPath();
     const initial = new RemoteWorkerOutbox(path);
