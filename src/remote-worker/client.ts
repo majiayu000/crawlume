@@ -118,7 +118,7 @@ const problemSchema = z.object({
   status: z.number().int().min(400).max(599),
   detail: z.string(),
   instance: z.string(),
-  code: z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/u),
+  code: z.string(),
   request_id: uuidSchema,
   retryable: z.boolean(),
   errors: z.array(z.object({
@@ -235,15 +235,22 @@ export class RemoteWorkerProtocolError extends Error {
 }
 
 export class RemoteWorkerHttpError extends Error {
+  readonly #code: string;
+
   constructor(
     readonly status: number,
-    readonly code: string,
+    code: string,
     readonly requestId: string,
     readonly retryable: boolean,
     readonly retryAfterSeconds: number | null,
   ) {
     super("The Remote Worker control request was rejected.");
     this.name = "RemoteWorkerHttpError";
+    this.#code = code;
+  }
+
+  get code(): string {
+    return this.#code;
   }
 }
 
@@ -679,10 +686,13 @@ export class RemoteWorkerClient {
     signal: AbortSignal | undefined,
     operation: () => Promise<Result>,
   ): Promise<Result> {
+    signal?.throwIfAborted();
     try {
       return await operation();
     } catch (error) {
-      if (signal?.aborted === true && error === signal.reason) throw error;
+      if (signal?.aborted === true && error === signal.reason) {
+        throw new RemoteWorkerOutcomeUnknownError(metadata);
+      }
       if (error instanceof RemoteWorkerHttpError || error instanceof RemoteWorkerOutcomeUnknownError) {
         throw error;
       }

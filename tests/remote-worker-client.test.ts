@@ -457,7 +457,7 @@ describe("Remote Worker HTTP client", () => {
       .rejects.toBeInstanceOf(RemoteWorkerProtocolError);
   });
 
-  it("rejects a reflected bearer as an unsafe Problem code without serializing it", async () => {
+  it("accepts an arbitrary Problem code without reflecting it through default serialization", async () => {
     const reflectedBearer = `Bearer ${sessionToken}`;
     const { fetcher } = queuedFetch(jsonResponse(
       problem({ code: reflectedBearer }),
@@ -474,7 +474,8 @@ describe("Remote Worker HTTP client", () => {
       terminal: { status: "completed", resultCompleteness: "complete", errorCode: null },
     }).catch((error: unknown) => error);
 
-    expect(caught).toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    expect(caught).toBeInstanceOf(RemoteWorkerHttpError);
+    expect((caught as RemoteWorkerHttpError).code).toBe(reflectedBearer);
     expect(String(caught)).not.toContain(reflectedBearer);
     expect(JSON.stringify(caught)).not.toContain(reflectedBearer);
   });
@@ -497,7 +498,7 @@ describe("Remote Worker HTTP client", () => {
       .rejects.toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
   });
 
-  it("preserves the caller abort reason while reading a response body", async () => {
+  it("marks a claim outcome unknown when the caller aborts while reading its response", async () => {
     const controller = new AbortController();
     const reason = new Error("caller stopped the response read");
     const body = new ReadableStream<Uint8Array>({
@@ -517,7 +518,101 @@ describe("Remote Worker HTTP client", () => {
       sessionToken,
       waitMs: 0,
       signal: controller.signal,
-    })).rejects.toBe(reason);
+    })).rejects.toMatchObject({
+      metadata: { operation: "claim", workerId },
+    });
+  });
+
+  it("marks enrollment and completion outcomes unknown when aborted after dispatch", async () => {
+    const enrollController = new AbortController();
+    const enrollReason = new Error(`caller stopped ${enrollmentToken}`);
+    const enrollFetch = (async () => {
+      enrollController.abort(enrollReason);
+      throw enrollReason;
+    }) as typeof fetch;
+    const enrollClient = new RemoteWorkerClient("https://control.example/v1/", {
+      fetch: enrollFetch,
+    });
+
+    const enrollmentError = await enrollClient.enroll({
+      enrollmentToken,
+      identity: createInMemoryWorkerIdentity(),
+      version: "1.0.0",
+      capabilities: {},
+      signal: enrollController.signal,
+    }).catch((error: unknown) => error);
+
+    expect(enrollmentError).toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    expect(enrollmentError).toMatchObject({ metadata: { operation: "enroll" } });
+    expect(String(enrollmentError)).not.toContain(enrollmentToken);
+    expect(JSON.stringify(enrollmentError)).not.toContain(enrollmentToken);
+
+    const completeController = new AbortController();
+    const completeReason = new Error(`caller stopped ${sessionToken}`);
+    const completeFetch = (async () => {
+      completeController.abort(completeReason);
+      throw completeReason;
+    }) as typeof fetch;
+    const completeClient = new RemoteWorkerClient("https://control.example/v1/", {
+      fetch: completeFetch,
+    });
+
+    const completionError = await completeClient.complete({
+      sessionToken,
+      leaseId,
+      expectedJobId: jobId,
+      generation: 3,
+      terminal: { status: "completed", resultCompleteness: "complete", errorCode: null },
+      signal: completeController.signal,
+    }).catch((error: unknown) => error);
+
+    expect(completionError).toBeInstanceOf(RemoteWorkerOutcomeUnknownError);
+    expect(completionError).toMatchObject({
+      metadata: { operation: "complete", leaseId, generation: 3, expectedJobId: jobId },
+    });
+    expect(String(completionError)).not.toContain(sessionToken);
+    expect(JSON.stringify(completionError)).not.toContain(sessionToken);
+  });
+
+  it("preserves abort identity before stateful dispatch and for heartbeat response reads", async () => {
+    const preflightController = new AbortController();
+    const preflightReason = new Error("caller stopped before dispatch");
+    preflightController.abort(preflightReason);
+    let dispatches = 0;
+    const client = new RemoteWorkerClient("https://control.example/v1/", {
+      fetch: (async () => {
+        dispatches += 1;
+        throw new Error("must not dispatch");
+      }) as typeof fetch,
+    });
+
+    await expect(client.claim({
+      workerId,
+      sessionToken,
+      signal: preflightController.signal,
+    })).rejects.toBe(preflightReason);
+    expect(dispatches).toBe(0);
+
+    const heartbeatController = new AbortController();
+    const heartbeatReason = new Error("caller stopped heartbeat response read");
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        heartbeatController.abort(heartbeatReason);
+        stream.error(new Error("body source failed"));
+      },
+    });
+    const { fetcher } = queuedFetch(new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    const heartbeatClient = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(heartbeatClient.heartbeat({
+      sessionToken,
+      leaseId,
+      generation: 3,
+      signal: heartbeatController.signal,
+    })).rejects.toBe(heartbeatReason);
   });
 
   it("keeps heartbeat transport failures distinct from the required outcome-unknown operations", async () => {
