@@ -673,7 +673,7 @@ export class RemoteWorkerClient {
       }
       throw new RemoteWorkerProtocolError();
     } catch (error) {
-      if (signal?.aborted === true && error === signal.reason) throw error;
+      if (signal?.aborted === true && Object.is(error, signal.reason)) throw error;
       if (error instanceof RemoteWorkerHttpError || error instanceof RemoteWorkerProtocolError) {
         throw error;
       }
@@ -690,7 +690,7 @@ export class RemoteWorkerClient {
     try {
       return await operation();
     } catch (error) {
-      if (signal?.aborted === true && error === signal.reason) {
+      if (signal?.aborted === true && Object.is(error, signal.reason)) {
         throw new RemoteWorkerOutcomeUnknownError(metadata);
       }
       if (error instanceof RemoteWorkerHttpError || error instanceof RemoteWorkerOutcomeUnknownError) {

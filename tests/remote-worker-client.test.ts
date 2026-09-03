@@ -615,6 +615,47 @@ describe("Remote Worker HTTP client", () => {
     })).rejects.toBe(heartbeatReason);
   });
 
+  it("recognizes NaN as the exact post-dispatch claim abort reason", async () => {
+    const controller = new AbortController();
+    const fetcher = (async () => {
+      controller.abort(Number.NaN);
+      throw controller.signal.reason;
+    }) as typeof fetch;
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    await expect(client.claim({
+      workerId,
+      sessionToken,
+      signal: controller.signal,
+    })).rejects.toMatchObject({
+      metadata: { operation: "claim", workerId },
+    });
+  });
+
+  it("preserves a NaN heartbeat abort reason while reading the response body", async () => {
+    const controller = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      pull(stream) {
+        controller.abort(Number.NaN);
+        stream.error(new Error("body source failed"));
+      },
+    });
+    const { fetcher } = queuedFetch(new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
+
+    const caught = await client.heartbeat({
+      sessionToken,
+      leaseId,
+      generation: 3,
+      signal: controller.signal,
+    }).catch((error: unknown) => error);
+
+    expect(Object.is(caught, Number.NaN)).toBe(true);
+  });
+
   it("keeps heartbeat transport failures distinct from the required outcome-unknown operations", async () => {
     const { fetcher } = queuedFetch(new Error("network failed"));
     const client = new RemoteWorkerClient("https://control.example/v1/", { fetch: fetcher });
