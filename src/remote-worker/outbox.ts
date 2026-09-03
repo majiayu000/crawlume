@@ -2,11 +2,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-
 import { z } from "zod";
-
 import { RemoteWorkerClient, RemoteWorkerHttpError, type RemoteWorkerTerminal } from "./client.js";
-
 const maximumPayloadBytes = 64 * 1_024;
 const schemaVersion = 2;
 const uuidSchema = z.uuid();
@@ -64,7 +61,6 @@ const publicationPayloadSchema = z.object({
   media_type: z.string().min(1).max(255), completeness: z.enum(["complete", "partial"]),
   storage: z.enum(["worker_local", "cloud_object"]),
 }).strict();
-
 export type RemoteWorkerOutboxLease = Readonly<z.infer<typeof leaseSchema>>;
 export type RemoteWorkerOutboxEventInput = Readonly<z.input<typeof eventInputSchema>>;
 export type RemoteWorkerOutboxPublicationInput = Readonly<z.input<typeof publicationInputSchema>>;
@@ -88,10 +84,12 @@ export type RemoteWorkerExecution = Readonly<{
   jobId: string; leaseId: string; generation: number; outcome: "success" | "failure";
   state: RemoteWorkerExecutionState; event: RemoteWorkerOutboxEntry;
   publication: RemoteWorkerOutboxEntry | null; artifactBytes: Uint8Array | null;
-  terminal: RemoteWorkerTerminal; stagedAtMs: number; terminalAttemptedAtMs: number | null;
+  terminal: RemoteWorkerTerminal | null; stagedAtMs: number; terminalAttemptedAtMs: number | null;
   terminalAckedAtMs: number | null; blockedCode: string | null;
 }>;
-
+declare const terminalAttemptBrand: unique symbol;
+export type RemoteWorkerTerminalAttempt = Readonly<{ [terminalAttemptBrand]: true }>;
+export type RemoteWorkerTerminalStart = Readonly<{ terminal: RemoteWorkerTerminal; attempt: RemoteWorkerTerminalAttempt }>;
 type OutboxRow = {
   id: number;
   job_id: string;
@@ -111,7 +109,7 @@ type ExecutionRow = {
   job_id: string; lease_id: string; lease_generation: number; outcome: "success" | "failure";
   event_dedupe_key: string; publication_dedupe_key: string | null;
   artifact_bytes: Uint8Array | null; artifact_hash: Uint8Array | null;
-  terminal_json: string; terminal_hash: Uint8Array; state: RemoteWorkerExecutionState;
+  terminal_json: string; plan_hash: Uint8Array; state: RemoteWorkerExecutionState;
   staged_at_ms: number; terminal_attempted_at_ms: number | null;
   terminal_acked_at_ms: number | null; blocked_code: string | null;
 };
@@ -121,63 +119,30 @@ type DeliveryOptions = Readonly<{
   client: Pick<RemoteWorkerClient, "appendEvent" | "publishResult">;
   signal?: AbortSignal | undefined;
 }>;
-
 export class RemoteWorkerOutboxClosedError extends Error {
-  constructor() {
-    super("The Remote Worker outbox is closed.");
-    this.name = "RemoteWorkerOutboxClosedError";
-  }
+  constructor() { super("The Remote Worker outbox is closed."); this.name = "RemoteWorkerOutboxClosedError"; }
 }
-
 export class RemoteWorkerOutboxInputError extends Error {
-  constructor() {
-    super("The Remote Worker outbox input is invalid.");
-    this.name = "RemoteWorkerOutboxInputError";
-  }
+  constructor() { super("The Remote Worker outbox input is invalid."); this.name = "RemoteWorkerOutboxInputError"; }
 }
-
 export class RemoteWorkerOutboxIntegrityError extends Error {
-  constructor() {
-    super("The Remote Worker outbox payload failed its integrity check.");
-    this.name = "RemoteWorkerOutboxIntegrityError";
-  }
+  constructor() { super("The Remote Worker outbox payload failed its integrity check."); this.name = "RemoteWorkerOutboxIntegrityError"; }
 }
-
 export class RemoteWorkerOutboxDedupeConflictError extends Error {
-  constructor() {
-    super("The Remote Worker outbox dedupe key is already bound to a different payload.");
-    this.name = "RemoteWorkerOutboxDedupeConflictError";
-  }
+  constructor() { super("The Remote Worker outbox dedupe key is already bound to a different payload."); this.name = "RemoteWorkerOutboxDedupeConflictError"; }
 }
-
 export class RemoteWorkerOutboxLeaseBlockedError extends Error {
-  constructor(readonly code: string) {
-    super("The Remote Worker lease generation is blocked.");
-    this.name = "RemoteWorkerOutboxLeaseBlockedError";
-  }
+  constructor(readonly code: string) { super("The Remote Worker lease generation is blocked."); this.name = "RemoteWorkerOutboxLeaseBlockedError"; }
 }
-
 export class RemoteWorkerOutboxOwnershipError extends Error {
-  constructor() {
-    super("The Remote Worker outbox already has a live owner.");
-    this.name = "RemoteWorkerOutboxOwnershipError";
-  }
+  constructor() { super("The Remote Worker outbox already has a live owner."); this.name = "RemoteWorkerOutboxOwnershipError"; }
 }
-
 export class RemoteWorkerOutboxDeliveryActiveError extends Error {
-  constructor() {
-    super("The Remote Worker outbox cannot close while delivery is active.");
-    this.name = "RemoteWorkerOutboxDeliveryActiveError";
-  }
+  constructor() { super("The Remote Worker outbox cannot close while delivery is active."); this.name = "RemoteWorkerOutboxDeliveryActiveError"; }
 }
-
 export class RemoteWorkerOutboxPathError extends Error {
-  constructor() {
-    super("The Remote Worker outbox path is not a private owned file location.");
-    this.name = "RemoteWorkerOutboxPathError";
-  }
+  constructor() { super("The Remote Worker outbox path is not a private owned file location."); this.name = "RemoteWorkerOutboxPathError"; }
 }
-
 export class RemoteWorkerExecutionConflictError extends Error {
   constructor() { super("The Remote Worker execution is already bound to a different outcome."); this.name = "RemoteWorkerExecutionConflictError"; }
 }
@@ -190,23 +155,19 @@ export class RemoteWorkerTerminalOutcomeUnknownError extends Error {
 export class RemoteWorkerExecutionStateError extends Error {
   constructor() { super("The Remote Worker execution state does not allow this operation."); this.name = "RemoteWorkerExecutionStateError"; }
 }
-
 function parsed<Value>(schema: z.ZodType<Value>, value: unknown): Value {
   const result = schema.safeParse(value);
   if (!result.success) throw new RemoteWorkerOutboxInputError();
   return result.data;
 }
-
 function canonicalOutboxUsage(value: Readonly<Record<string, number>>): Readonly<Record<string, number>> {
   return Object.freeze(Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))));
 }
-
 function encodedPayload(value: unknown): Readonly<{ json: string; hash: Buffer }> {
   const json = JSON.stringify(value);
   if (Buffer.byteLength(json) > maximumPayloadBytes) throw new RemoteWorkerOutboxInputError();
   return Object.freeze({ json, hash: createHash("sha256").update(json).digest() });
 }
-
 function entry(row: OutboxRow): RemoteWorkerOutboxEntry {
   return Object.freeze({
     id: row.id,
@@ -261,6 +222,7 @@ function sqliteLockConflict(error: unknown): boolean {
 export class RemoteWorkerOutbox {
   readonly #database: DatabaseSync;
   readonly #deliveries = new Map<string, Promise<void>>();
+  readonly #terminalAttempts = new WeakMap<RemoteWorkerTerminalAttempt, RemoteWorkerOutboxLease>();
   #closed = false;
   constructor(path: string, private readonly now: () => number = () => Date.now()) {
     const memory = path === ":memory:";
@@ -323,7 +285,7 @@ export class RemoteWorkerOutbox {
             artifact_bytes BLOB,
             artifact_hash BLOB CHECK(artifact_hash IS NULL OR length(artifact_hash) = 32),
             terminal_json TEXT NOT NULL,
-            terminal_hash BLOB NOT NULL CHECK(length(terminal_hash) = 32),
+            plan_hash BLOB NOT NULL CHECK(length(plan_hash) = 32),
             state TEXT NOT NULL CHECK(state IN ('staged','terminal_attempted','terminal_acked','blocked')),
             staged_at_ms INTEGER NOT NULL,
             terminal_attempted_at_ms INTEGER,
@@ -389,8 +351,27 @@ export class RemoteWorkerOutbox {
         !createHash("sha256").update(artifact!).digest().equals(Buffer.from(input.publication.contentHash, "base64url")) ||
         input.terminal.resultCompleteness !== input.publication.completeness)) throw new RemoteWorkerOutboxInputError();
     input.event.occurredAt.toISOString();
-    const terminal = encodedPayload(input.terminal);
+    const terminal = encodedPayload(input.terminal), artifactHash = artifact === null ? null : createHash("sha256").update(artifact).digest();
+    const plan = encodedPayload({ version: 1, outcome: input.outcome, event_dedupe_key: input.event.dedupeKey,
+      publication_dedupe_key: input.outcome === "success" ? input.publication.dedupeKey : null,
+      terminal_json: terminal.json, artifact_hash: artifactHash?.toString("base64url") ?? null });
     return this.#transaction(() => {
+      const blocked = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
+      if (blocked !== null) throw new RemoteWorkerOutboxLeaseBlockedError(blocked);
+      const existing = this.#executionRow(lease);
+      if (existing === null) {
+        const count = this.#database.prepare("SELECT COUNT(*) AS count FROM remote_worker_outbox WHERE job_id=? AND lease_id=? AND lease_generation=?")
+          .get(lease.jobId, lease.leaseId, lease.generation) as { count: number };
+        if (count.count !== 0) throw new RemoteWorkerExecutionConflictError();
+      } else {
+        const same = existing.outcome === input.outcome && existing.event_dedupe_key === input.event.dedupeKey &&
+          existing.publication_dedupe_key === (input.outcome === "success" ? input.publication.dedupeKey : null) &&
+          existing.terminal_json === terminal.json && Buffer.from(existing.plan_hash).equals(plan.hash) &&
+          ((artifact === null && existing.artifact_bytes === null) || (artifact !== null && existing.artifact_bytes !== null &&
+            Buffer.from(existing.artifact_bytes).equals(artifact)));
+        if (!same) throw new RemoteWorkerExecutionConflictError();
+        this.#execution(existing);
+      }
       try {
         this.#enqueueInTransaction(lease, "event", input.event.dedupeKey,
           (sequence) => this.#eventPayload(lease, input.event, sequence));
@@ -402,24 +383,15 @@ export class RemoteWorkerOutbox {
         if (error instanceof RemoteWorkerOutboxDedupeConflictError) throw new RemoteWorkerExecutionConflictError();
         throw error;
       }
-      const existing = this.#executionRow(lease);
-      if (existing !== null) {
-        const same = existing.outcome === input.outcome && existing.event_dedupe_key === input.event.dedupeKey &&
-          existing.publication_dedupe_key === (input.outcome === "success" ? input.publication.dedupeKey : null) &&
-          existing.terminal_json === terminal.json && Buffer.from(existing.terminal_hash).equals(terminal.hash) &&
-          ((artifact === null && existing.artifact_bytes === null) || (artifact !== null &&
-            existing.artifact_bytes !== null && Buffer.from(existing.artifact_bytes).equals(artifact)));
-        if (!same) throw new RemoteWorkerExecutionConflictError();
-        return this.#execution(existing);
-      }
+      if (existing !== null) return this.#execution(existing);
       const stagedAt = this.#timestamp();
       const inserted = this.#database.prepare(`INSERT INTO remote_worker_executions(
         job_id,lease_id,lease_generation,outcome,event_dedupe_key,publication_dedupe_key,
-        artifact_bytes,artifact_hash,terminal_json,terminal_hash,state,staged_at_ms
+        artifact_bytes,artifact_hash,terminal_json,plan_hash,state,staged_at_ms
       ) VALUES(?,?,?,?,?,?,?,?,?,?,'staged',?) RETURNING *`).get(
         lease.jobId, lease.leaseId, lease.generation, input.outcome, input.event.dedupeKey,
         input.outcome === "success" ? input.publication.dedupeKey : null, artifact,
-        artifact === null ? null : createHash("sha256").update(artifact).digest(), terminal.json, terminal.hash, stagedAt,
+        artifactHash, terminal.json, plan.hash, stagedAt,
       ) as ExecutionRow | undefined;
       if (inserted === undefined) throw new RemoteWorkerOutboxIntegrityError();
       return this.#execution(inserted);
@@ -434,13 +406,14 @@ export class RemoteWorkerOutbox {
     const rows = this.#database.prepare("SELECT * FROM remote_worker_executions WHERE state IN ('staged','terminal_attempted') ORDER BY staged_at_ms,rowid").all() as ExecutionRow[];
     return Object.freeze(rows.map((row) => this.#execution(row)));
   }
-  beginTerminal(leaseValue: RemoteWorkerOutboxLease): RemoteWorkerTerminal {
+  beginTerminal(leaseValue: RemoteWorkerOutboxLease): RemoteWorkerTerminalStart {
     this.#assertOpen(); const lease = parsed(leaseSchema, leaseValue);
-    return this.#transaction(() => {
+    const terminal = this.#transaction(() => {
       const row = this.#executionRow(lease);
       if (row === null || row.state === "terminal_acked") throw new RemoteWorkerExecutionStateError();
       if (row.state === "terminal_attempted") throw new RemoteWorkerTerminalOutcomeUnknownError();
-      if (row.state === "blocked") throw new RemoteWorkerOutboxLeaseBlockedError(row.blocked_code!);
+      const blocked = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
+      if (blocked !== null) throw new RemoteWorkerOutboxLeaseBlockedError(blocked);
       const execution = this.#execution(row);
       if (execution.event.state !== "acked" || (execution.publication !== null && execution.publication.state !== "acked")) {
         throw new RemoteWorkerExecutionNotReadyError();
@@ -449,12 +422,16 @@ export class RemoteWorkerOutbox {
         terminal_attempted_at_ms=? WHERE job_id=? AND lease_id=? AND lease_generation=? AND state='staged'`)
         .run(this.#timestamp(), lease.jobId, lease.leaseId, lease.generation);
       if (Number(changed.changes) !== 1) throw new RemoteWorkerOutboxIntegrityError();
-      return execution.terminal;
+      return execution.terminal!;
     });
+    const attempt = Object.freeze({}) as RemoteWorkerTerminalAttempt;
+    this.#terminalAttempts.set(attempt, lease);
+    return Object.freeze({ terminal, attempt });
   }
-  ackTerminal(leaseValue: RemoteWorkerOutboxLease): RemoteWorkerExecution {
-    this.#assertOpen(); const lease = parsed(leaseSchema, leaseValue);
-    return this.#transaction(() => {
+  ackTerminal(attempt: RemoteWorkerTerminalAttempt): RemoteWorkerExecution {
+    this.#assertOpen(); const lease = this.#terminalAttempts.get(attempt);
+    if (lease === undefined) throw new RemoteWorkerExecutionStateError();
+    const result = this.#transaction(() => {
       const row = this.#executionRow(lease);
       if (row === null || row.state !== "terminal_attempted") throw new RemoteWorkerExecutionStateError();
       const ackedAt = this.#timestamp(), changed = this.#database.prepare(`UPDATE remote_worker_executions SET state='terminal_acked',
@@ -463,6 +440,8 @@ export class RemoteWorkerOutbox {
       if (Number(changed.changes) !== 1) throw new RemoteWorkerOutboxIntegrityError();
       return this.#execution({ ...row, state: "terminal_acked", terminal_acked_at_ms: ackedAt });
     });
+    this.#terminalAttempts.delete(attempt);
+    return result;
   }
   listPendingLeases(): readonly RemoteWorkerOutboxLease[] {
     this.#assertOpen();
@@ -610,7 +589,10 @@ export class RemoteWorkerOutbox {
     payload: (localSequence: number) => Readonly<{ json: string; hash: Buffer }>,
   ): RemoteWorkerOutboxEntry {
     this.#assertOpen();
-    return this.#transaction(() => this.#enqueueInTransaction(lease, kind, dedupeKey, payload));
+    return this.#transaction(() => {
+      if (this.#executionRow(lease) !== null) throw new RemoteWorkerExecutionStateError();
+      return this.#enqueueInTransaction(lease, kind, dedupeKey, payload);
+    });
   }
   #enqueueInTransaction(lease: z.infer<typeof leaseSchema>, kind: "event" | "publication", dedupeKey: string,
     payload: (localSequence: number) => Readonly<{ json: string; hash: Buffer }>): RemoteWorkerOutboxEntry {
@@ -629,6 +611,8 @@ export class RemoteWorkerOutbox {
           (blockedBinding.job_id !== lease.jobId || blockedBinding.lease_generation !== lease.generation)) {
         throw new RemoteWorkerOutboxInputError();
       }
+      const blockedCode = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
+      if (blockedCode !== null) throw new RemoteWorkerOutboxLeaseBlockedError(blockedCode);
       const existing = this.#database.prepare(`
         SELECT * FROM remote_worker_outbox
         WHERE lease_id = ? AND kind = ? AND dedupe_key = ?
@@ -641,8 +625,6 @@ export class RemoteWorkerOutbox {
         }
         return entry(existing);
       }
-      const blockedCode = this.#blockedCode(lease.jobId, lease.leaseId, lease.generation);
-      if (blockedCode !== null) throw new RemoteWorkerOutboxLeaseBlockedError(blockedCode);
       const next = this.#database.prepare(`
         SELECT COALESCE(MAX(local_sequence), 0) + 1 AS local_sequence
         FROM remote_worker_outbox WHERE lease_id = ? AND kind = ?
@@ -738,9 +720,15 @@ export class RemoteWorkerOutbox {
     return stored;
   }
   #execution(row: ExecutionRow): RemoteWorkerExecution {
+    const count = this.#database.prepare("SELECT COUNT(*) AS count FROM remote_worker_outbox WHERE job_id=? AND lease_id=? AND lease_generation=?")
+      .get(row.job_id, row.lease_id, row.lease_generation) as { count: number };
+    if (count.count !== (row.outcome === "success" ? 2 : 1)) throw new RemoteWorkerOutboxIntegrityError();
     let terminal: RemoteWorkerTerminal;
     try {
-      if (!createHash("sha256").update(row.terminal_json).digest().equals(Buffer.from(row.terminal_hash))) throw new Error();
+      const plan = encodedPayload({ version: 1, outcome: row.outcome, event_dedupe_key: row.event_dedupe_key,
+        publication_dedupe_key: row.publication_dedupe_key, terminal_json: row.terminal_json,
+        artifact_hash: row.artifact_hash === null ? null : Buffer.from(row.artifact_hash).toString("base64url") });
+      if (!plan.hash.equals(Buffer.from(row.plan_hash))) throw new Error();
       terminal = terminalSchema.parse(JSON.parse(row.terminal_json));
     } catch { throw new RemoteWorkerOutboxIntegrityError(); }
     const eventRow = this.#verifiedOutbox(row, "event", row.event_dedupe_key);
@@ -759,7 +747,8 @@ export class RemoteWorkerOutbox {
     }
     return Object.freeze({ jobId: row.job_id, leaseId: row.lease_id, generation: row.lease_generation,
       outcome: row.outcome, state: row.state, event: entry(eventRow), publication: publicationRow === null ? null : entry(publicationRow),
-      artifactBytes: artifact === null ? null : Uint8Array.from(artifact), terminal: Object.freeze({ ...terminal }),
+      artifactBytes: artifact === null ? null : Uint8Array.from(artifact),
+      terminal: row.state === "staged" ? Object.freeze({ ...terminal }) : null,
       stagedAtMs: row.staged_at_ms, terminalAttemptedAtMs: row.terminal_attempted_at_ms,
       terminalAckedAtMs: row.terminal_acked_at_ms, blockedCode: row.blocked_code });
   }
