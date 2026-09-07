@@ -64,6 +64,7 @@ function policyStubs(): { robots: RobotsPolicy; rsl: RslPolicy } {
 type AuthorizationHarness = {
   fetcher: BrowserPageFetcher;
   observedRequests: string[];
+  proxyTargets: string[];
   dataDir: string;
 };
 
@@ -75,6 +76,7 @@ async function authorizationHarness(
   ) => void,
 ): Promise<AuthorizationHarness> {
   const observedRequests: string[] = [];
+  const proxyTargets: string[] = [];
   const observedRespond = (
     hostname: string,
     path: string,
@@ -97,7 +99,12 @@ async function authorizationHarness(
   servers.push(origin);
   const proxy = createServer((request, response) => {
     const target = new URL(request.url ?? "", "http://proxy.invalid");
-    observedRespond(target.hostname, target.pathname, response);
+    proxyTargets.push(target.toString());
+    observedRespond(
+      new URL(`http://${request.headers.host ?? "invalid"}`).hostname,
+      target.pathname,
+      response,
+    );
   });
   proxy.on("connect", (_request, client, head) => {
     trackSocket(client);
@@ -128,6 +135,7 @@ async function authorizationHarness(
   return {
     dataDir,
     observedRequests,
+    proxyTargets,
     fetcher: new BrowserPageFetcher(
       config,
       new UrlPolicy(async () => publicResolver()),
@@ -177,7 +185,7 @@ describe("BrowserPageFetcher authorization boundary", () => {
   }, 15_000);
 
   it("allows public third-party subresources without widening main-frame origins", async () => {
-    const { fetcher, observedRequests } = await authorizationHarness((hostname, path, response) => {
+    const { fetcher, observedRequests, proxyTargets } = await authorizationHarness((hostname, path, response) => {
       if (hostname === "cdn.example" && path === "/marker.js") {
         response.writeHead(200, { "content-type": "application/javascript" });
         response.end("document.body.dataset.thirdPartyLoaded = 'true';");
@@ -202,6 +210,10 @@ describe("BrowserPageFetcher authorization boundary", () => {
 
       expect(result.finalUrl).toBe("http://allowed.example/article");
       expect(observedRequests).toContain("cdn.example/marker.js");
+      expect(proxyTargets).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^http:\/\/93\.184\.216\.34(?::\d+)?\//u),
+      ]));
+      expect(proxyTargets.some((target) => /allowed\.example|cdn\.example/u.test(target))).toBe(false);
     } finally {
       await fetcher.close();
     }
