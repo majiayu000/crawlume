@@ -144,7 +144,7 @@ function transportFetchError(error: unknown, url: URL, includeCause: boolean): R
 
 export class HttpTransport {
   private readonly directDispatcher: Agent;
-  private readonly proxyDispatchers = new Map<string, ProxyAgent>();
+  private readonly proxyDispatchers = new Map<string, Promise<ProxyAgent>>();
   private readonly identity: AgentIdentity;
 
   constructor(
@@ -321,9 +321,19 @@ export class HttpTransport {
   }
 
   async close(): Promise<void> {
+    const proxyAgents = await Promise.all(
+      [...this.proxyDispatchers.values()].map(async (dispatcher) => {
+        try {
+          return await dispatcher;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    this.proxyDispatchers.clear();
     await Promise.all([
       this.directDispatcher.close(),
-      ...[...this.proxyDispatchers.values()].map(async (dispatcher) => dispatcher.close()),
+      ...proxyAgents.flatMap((dispatcher) => dispatcher === null ? [] : [dispatcher.close()]),
       this.policyProxy.close(),
     ]);
   }
@@ -336,10 +346,19 @@ export class HttpTransport {
     if (existing !== undefined) {
       return existing;
     }
+    const created = this.createProxyDispatcher(proxy);
+    this.proxyDispatchers.set(proxy.uri, created);
+    created.catch(() => {
+      if (this.proxyDispatchers.get(proxy.uri) === created) {
+        this.proxyDispatchers.delete(proxy.uri);
+      }
+    });
+    return created;
+  }
+
+  private async createProxyDispatcher(proxy: ProxyEndpoint): Promise<ProxyAgent> {
     const endpoint = await this.policyProxy.endpoint(proxy);
-    const dispatcher = new ProxyAgent(endpoint.uri);
-    this.proxyDispatchers.set(proxy.uri, dispatcher);
-    return dispatcher;
+    return new ProxyAgent(endpoint.uri);
   }
 }
 

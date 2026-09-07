@@ -97,4 +97,61 @@ describe("PolicyEgressProxy", () => {
       await transport.close();
     }
   });
+
+  it("tries the next approved address when the first one refuses the connection", async () => {
+    const origin = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("second-address");
+    });
+    const port = await listen(origin);
+    servers.push(origin);
+    const policy = new UrlPolicy(async () => [{ address: "93.184.216.34", family: 4 }]);
+    policy.assertPublic = async () => [
+      { address: "::1", family: 6 },
+      { address: "127.0.0.1", family: 4 },
+    ];
+    const proxy = new PolicyEgressProxy(policy);
+    proxies.push(proxy);
+    const localEndpoint = await proxy.endpoint(null);
+    const dispatcher = new ProxyAgent(localEndpoint.uri);
+    dispatchers.push(dispatcher);
+
+    const response = await fetch(`http://dual.example:${port}/article`, { dispatcher });
+
+    expect(await response.text()).toBe("second-address");
+  });
+
+  it("creates a single proxy dispatcher when concurrent fetches share a proxy", async () => {
+    const targets: string[] = [];
+    const upstream = createServer((request, response) => {
+      targets.push(request.url ?? "");
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("shared-dispatcher");
+    });
+    const port = await listen(upstream);
+    servers.push(upstream);
+    const endpoints = parseProxyEndpoints(`http://127.0.0.1:${port}`);
+    const transport = new HttpTransport(
+      { ...testConfig(), proxyEndpoints: endpoints },
+      new UrlPolicy(async () => [{ address: "93.184.216.34", family: 4 }]),
+    );
+
+    try {
+      const [one, two] = await Promise.all([
+        transport.fetch(new URL("http://rebind.example/one")),
+        transport.fetch(new URL("http://rebind.example/two")),
+      ]);
+      expect(one.body).toBe("shared-dispatcher");
+      expect(two.body).toBe("shared-dispatcher");
+      expect(targets.sort()).toEqual([
+        "http://93.184.216.34/one",
+        "http://93.184.216.34/two",
+      ]);
+      expect(
+        (transport as unknown as { proxyDispatchers: Map<string, unknown> }).proxyDispatchers.size,
+      ).toBe(1);
+    } finally {
+      await transport.close();
+    }
+  });
 });
