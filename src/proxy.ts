@@ -28,13 +28,13 @@ export function parseProxyEndpoints(raw: string | undefined): ProxyEndpoint[] {
   return raw.split(",").map((item) => {
     const value = item.trim();
     if (value === "" || !URL.canParse(value)) {
-      throw new ReadError("INVALID_ARGUMENT", "DIAOYAN_PROXY_URLS contains an invalid URL.");
+      throw new ReadError("INVALID_ARGUMENT", "CRAWLUME_PROXY_URLS contains an invalid URL.");
     }
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new ReadError(
         "INVALID_ARGUMENT",
-        "DIAOYAN_PROXY_URLS supports only http and https proxies.",
+        "CRAWLUME_PROXY_URLS supports only http and https proxies.",
       );
     }
     if ((url.pathname !== "" && url.pathname !== "/") || url.search !== "" || url.hash !== "") {

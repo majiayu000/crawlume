@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { createApp, type DiaoyanApp } from "../app.js";
+import { createApp, type CrawlumeApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { normalizeError, ReadError } from "../errors.js";
 import {
@@ -19,12 +19,12 @@ import {
 } from "../types.js";
 
 const usage = `Usage:
-  diaoyan read <url> [options]
-  diaoyan map <url> [options]
-  diaoyan crawl <url> [options]
-  diaoyan search <query> [options]
-  diaoyan stats [--days <1-90>]
-  diaoyan rsl-audit [--limit <1-1000>]
+  crawlume read <url> [options]
+  crawlume map <url> [options]
+  crawlume crawl <url> [options]
+  crawlume search <query> [options]
+  crawlume stats [--days <1-90>]
+  crawlume rsl-audit [--limit <1-1000>]
 
 Options:
   --no-browser                               Forbid browser execution
@@ -428,7 +428,7 @@ export function parseCli(argv: string[]): CliAction {
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
-  let app: DiaoyanApp | null = null;
+  let app: CrawlumeApp | null = null;
   try {
     const action = parseCli(argv);
     if (action.kind === "help") {

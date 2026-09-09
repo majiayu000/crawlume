@@ -1,4 +1,4 @@
-# Diaoyan Reliability Benchmark 规范
+# Crawlume Reliability Benchmark 规范
 
 状态：Implemented for controlled PR、public Nightly、paired Release compare and offline optimization；缺私有 Release/生产 rollout 证据
 最后更新：2026-08-30
@@ -139,7 +139,7 @@ Layer B 验证调度、等待、恢复和成本，不承担真实网站代表性
 Live Case 必须记录最后审核时间和最大有效期；过期 Case 自动进入 `harness_error`，不得将网站改版
 算成产品回归。
 
-## 公开标准依据与 Diaoyan 加严项
+## 公开标准依据与 Crawlume 加严项
 
 现有公开 Benchmark 各自只覆盖问题的一部分：
 
@@ -154,7 +154,7 @@ Live Case 必须记录最后审核时间和最大有效期；过期 Case 自动�
 | [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) | robots 匹配、重定向、缓存与不可达语义 | 是合规协议，不是质量评分 |
 | [ISO 28500 WARC](https://www.iso.org/standard/68004.html) | 保存请求、响应、元数据、转换与去重事件的证据格式 | 不规定提取质量或产品 SLO |
 
-Diaoyan 标准不是再造一个平均分，而是把这些互补条件串成一条不可绕过的真值链：
+Crawlume 标准不是再造一个平均分，而是把这些互补条件串成一条不可绕过的真值链：
 
 ```text
 Policy eligible
@@ -176,7 +176,7 @@ Policy eligible
 - 开发集与 held-out set 域名隔离；生产代码不得按 URL、Case ID 或已知 snippet 特判。
 - 所有竞品必须使用相同输入、地区、预算、超时、输出目标和真值裁判；模型不能给自己的输出打分。
 
-## Diaoyan Web Retrieval Standard v1
+## Crawlume Web Retrieval Standard v1
 
 ### 硬性失格条件
 
@@ -235,7 +235,7 @@ Case 配对结果和 95% bootstrap confidence interval，同时报告 median、p
 - 不少于 30 个 Layer C public canaries，每个 domain 默认只取一个页面；练习站除外。
 - 不少于 30 个私有业务 Case，并保持类别比例与真实流量相近。
 
-Diaoyan strict split 的开发集、公开 canary 和私有 set，其 registrable domain 不得与 strict
+Crawlume strict split 的开发集、公开 canary 和私有 set，其 registrable domain 不得与 strict
 held-out set 重叠；WCXB 原始 split 仍单独报告以保持横向可比。Case 变更必须提升 `caseSetVersion`，
 保留旧报告；删除失败 Case 不能提高历史分数。
 
@@ -353,7 +353,7 @@ Harness 配置错误等错误原因误判为正确行为。
 ```text
 Case Loader
   -> Isolated Run Coordinator
-     -> Diaoyan public contract
+     -> Crawlume public contract
         -> Result Collector
            -> Truth Evaluator
               -> Metrics Aggregator
@@ -382,7 +382,7 @@ Shadow 仅由 `pnpm bench:optimize` 在匿名受控 Case 离线运行，不是�
 
 ```bash
 # Clash/TUN Fake-IP 环境才需要显式设置第一个变量；默认安全策略保持关闭。
-DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench:case -- \
+CRAWLUME_ALLOW_DNS_FAKE_IP=1 pnpm bench:case -- \
   --case benchmarks/cases/quotes-js-auto.json
 ```
 
@@ -394,10 +394,10 @@ pnpm bench -- --mode pr
 
 # Nightly：受控 Case + 10 个未过期公开 Canary，每个至少 5 次。
 # Clash/TUN Fake-IP 环境才设置此前缀；其他环境直接运行。
-DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly
+CRAWLUME_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly
 
 # Release：每个 Case 至少 30 次，并只接受完全相同 Case Set/repeat keys 的基线。
-DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- \
+CRAWLUME_ALLOW_DNS_FAKE_IP=1 pnpm bench -- \
   --mode release --compare benchmarks/reports/release-baseline.json
 ```
 
@@ -459,7 +459,7 @@ Readiness 真值合同和 Tournament 已从临时聚合文件拆到 `benchmarks/
 | --- | --- | --- | --- |
 | P0 | Case Schema、Layer A/B、Truth、JSONL 报告（完成） | 46 个受控 Case×5 稳定运行 | `pnpm bench -- --mode pr` |
 | P0 | 成本、Plan/Ledger provenance 与 Gate（完成） | 请求、等待、Browser、资源与终态可复算 | `pnpm test -- tests/benchmark-suite.test.ts tests/benchmark-corpus.test.ts` |
-| P1 | Layer C Canary 与过期机制（完成） | 10 个未过期公开 Canary×5 | `DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly` |
+| P1 | Layer C Canary 与过期机制（完成） | 10 个未过期公开 Canary×5 | `CRAWLUME_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly` |
 | P1 | Release 配对比较（完成合同） | 完全相同 Case Set/repeat keys 才可比较 | `pnpm bench -- --mode release --compare <baseline>` |
 | P2 | 离线 Optimization Loop（完成） | 受控 Shadow/A-B/Counterfactual/Tournament；无敏感工件 | `pnpm bench:optimize` |
 | 条件式 | 私有 Release、竞品和生产 rollout | 外部数据、预算与审核齐备 | 尚未触发，不伪造证据 |

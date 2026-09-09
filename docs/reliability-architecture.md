@@ -1,4 +1,4 @@
-# Diaoyan 可靠性与成本优化架构
+# Crawlume 可靠性与成本优化架构
 
 状态：Approved and implemented（本地单机 Profile）；条件式集群、托管 Provider、模型和具体站点 Adapter 未启用
 最后更新：2026-08-30
@@ -10,7 +10,7 @@
 
 ## Objective
 
-把 Diaoyan 从“带 HTTP/Browser fallback 的本地 Reader”演进为高可靠 Web Retrieval Engine。在调用方
+把 Crawlume 从“带 HTTP/Browser fallback 的本地 Reader”演进为高可靠 Web Retrieval Engine。在调用方
 给定内容目标、新鲜度、延迟和成本预算后，系统选择最便宜的可靠访问路径，返回经过验证的 Artifact；
 无法确认时返回 `uncertain` 或明确失败，禁止用错误内容制造高成功率。
 

@@ -94,7 +94,7 @@ export class SearchService {
     if (this.provider === null) {
       throw new ReadError(
         "SEARCH_PROVIDER_NOT_CONFIGURED",
-        "No web search provider is configured. Set DIAOYAN_SEARXNG_URL or use source=local.",
+        "No web search provider is configured. Set CRAWLUME_SEARXNG_URL or use source=local.",
       );
     }
     return this.provider.search(options);
@@ -116,7 +116,7 @@ export class SearchService {
       }
       throw new ReadError(
         "SEARCH_PROVIDER_NOT_CONFIGURED",
-        "No indexed pages or web search provider are available. Read or crawl pages first, or set DIAOYAN_SEARXNG_URL.",
+        "No indexed pages or web search provider are available. Read or crawl pages first, or set CRAWLUME_SEARXNG_URL.",
       );
     }
 

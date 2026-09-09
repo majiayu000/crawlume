@@ -1,7 +1,7 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import type { DiaoyanApp } from "./app.js";
+import type { CrawlumeApp } from "./app.js";
 import { normalizeError } from "./errors.js";
 import {
   cacheModes,
@@ -39,7 +39,7 @@ const readPageInput = z.object({
     .string()
     .regex(/^[A-Za-z0-9._-]{1,64}$/)
     .optional()
-    .describe("Dedicated browser profile created with diaoyan-auth."),
+    .describe("Dedicated browser profile created with crawlume-auth."),
   browserReadiness: browserReadinessInput.optional().describe(
     "Explicit browser terminal condition and optional bounded scrolling.",
   ),
@@ -204,15 +204,14 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
   };
 }
 
-export function createMcpServer(app: DiaoyanApp): McpServer {
+export function createMcpServer(app: CrawlumeApp): McpServer {
   const server = new McpServer(
-    { name: "diaoyan-web-reader", version: "0.10.4" },
+    { name: "crawlume", version: "0.10.4" },
     {
       instructions:
-        "Use search_web to discover pages, read_page for one page, map_site for bounded same-site discovery, " +
+        "Use read_page for a supplied URL, map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, and start/get/pause/resume/cancel/get-pages controls for durable crawling, " +
-        "inspect_page for diagnostics, get_search_status for the local search serving contract, " +
-        "get_search_stats for privacy-preserving observed query outcomes and latency, " +
+        "inspect_page for diagnostics, " +
         "get_crawler_stats for local operational metrics, " +
         "get_rsl_audit for bounded license and access audit records, " +
         "and start_monitor/get_monitor/list_monitors/cancel_monitor for durable page-change monitoring. " +
@@ -227,7 +226,7 @@ export function createMcpServer(app: DiaoyanApp): McpServer {
       title: "Search pages",
       description:
         "Search the local page index, a configured web provider, or both, and return normalized URLs and snippets. " +
-        "Use source=local for no-network search; web discovery requires DIAOYAN_SEARXNG_URL.",
+        "Use source=local for no-network search; web discovery requires CRAWLUME_SEARXNG_URL.",
       inputSchema: searchWebInput,
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },

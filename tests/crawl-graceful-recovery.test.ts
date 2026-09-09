@@ -23,7 +23,7 @@ afterEach(async () => {
 
 describe("durable crawl graceful recovery", () => {
   it("retries a released page instead of replaying the shutdown attempt", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-graceful-recovery-"));
+    const directory = await mkdtemp(join(tmpdir(), "crawlume-crawl-graceful-recovery-"));
     temporaryDirectories.push(directory);
     const databasePath = join(directory, "cache.sqlite");
     const config = {

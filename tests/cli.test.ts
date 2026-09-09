@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseCli } from "../src/cli/main.js";
 
-describe("diaoyan CLI", () => {
+describe("crawlume CLI", () => {
   it("leaves reader semantic defaults to the shared ReadIntent boundary", () => {
     expect(parseCli(["read", "https://example.com/article"])).toEqual({
       kind: "read",

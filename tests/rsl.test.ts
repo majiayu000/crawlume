@@ -32,7 +32,7 @@ function response(
     retryAfterMs: null,
     proxyUsed: false,
     agentIdentity: {
-      userAgent: "DiaoyanWebReaderTest/0.1",
+      userAgent: "CrawlumeTest/0.1",
       identityUrl: null,
       signed: false,
       profile: null,
@@ -64,22 +64,22 @@ describe("robots RSL discovery", () => {
 License: https://example.com/global.xml
 User-agent: *
 License: https://example.com/default.xml
-User-agent: DiaoyanWebReader
+User-agent: Crawlume
 Allow: /
-License: https://example.com/diaoyan.xml
+License: https://example.com/crawlume.xml
 `;
 
-    expect(parseRobotsLicenseUrls(robots, "DiaoyanWebReader/0.10")).toEqual([
-      "https://example.com/diaoyan.xml",
+    expect(parseRobotsLicenseUrls(robots, "Crawlume/0.10")).toEqual([
+      "https://example.com/crawlume.xml",
     ]);
   });
 
   it("falls back to global licenses when the selected group has none", () => {
     const robots = `License: https://example.com/global.xml
-User-agent: DiaoyanWebReader
+User-agent: Crawlume
 Allow: /`;
 
-    expect(parseRobotsLicenseUrls(robots, "DiaoyanWebReader/0.10")).toEqual([
+    expect(parseRobotsLicenseUrls(robots, "Crawlume/0.10")).toEqual([
       "https://example.com/global.xml",
     ]);
   });
@@ -258,22 +258,22 @@ describe("RSL Link parsing", () => {
 
 describe("RSL configuration", () => {
   it("rejects broad vocabulary tokens as an operator purpose", () => {
-    vi.stubEnv("DIAOYAN_RSL_USAGE", "ai-all");
-    expect(() => loadConfig()).toThrow("DIAOYAN_RSL_USAGE must be one of");
+    vi.stubEnv("CRAWLUME_RSL_USAGE", "ai-all");
+    expect(() => loadConfig()).toThrow("CRAWLUME_RSL_USAGE must be one of");
   });
 
   it("requires an uppercase two-letter region", () => {
-    vi.stubEnv("DIAOYAN_RSL_GEO", "cn");
-    expect(() => loadConfig()).toThrow("DIAOYAN_RSL_GEO must be two uppercase ASCII letters");
+    vi.stubEnv("CRAWLUME_RSL_GEO", "cn");
+    expect(() => loadConfig()).toThrow("CRAWLUME_RSL_GEO must be two uppercase ASCII letters");
   });
 
   it("requires an absolute administrator approval path", () => {
-    vi.stubEnv("DIAOYAN_RSL_APPROVALS_PATH", "relative/approvals.json");
-    expect(() => loadConfig()).toThrow("DIAOYAN_RSL_APPROVALS_PATH must be an absolute path");
+    vi.stubEnv("CRAWLUME_RSL_APPROVALS_PATH", "relative/approvals.json");
+    expect(() => loadConfig()).toThrow("CRAWLUME_RSL_APPROVALS_PATH must be an absolute path");
   });
 
   it("requires an absolute OLP client path", () => {
-    vi.stubEnv("DIAOYAN_RSL_CLIENTS_PATH", "relative/clients.json");
-    expect(() => loadConfig()).toThrow("DIAOYAN_RSL_CLIENTS_PATH must be an absolute path");
+    vi.stubEnv("CRAWLUME_RSL_CLIENTS_PATH", "relative/clients.json");
+    expect(() => loadConfig()).toThrow("CRAWLUME_RSL_CLIENTS_PATH must be an absolute path");
   });
 });

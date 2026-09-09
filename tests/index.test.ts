@@ -70,7 +70,7 @@ describe("LocalPageIndex", () => {
         title: "MiniMax H3 inference guide",
         url: "https://example.com/article",
         source: "local",
-        engines: ["diaoyan-local"],
+        engines: ["crawlume-local"],
       }),
     ]);
   });

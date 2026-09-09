@@ -1,4 +1,4 @@
-# Diaoyan v0.9 运行统计规范
+# Crawlume v0.9 运行统计规范
 
 ## 目标
 
@@ -21,7 +21,7 @@
 
 ## 输出
 
-`get_crawler_stats` MCP 工具和 `diaoyan stats --days <1-90>` CLI 返回同一结构：
+`get_crawler_stats` MCP 工具和 `crawlume stats --days <1-90>` CLI 返回同一结构：
 
 - `generatedAt`、`since`、`days`。
 - `totals`：请求、成功、失败、成功率、缓存命中及命中率。

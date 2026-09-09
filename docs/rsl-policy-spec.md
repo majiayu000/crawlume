@@ -1,4 +1,4 @@
-# Diaoyan v0.10.1 RSL 核心发现与策略规范
+# Crawlume v0.10.1 RSL 核心发现与策略规范
 
 > 本文保留 v0.10.1 核心策略边界；v0.10.3 的 Token 获取与 CAP 请求见 `rsl-olp-cap-spec.md`。
 
@@ -11,9 +11,9 @@
 
 | 变量 | 默认值 | 规则 |
 |---|---|---|
-| `DIAOYAN_RSL_USAGE` | `ai-input` | `ai-train`、`ai-input`、`ai-index` 或 `search`。 |
-| `DIAOYAN_RSL_USER_CLASS` | 空 | 可选：`commercial`、`non-commercial`、`education`、`government` 或 `personal`。 |
-| `DIAOYAN_RSL_GEO` | 空 | 可选：两个大写 ASCII 字母的地区代码。 |
+| `CRAWLUME_RSL_USAGE` | `ai-input` | `ai-train`、`ai-input`、`ai-index` 或 `search`。 |
+| `CRAWLUME_RSL_USER_CLASS` | 空 | 可选：`commercial`、`non-commercial`、`education`、`government` 或 `personal`。 |
+| `CRAWLUME_RSL_GEO` | 空 | 可选：两个大写 ASCII 字母的地区代码。 |
 
 用途、用户类别和地区是管理员级事实，不开放为单次 Agent 工具参数，避免调用方为了放行而临时谎报。
 

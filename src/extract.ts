@@ -12,7 +12,7 @@ import type { ExtractedPage, ExtractionMethod, RawPage } from "./types.js";
 
 const removableSelectors = [
   "script", "style", "noscript", "template", "iframe", "object", "embed", "form",
-  "dialog", "canvas",
+  "dialog", "canvas", "button", "input", "select", "textarea",
 ].join(",");
 const fallbackRemovableSelectors = [
   removableSelectors, "nav", "header", "footer", "aside", "[role='navigation']",
@@ -57,8 +57,6 @@ function normalizedText(value: string): string {
 function cleanMarkdown(value: string): string {
   return value
     .replace(/\r\n/gu, "\n")
-    .replace(/[ \t]+\n/gu, "\n")
-    .replace(/\n{4,}/gu, "\n\n\n")
     .trim();
 }
 
@@ -217,6 +215,54 @@ export function extractLinks(body: string, baseUrl: string): string[] {
   return documentLinks(document);
 }
 
+function codeText(node: Node, root: Node = node): string {
+  if (node.nodeType === 3) return node.textContent ?? "";
+  if (node.nodeType !== 1) return "";
+  const element = node as Element;
+  if (element.tagName === "BR") return "\n";
+  const text = Array.from(node.childNodes, (child) => codeText(child, root)).join("");
+  return element.parentNode === root && (element.tagName === "DIV" || element.tagName === "P") && !text.endsWith("\n")
+    ? `${text}\n`
+    : text;
+}
+
+function normalizeCodeBlocks(document: Document): void {
+  for (const pre of document.querySelectorAll("pre")) {
+    const existing = pre.querySelector("code");
+    const language = /\blanguage-([\w+-]+)/u.exec(`${existing?.className ?? ""} ${pre.className}`)?.[1]
+      ?? existing?.getAttribute("language") ?? pre.getAttribute("language");
+    const code = document.createElement("code");
+    const source = existing ?? pre;
+    source.querySelectorAll("[hidden], [aria-hidden='true'], [role='tooltip']")
+      .forEach((node) => node.remove());
+    // Twoslash annotations/diagnostics belong beside the source, not inside it.
+    const annotations = Array.from(source.querySelectorAll(":scope > .meta-line, :scope > .error"), (node) => {
+      const quote = document.createElement("blockquote");
+      quote.textContent = node.textContent?.trim() ?? "";
+      return quote;
+    });
+    source.querySelectorAll(":scope > .meta-line, :scope > .error, :scope > .error-behind")
+      .forEach((node) => node.remove());
+    code.textContent = codeText(source);
+    if (language !== null && language !== undefined && /^[\w+-]+$/u.test(language)) {
+      code.className = `language-${language}`;
+    }
+    pre.replaceChildren(code);
+
+    // A scroll/style wrapper must not make Readability discard its only content.
+    let wrapper: Element = pre;
+    while (wrapper.parentElement?.tagName === "DIV") {
+      const parent = wrapper.parentElement;
+      if (parent.children.length !== 1 || parent.textContent?.trim() !== pre.textContent?.trim() ||
+          parent.hidden || parent.getAttribute("aria-hidden") === "true" ||
+          parent.style.display === "none" || parent.style.visibility === "hidden") break;
+      wrapper = parent;
+    }
+    if (wrapper !== pre) wrapper.replaceWith(pre);
+    pre.after(...annotations);
+  }
+}
+
 function sanitizeDocument(document: Document, baseUrl: string, fallback: boolean): void {
   document.querySelectorAll(fallback ? fallbackRemovableSelectors : removableSelectors)
     .forEach((node) => node.remove());
@@ -251,12 +297,12 @@ function sanitizeDocument(document: Document, baseUrl: string, fallback: boolean
 function htmlToMarkdown(document: Document, baseUrl: string, fallback: boolean): string {
   const clone = document.cloneNode(true) as Document;
   sanitizeDocument(clone, baseUrl, fallback);
+  normalizeCodeBlocks(clone);
   const turndown = new TurndownService({
     bulletListMarker: "-",
     codeBlockStyle: "fenced",
     headingStyle: "atx",
   });
-  turndown.remove(["button", "input", "select", "textarea"]);
   return cleanMarkdown(turndown.turndown(clone.body));
 }
 
@@ -304,11 +350,11 @@ function jsonLdExtractor(page: RawPage): ExtractedPage | null {
   const title = typeof record.headline === "string"
     ? record.headline
     : typeof record.name === "string" ? record.name : page.finalUrl;
-  const body = typeof record.articleBody === "string"
+  const body = typeof record.articleBody === "string" && record.articleBody.trim() !== ""
     ? record.articleBody
-    : typeof record.text === "string"
-      ? record.text
-      : typeof record.description === "string" ? record.description : "";
+    : typeof record.text === "string" ? record.text : "";
+  // Headline/description metadata cannot replace the document's full content.
+  if (body.trim() === "") return null;
   const authorValue = record.author;
   const byline = typeof authorValue === "string"
     ? authorValue
@@ -395,7 +441,10 @@ function articleExtractor(page: RawPage): ExtractedPage | null {
   const { document } = state;
   const clone = document.cloneNode(true) as Document;
   sanitizeDocument(clone, page.finalUrl, false);
-  const article = new Readability(clone).parse();
+  normalizeCodeBlocks(clone);
+  const article = new Readability(clone, {
+    classesToPreserve: [...new Set(Array.from(clone.querySelectorAll("pre > code"), (code) => code.className))],
+  }).parse();
   if (article?.content === null || article?.content === undefined) {
     state.articleCandidate = null;
     return null;
@@ -432,7 +481,7 @@ const extractors: CandidateExtractor[] = [
     extract: jsonExtractor,
   },
   {
-    id: "json-ld", version: "json-ld-v1",
+    id: "json-ld", version: "json-ld-v2",
     supports: (page) => htmlMediaTypes.has(mediaType(page)) &&
       /<script[^>]+type=["']application\/ld\+json["']/iu.test(page.body),
     extract: jsonLdExtractor,
@@ -458,12 +507,12 @@ const extractors: CandidateExtractor[] = [
     extract: pdfExtractor,
   },
   {
-    id: "article", version: "readability-v1",
+    id: "article", version: "readability-v2",
     supports: (page) => htmlMediaTypes.has(mediaType(page)),
     extract: articleExtractor,
   },
   {
-    id: "document", version: "document-v1",
+    id: "document", version: "document-v2",
     supports: (page) => {
       if (!htmlMediaTypes.has(mediaType(page))) return false;
       const candidate = htmlExtractionState(page).articleCandidate;

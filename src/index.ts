@@ -247,7 +247,7 @@ export class LocalPageIndex {
       url: row.final_url,
       snippet: snippetFrom(row.content_markdown),
       source: "local",
-      engines: ["diaoyan-local"],
+      engines: ["crawlume-local"],
       score: null,
       publishedAt: row.published_time,
       thumbnailUrl: null,

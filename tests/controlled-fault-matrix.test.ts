@@ -17,15 +17,15 @@ import { executeReaderBenchmarkCase } from "../benchmarks/harness/corpus.js";
 import type { BenchmarkCandidate } from "../benchmarks/harness/contract.js";
 
 const environmentKeys = [
-  "DIAOYAN_ALLOW_DNS_FAKE_IP",
-  "DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS",
-  "DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS",
-  "DIAOYAN_CRAWL_RETRY_BASE_MS",
-  "DIAOYAN_DATA_DIR",
-  "DIAOYAN_MAX_REDIRECTS",
-  "DIAOYAN_MAX_RESPONSE_BYTES",
-  "DIAOYAN_PROXY_URLS",
-  "DIAOYAN_REQUEST_TIMEOUT_MS",
+  "CRAWLUME_ALLOW_DNS_FAKE_IP",
+  "CRAWLUME_CRAWL_MAX_RETRY_DELAY_MS",
+  "CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS",
+  "CRAWLUME_CRAWL_RETRY_BASE_MS",
+  "CRAWLUME_DATA_DIR",
+  "CRAWLUME_MAX_REDIRECTS",
+  "CRAWLUME_MAX_RESPONSE_BYTES",
+  "CRAWLUME_PROXY_URLS",
+  "CRAWLUME_REQUEST_TIMEOUT_MS",
 ] as const;
 
 type EnvironmentKey = (typeof environmentKeys)[number];
@@ -92,7 +92,7 @@ beforeAll(async () => {
   originalEnvironment = Object.fromEntries(
     environmentKeys.map((key) => [key, process.env[key]]),
   ) as Record<EnvironmentKey, string | undefined>;
-  dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-controlled-faults-"));
+  dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-controlled-faults-"));
   site = await createControlledFaultSite();
 });
 

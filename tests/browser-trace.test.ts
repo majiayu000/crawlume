@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 async function store(): Promise<{ root: string; traces: BrowserFailureTraceStore }> {
-  const root = await mkdtemp(join(tmpdir(), "diaoyan-browser-trace-"));
+  const root = await mkdtemp(join(tmpdir(), "crawlume-browser-trace-"));
   temporaryDirectories.push(root);
   return { root, traces: new BrowserFailureTraceStore(root) };
 }

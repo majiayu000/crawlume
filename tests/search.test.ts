@@ -276,7 +276,7 @@ describe("SearxngProvider", () => {
     );
     const provider = new SearxngProvider(
       "http://127.0.0.1:8080/searxng",
-      "DiaoyanTest/1.0",
+      "CrawlumeTest/1.0",
       1_000,
       requester,
     );

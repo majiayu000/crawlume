@@ -1,7 +1,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DiaoyanApp } from "../src/app.js";
+import type { CrawlumeApp } from "../src/app.js";
 import { ReadError } from "../src/errors.js";
 import { createMcpServer } from "../src/mcp.js";
 import type { ReadPageResult } from "../src/types.js";
@@ -98,9 +98,9 @@ function monitorResult(status: "scheduled" | "running" | "cancelled" = "schedule
   };
 }
 
-async function connect(app: DiaoyanApp): Promise<Client> {
+async function connect(app: CrawlumeApp): Promise<Client> {
   const server = createMcpServer(app);
-  const client = new Client({ name: "diaoyan-test", version: "1.0.0" });
+  const client = new Client({ name: "crawlume-test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   openClients.push(client);
   openServers.push(server);
@@ -246,7 +246,7 @@ describe("MCP server", () => {
         cancel: vi.fn(() => ({ ...monitorResult("cancelled"), nextRunAt: null })),
       },
       close: async () => undefined,
-    } as unknown as DiaoyanApp;
+    } as unknown as CrawlumeApp;
     const client = await connect(app);
 
     const listed = await client.listTools();
@@ -522,7 +522,7 @@ describe("MCP server", () => {
         },
       },
       close: async () => undefined,
-    } as unknown as DiaoyanApp;
+    } as unknown as CrawlumeApp;
     const client = await connect(app);
     const response = await client.callTool({
       name: "read_page",

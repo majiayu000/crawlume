@@ -55,7 +55,7 @@ describe("ValidatorRegistry", () => {
   it("returns a versioned valid result only after all required checks pass", () => {
     expect(validate(rawPage(), extracted())).toEqual({
       outcome: "valid",
-      validatorVersion: "generic-content-v1",
+      validatorVersion: "generic-content-v2",
       checks: expect.arrayContaining([
         expect.objectContaining({ code: "CONTENT_MINIMUM", passed: true }),
         expect.objectContaining({ code: "HUMAN_VERIFICATION_REQUIRED", passed: true }),
@@ -70,7 +70,7 @@ describe("ValidatorRegistry", () => {
       extracted({ contentCharacters: 320, extractionMethod: "document" }),
     )).toMatchObject({
       outcome: "uncertain",
-      validatorVersion: "generic-content-v1",
+      validatorVersion: "generic-content-v2",
       checks: expect.arrayContaining([
         expect.objectContaining({ code: "PREFERRED_CONTENT_LENGTH", passed: false }),
         expect.objectContaining({ code: "PRIMARY_EXTRACTION", passed: false }),
@@ -87,7 +87,7 @@ describe("ValidatorRegistry", () => {
     expect(candidate.markdown).toContain("Loading");
     expect(validate(page, candidate)).toMatchObject({
       outcome: "invalid",
-      validatorVersion: "generic-content-v1",
+      validatorVersion: "generic-content-v2",
       terminalError: { code: "SHELL_ONLY" },
     });
   });
@@ -108,6 +108,29 @@ describe("ValidatorRegistry", () => {
   ])("keeps gate classification in validation", async (body, code) => {
     const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
     expect(validate(page, await extractDocument(page))).toMatchObject({
+      outcome: "invalid",
+      terminalError: { code },
+    });
+  });
+
+  it.each([
+    ["MCP Tools", '<script>self.__next_f.push(["CaptchaProvider"])</script>'],
+    ["Playwright Locators", '<pre><code>getByRole("button", { name: "Sign in" }); getByRole("button", { name: "Sign up" });</code></pre>'],
+  ])("does not classify %s documentation examples or scripts as access gates", (title, example) => {
+    const body = `<html><head><title>${title}</title></head><body><main><p>${"Documentation explains the public API with complete examples. ".repeat(20)}</p>${example}</main></body></html>`;
+    expect(validate(rawPage({ body }), extracted())).toMatchObject({
+      outcome: "valid",
+      terminalError: null,
+    });
+  });
+
+  it.each([
+    ["<h1>Verify you are human</h1><pre>public API example</pre>", "HUMAN_VERIFICATION_REQUIRED"],
+    ["<form><input type='password'></form><pre>public API example</pre>", "LOGIN_WALL_DETECTED"],
+    ["<p>Sign in to continue or sign up to join.</p><code>example()</code>", "LOGIN_WALL_DETECTED"],
+  ])("still rejects a live access gate alongside documentation markup", (gate, code) => {
+    const body = `<html><head><title>Documentation</title></head><body>${gate}</body></html>`;
+    expect(validate(rawPage({ body }), extracted())).toMatchObject({
       outcome: "invalid",
       terminalError: { code },
     });

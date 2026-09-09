@@ -107,7 +107,7 @@ describe("AttemptLedger", () => {
   });
 
   it("persists append-only evidence across reopen", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-attempt-ledger-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-attempt-ledger-"));
     directories.push(directory);
     const path = join(directory, "ledger.sqlite");
     const first = new AttemptLedger(path);

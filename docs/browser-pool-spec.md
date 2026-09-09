@@ -1,4 +1,4 @@
-# Diaoyan v0.8 浏览器 Worker 池规范
+# Crawlume v0.8 浏览器 Worker 池规范
 
 ## 目标
 
@@ -13,9 +13,9 @@
 
 ## 配置
 
-- `DIAOYAN_BROWSER_POOL_SIZE`：进程内最大匿名浏览器实例数，默认 2，范围 1-16。
-- `DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE`：每个实例最大并发 Context，默认 4，范围 1-32。
-- `DIAOYAN_BROWSER_POOL_WAIT_MS`：池满后的最大等待，默认 30000ms，范围 1-300000。
+- `CRAWLUME_BROWSER_POOL_SIZE`：进程内最大匿名浏览器实例数，默认 2，范围 1-16。
+- `CRAWLUME_BROWSER_CONTEXTS_PER_INSTANCE`：每个实例最大并发 Context，默认 4，范围 1-32。
+- `CRAWLUME_BROWSER_POOL_WAIT_MS`：池满后的最大等待，默认 30000ms，范围 1-300000。
 
 ## 分池与复用
 

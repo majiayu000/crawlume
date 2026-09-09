@@ -1,8 +1,8 @@
-# Diaoyan v0.4 本地全文索引规范
+# Crawlume v0.4 本地全文索引规范
 
 ## 目标
 
-在管理员显式设置 `DIAOYAN_LOCAL_INDEX_ENABLED=1` 时，把已经由 Diaoyan 合规读取的公开页面
+在管理员显式设置 `CRAWLUME_LOCAL_INDEX_ENABLED=1` 时，把已经由 Crawlume 合规读取的公开页面
 沉淀为本地可搜索语料，减少重复依赖外部搜索服务。该功能默认关闭，不属于爬虫核心执行链路。
 本阶段不建设全网索引，不引入分布式队列，也不索引使用授权 Profile 读取的内容。
 
@@ -30,7 +30,7 @@ Raw/Artifact 离线重建，并报告 parser/extractor 与固定 indexer 版本�
 complete release，投影切换与 active 指针位于同一事务。普通索引写入会使 active 指针失效。
 详细合同见 [Phase 5 发布 ADR](./vertical-search-phase5-release-adr.md)。
 
-AI 工具与开发者文档一期通过 `DiaoyanApp.verticalSearch` 管理官方 domain、人工 URL、SearXNG
+AI 工具与开发者文档一期通过 `CrawlumeApp.verticalSearch` 管理官方 domain、人工 URL、SearXNG
 候选、每日 durable crawl run 和固定 query judgment。其分层准入、600/300,000/60,000 容量及
 评测合同见 [一期 ADR](./vertical-search-phase1-adr.md)。该管理入口仅在本地索引启用时存在；
 SearXNG 只用于候选发现，自主质量评测强制 `source=local`。
@@ -57,7 +57,7 @@ SQLite 文件，但使用独立表。
   命中时继续原样抛出 Provider 错误。
 
 `SearchResult` 新增 `source: local | web`。本地结果的 `engines` 为
-`["diaoyan-local"]`，`score` 为 `null`，避免把 FTS 排名与外部 Provider 分数错误比较。
+`["crawlume-local"]`，`score` 为 `null`，避免把 FTS 排名与外部 Provider 分数错误比较。
 
 `SearchWebResult`：
 

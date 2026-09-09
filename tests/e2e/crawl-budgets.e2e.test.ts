@@ -18,14 +18,14 @@ import {
 
 function environment(proxyUrl: string): Record<string, string> {
   return {
-    DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-    DIAOYAN_CRAWL_MAX_ATTEMPTS: "1",
-    DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "0",
-    DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-    DIAOYAN_CRAWL_WORKER_CONCURRENCY: "4",
-    DIAOYAN_LOCAL_INDEX_ENABLED: "0",
-    DIAOYAN_PROXY_URLS: proxyUrl,
-    DIAOYAN_REQUEST_TIMEOUT_MS: "10000",
+    CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+    CRAWLUME_CRAWL_MAX_ATTEMPTS: "1",
+    CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
+    CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+    CRAWLUME_CRAWL_WORKER_CONCURRENCY: "4",
+    CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+    CRAWLUME_PROXY_URLS: proxyUrl,
+    CRAWLUME_REQUEST_TIMEOUT_MS: "10000",
   };
 }
 
@@ -38,7 +38,7 @@ function usageValue(job: JsonRecord, field: string): number {
 
 describe("durable crawl cumulative budgets through real providers", () => {
   it("stops queued pages when measured document bytes consume the crawl budget", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-bytes-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-bytes-e2e-"));
     const site = await createDurableCrawlSite({ pages: 4, bodyBytes: 4_096 });
     let process: BuiltMcpProcess | null = null;
     try {
@@ -98,7 +98,7 @@ describe("durable crawl cumulative budgets through real providers", () => {
   }, 60_000);
 
   it("turns queued pages into explicit stops when the crawl deadline expires", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-deadline-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-deadline-e2e-"));
     const site = await createDurableCrawlSite({ pages: 4, holdPageResponses: true });
     let process: BuiltMcpProcess | null = null;
     try {
@@ -139,7 +139,7 @@ describe("durable crawl cumulative budgets through real providers", () => {
   }, 30_000);
 
   it("stops new browser work after the real Chrome context budget is consumed", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-browser-budget-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-browser-budget-e2e-"));
     const site = await createDurableCrawlSite({ pages: 3, dynamicPages: true });
     let process: BuiltMcpProcess | null = null;
     try {
@@ -147,9 +147,9 @@ describe("durable crawl cumulative budgets through real providers", () => {
         dataDirectory,
         environment: {
           ...environment(site.proxyUrl),
-          DIAOYAN_BROWSER_POOL_SIZE: "1",
-          DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE: "2",
-          DIAOYAN_BROWSER_TIMEOUT_MS: "10000",
+          CRAWLUME_BROWSER_POOL_SIZE: "1",
+          CRAWLUME_BROWSER_CONTEXTS_PER_INSTANCE: "2",
+          CRAWLUME_BROWSER_TIMEOUT_MS: "10000",
         },
       });
       const started = await startCrawl(process, {

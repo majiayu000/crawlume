@@ -167,7 +167,7 @@ describe("RslAccessAudit", () => {
   });
 
   it("persists records and enforces bounded queries", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-rsl-audit-test-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-rsl-audit-test-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "audit.sqlite");
     const first = new RslAccessAudit(path, "ai-input");
@@ -181,7 +181,7 @@ describe("RslAccessAudit", () => {
   });
 
   it("migrates the v0.10.2 audit table without losing records", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-rsl-audit-migration-test-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-rsl-audit-migration-test-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "audit.sqlite");
     const legacy = new DatabaseSync(path);

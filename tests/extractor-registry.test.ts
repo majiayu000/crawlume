@@ -68,6 +68,19 @@ describe("ExtractorRegistry", () => {
   });
 
   it.each([
+    { headline: "Tools" },
+    { headline: "Tools", description: "Summary only, not the full document." },
+    { headline: "Tools", articleBody: "   " },
+  ])("uses visible article content when JSON-LD contains only metadata: %j", async (metadata) => {
+    const body = `<html><head><title>Tools</title><script type="application/ld+json">${JSON.stringify({
+      "@type": "TechArticle", ...metadata,
+    })}</script></head><body><article><h1>Tools</h1><p>${"The complete tool documentation explains invocation and errors. ".repeat(20)}</p></article></body></html>`;
+    const batch = await defaultExtractorRegistry.extract(rawPage({ body }));
+    expect(batch.candidates.map(candidate => candidate.extractorId)).toEqual(["article"]);
+    expect(batch.candidates[0]?.artifact.markdown).toContain("invocation and errors");
+  });
+
+  it.each([
     [
       "rss",
       "application/rss+xml",

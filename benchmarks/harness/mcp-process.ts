@@ -79,7 +79,7 @@ export async function startBuiltMcpProcess(options: McpProcessOptions): Promise<
     cwd,
     env: {
       ...inheritedEnvironment(),
-      DIAOYAN_DATA_DIR: options.dataDirectory,
+      CRAWLUME_DATA_DIR: options.dataDirectory,
       ...options.environment,
     },
     stderr: "pipe",
@@ -88,7 +88,7 @@ export async function startBuiltMcpProcess(options: McpProcessOptions): Promise<
   transport.stderr?.on("data", (chunk: Buffer | string) => {
     stderr = `${stderr}${chunk.toString()}`.slice(-1_000_000);
   });
-  const client = new Client({ name: "diaoyan-durable-e2e", version: "1.0.0" });
+  const client = new Client({ name: "crawlume-durable-e2e", version: "1.0.0" });
   try {
     await client.connect(transport);
   } catch (error) {

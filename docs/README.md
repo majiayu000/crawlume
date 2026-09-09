@@ -1,6 +1,10 @@
-# Diaoyan 文档索引
+# Crawlume 文档索引
 
 ## 当前实现合同
+
+- [code-content-verification.md](./code-content-verification.md)：代码正文保留与本机 Codex MCP 接入验收。
+
+- [docs-trial.md](./docs-trial.md)：五个开发者文档站、20 个问题的真实采集与本地检索试用。
 
 - [spec.md](./spec.md)：已经实现并应保持兼容的完整产品合同。
 - [roadmap.md](./roadmap.md)：已完成阶段、条件式能力与后续决策门。
@@ -15,7 +19,7 @@
 
 1. [search-engine-architecture-landscape.md](./search-engine-architecture-landscape.md)
    对比 Brave Search、Firecrawl、Exa 与 Firefox 的真实系统边界、数据来源、索引与排序架构，说明
-   Diaoyan/FetchTrail 从网页获取层走向自主搜索引擎目标 C 所缺少的数据面和分阶段建设路径；该目标
+   Crawlume 从网页获取层走向自主搜索引擎目标 C 所缺少的数据面和分阶段建设路径；该目标
    不属于当前已完成的本地 Retrieval Runtime。
    已批准的一期实现边界见 [vertical-search-phase1-adr.md](./vertical-search-phase1-adr.md)，逐项进度见
    [vertical-search-phase1-ledger.md](./vertical-search-phase1-ledger.md)。长期网页数据层边界见

@@ -140,14 +140,14 @@ export class SearxngProvider implements SearchProvider {
     requester: SearchRequester = defaultRequester(userAgent, timeoutMs),
   ) {
     if (!URL.canParse(baseUrl)) {
-      throw new ReadError("INVALID_ARGUMENT", "DIAOYAN_SEARXNG_URL is not a valid URL.");
+      throw new ReadError("INVALID_ARGUMENT", "CRAWLUME_SEARXNG_URL is not a valid URL.");
     }
     this.baseUrl = new URL(baseUrl);
     if (this.baseUrl.protocol !== "http:" && this.baseUrl.protocol !== "https:") {
-      throw new ReadError("INVALID_ARGUMENT", "DIAOYAN_SEARXNG_URL must use http or https.");
+      throw new ReadError("INVALID_ARGUMENT", "CRAWLUME_SEARXNG_URL must use http or https.");
     }
     if (this.baseUrl.username !== "" || this.baseUrl.password !== "") {
-      throw new ReadError("INVALID_ARGUMENT", "Credentials in DIAOYAN_SEARXNG_URL are not allowed.");
+      throw new ReadError("INVALID_ARGUMENT", "Credentials in CRAWLUME_SEARXNG_URL are not allowed.");
     }
     this.requester = requester;
   }

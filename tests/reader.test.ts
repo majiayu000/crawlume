@@ -412,7 +412,7 @@ describe("ReaderService", () => {
 
   it("preserves public Agent identity evidence", async () => {
     const agentIdentity = {
-      userAgent: "DiaoyanCrawler/0.10 (+https://crawler.example)",
+      userAgent: "Crawlume/0.10 (+https://crawler.example)",
       identityUrl: "https://crawler.example/identity",
       signed: true,
       profile: "cloudflare-legacy" as const,

@@ -119,7 +119,7 @@ async function authorizationHarness(
   });
   const port = await listen(proxy);
   servers.push(proxy);
-  const dataDir = await mkdtemp(join(tmpdir(), "diaoyan-auth-origin-"));
+  const dataDir = await mkdtemp(join(tmpdir(), "crawlume-auth-origin-"));
   temporaryDirectories.push(dataDir);
   const endpoints = parseProxyEndpoints(`http://127.0.0.1:${port}`);
   const config = {

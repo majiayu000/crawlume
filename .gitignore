@@ -11,6 +11,6 @@ benchmarks/runners/**/.venv/
 .DS_Store
 
 # Authentication state must stay outside the repository. These entries are
-# defensive in case DIAOYAN_DATA_DIR is pointed here accidentally.
+# defensive in case CRAWLUME_DATA_DIR is pointed here accidentally.
 profiles/
 cache.sqlite*
