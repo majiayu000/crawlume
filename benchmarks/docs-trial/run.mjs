@@ -5,22 +5,40 @@ import { resolve, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { createApp } from '../../dist/app.js';
 import { loadConfig } from '../../dist/config.js';
+import { applySeeds, loadFixture, matchGoldPublication } from './corpus.mjs';
 
-const [action = 'collect', outputArgument] = process.argv.slice(2);
+const [action = 'collect', outputArgument, fixtureArgument] = process.argv.slice(2);
 if (!['collect', 'evaluate'].includes(action) || !outputArgument || !process.env.CRAWLUME_DATA_DIR) {
-  throw new Error('Usage: CRAWLUME_DATA_DIR=<dedicated directory> pnpm trial:docs <collect|evaluate> <report directory>');
+  throw new Error('Usage: CRAWLUME_DATA_DIR=<dedicated directory> pnpm trial:docs <collect|evaluate> <report directory> [fixture.json]');
 }
 const config = loadConfig();
 if (!config.localIndexEnabled) throw new Error('Set CRAWLUME_LOCAL_INDEX_ENABLED=1.');
-const fixtureText = readFileSync(new URL('./cases.json', import.meta.url), 'utf8');
+const fixturePath = fixtureArgument
+  ? resolve(fixtureArgument)
+  : new URL('./cases.json', import.meta.url);
+const fixtureText = readFileSync(fixturePath, 'utf8');
 const fixtureHash = createHash('sha256').update(fixtureText).digest('hex');
-const fixture = JSON.parse(fixtureText);
+const fixture = loadFixture(JSON.parse(fixtureText));
 const output = resolve(outputArgument);
 mkdirSync(join(output, 'pages'), { recursive: true });
 const statePath = join(output, 'collection.json');
 function save(path, value) {
   writeFileSync(`${path}.tmp`, `${JSON.stringify(value, null, 2)}\n`);
   renameSync(`${path}.tmp`, path);
+}
+function collectPublications(app, run) {
+  const publications = [];
+  for (const job of run.jobs) {
+    if (!job.jobId) continue;
+    let cursor = 0;
+    while (true) {
+      const batch = app.jobs.pages(job.jobId, cursor, 100);
+      publications.push(...batch.pages);
+      cursor = batch.nextSequence;
+      if (batch.done || batch.pages.length === 0) break;
+    }
+  }
+  return publications;
 }
 const app = createApp(config, { runCrawlWorker: action === 'collect', runMonitorWorker: false });
 try {
@@ -32,9 +50,16 @@ try {
     }
   } else {
     if (action !== 'collect') throw new Error('Collect the corpus before evaluating.');
-    for (const item of fixture.cases) app.verticalSearch.addManualUrl(item.url);
+    applySeeds(app.verticalSearch, fixture);
     const run = app.verticalSearch.startDailyRun();
-    state = { fixtureHash, dataDir: resolve(config.dataDir), runId: run.id, startedAt: new Date().toISOString() };
+    state = {
+      fixtureHash,
+      fixtureFile: fixtureArgument ? resolve(fixtureArgument) : 'benchmarks/docs-trial/cases.json',
+      mode: fixture.mode,
+      dataDir: resolve(config.dataDir),
+      runId: run.id,
+      startedAt: new Date().toISOString(),
+    };
     save(statePath, state);
   }
   let run = app.verticalSearch.refreshRun(state.runId);
@@ -53,16 +78,32 @@ try {
     run = app.verticalSearch.refreshRun(state.runId);
   }
   if (run.status === 'running') throw new Error('Collection is still running; resume collect first.');
-  const publications = run.jobs.flatMap(job => job.jobId ? app.jobs.pages(job.jobId, 0, 100).pages : []);
-  const seeds = app.verticalSearch.listSeeds();
+  const publications = collectPublications(app, run);
   const pages = fixture.cases.map(item => {
-    const publication = publications.find(page => page.url === item.url);
-    if (!publication?.result) return { id: item.id, url: item.url, status: publication?.status ?? 'launch_failed', error: publication?.error ?? run.jobs.find(j => j.seedId === seeds.find(s => s.url === item.url)?.id)?.error ?? null };
+    const publication = matchGoldPublication(item, publications);
+    if (!publication?.result) {
+      return {
+        id: item.id,
+        url: item.url,
+        status: publication?.status ?? (fixture.mode === 'discovery' ? 'not_discovered' : 'launch_failed'),
+        error: publication?.error ?? null,
+      };
+    }
     const page = publication.result;
     writeFileSync(join(output, 'pages', `${item.id}.md`), page.contentMarkdown);
-    return { id: item.id, url: item.url, status: publication.status, finalUrl: page.finalUrl, title: page.title,
-      characters: page.contentMarkdown.length, contentHash: page.contentHash, fetchedAt: page.fetchedAt,
-      completeness: page.completeness, validation: page.validation, evidence: page.evidence };
+    return {
+      id: item.id,
+      url: item.url,
+      status: publication.status,
+      finalUrl: page.finalUrl,
+      title: page.title,
+      characters: page.contentMarkdown.length,
+      contentHash: page.contentHash,
+      fetchedAt: page.fetchedAt,
+      completeness: page.completeness,
+      validation: page.validation,
+      evidence: page.evidence,
+    };
   });
   const queries = [];
   for (const item of fixture.cases) {
@@ -85,24 +126,51 @@ try {
     hitAt10: queries.filter(q => q[key].rank !== null).length / queries.length,
     mrrAt10: queries.reduce((sum, q) => sum + (q[key].rank ? 1 / q[key].rank : 0), 0) / queries.length,
   }]));
+  const discovered = pages.filter(p => p.finalUrl).length;
   const collectionStatus = pages.every(p => p.finalUrl) ? 'complete' : 'partial';
-  const report = { collectionStatus, description: fixture.description, evaluatedAt: new Date().toISOString(), fixtureHash,
+  const report = {
+    collectionStatus,
+    mode: fixture.mode,
+    description: fixture.description,
+    evaluatedAt: new Date().toISOString(),
+    fixtureHash,
     gitCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     trackedDiffHash: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'])).digest('hex'),
     runnerHash: createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex'),
     workingTreeDirty: execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim().length > 0,
-    dataDir: state.dataDir, run, searchStatus: app.search.status(), pages, queries, metrics, rawEvaluation };
+    dataDir: state.dataDir,
+    run,
+    searchStatus: app.search.status(),
+    corpusPublications: publications.length,
+    goldDiscovered: discovered,
+    goldTotal: pages.length,
+    pages,
+    queries,
+    metrics,
+    rawEvaluation,
+  };
   save(join(output, 'report.json'), report);
   const lines = ['# Crawlume 文档试用结果', '', `评测时间：${report.evaluatedAt}`, '', fixture.description, '',
-    `采集状态：${collectionStatus}（任务状态 ${run.status}）；索引页数：${report.searchStatus.localDocuments}；计划问题：${queries.length}。`, '',
+    `模式：${fixture.mode}；采集状态：${collectionStatus}（任务状态 ${run.status}）；索引页数：${report.searchStatus.localDocuments}；语料发布：${publications.length}；目标页发现：${discovered}/${pages.length}；计划问题：${queries.length}。`, '',
     '| 查询方式 | Hit@10 | MRR@10 |', '| --- | ---: | ---: |',
     ...Object.entries(metrics).map(([key, m]) => `| ${key === 'raw' ? '中文问题原文' : '预先编写的英文检索词'} | ${(m.hitAt10 * 100).toFixed(1)}% | ${m.mrrAt10.toFixed(3)} |`), '',
-    '每题只有一个预设目标页，Recall@10 与 Hit@10 相同；其他相关页未被穷举。英文检索词在采集前冻结，不代表自动查询改写能力。', '',
+    fixture.mode === 'discovery'
+      ? '目标页必须从官方域名首页被 Frontier 发现。未发现的目标计入未命中，不回退到精确 URL 抓取。'
+      : '每题只有一个预设目标页，Recall@10 与 Hit@10 相同；其他相关页未被穷举。英文检索词在采集前冻结，不代表自动查询改写能力。',
+    '',
     '| ID | 问题 | 采集 | 中文排名 | 英文词排名 | 原文 |', '| --- | --- | --- | ---: | ---: | --- |',
-    ...queries.map(q => `| ${q.id} | ${q.question} | ${q.indexed ? '已索引' : '失败'} | ${q.raw.rank ?? '未命中'} | ${q.agent.rank ?? '未命中'} | [官方页面](${q.expectedUrl}) |`), '',
+    ...queries.map(q => `| ${q.id} | ${q.question} | ${q.indexed ? '已索引' : (fixture.mode === 'discovery' ? '未发现' : '失败')} | ${q.raw.rank ?? '未命中'} | ${q.agent.rank ?? '未命中'} | [官方页面](${q.expectedUrl}) |`), '',
     '逐页正文位于 pages/；完整来源、验证结果、错误、消耗与查询结果位于 report.json。内容质量需要人工核对，valid 不代表事实或正文完整性已获独立证明。', ''];
   writeFileSync(join(output, 'report.md'), lines.join('\n'));
-  console.log(JSON.stringify({ report: join(output, 'report.md'), status: collectionStatus, documents: report.searchStatus.localDocuments, metrics }, null, 2));
+  console.log(JSON.stringify({
+    report: join(output, 'report.md'),
+    status: collectionStatus,
+    mode: fixture.mode,
+    documents: report.searchStatus.localDocuments,
+    corpusPublications: publications.length,
+    goldDiscovered: discovered,
+    metrics,
+  }, null, 2));
   if (pages.some(p => !p.finalUrl)) process.exitCode = 2;
 } finally {
   await app.close();

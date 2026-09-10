@@ -162,6 +162,7 @@
 - 本地 FTS 对含汉字且零命中的查询返回 `LEXICAL_LANGUAGE_MISMATCH` 警告，不提供翻译或跨语言改写。
 - RSL RSS/Atom 模块发现与同进程内容 URL catalog。
 - PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行；真实付款和站点 Adapter 仍未启用。
+- 文档试用支持从官方域名首页发现语料；目标页未发现不计为索引命中。
 - `evidence.networkBytesIn` 计入 robots/RSL/重定向和浏览器子资源；页级 `maxDocumentBytes` 仍是主文档。浏览器主导航可发送 Web Bot Auth。
 
 ## 可选的托管服务外壳
