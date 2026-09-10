@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { connect } from "node:net";
@@ -65,6 +67,7 @@ type AuthorizationHarness = {
   fetcher: BrowserPageFetcher;
   observedRequests: string[];
   proxyTargets: string[];
+  signatureAgents: Array<string | undefined>;
   dataDir: string;
 };
 
@@ -74,9 +77,11 @@ async function authorizationHarness(
     path: string,
     response: import("node:http").ServerResponse,
   ) => void,
+  configOverrides: Partial<ReturnType<typeof testConfig>> = {},
 ): Promise<AuthorizationHarness> {
   const observedRequests: string[] = [];
   const proxyTargets: string[] = [];
+  const signatureAgents: Array<string | undefined> = [];
   const observedRespond = (
     hostname: string,
     path: string,
@@ -86,6 +91,8 @@ async function authorizationHarness(
     respond(hostname, path, response);
   };
   const origin = createServer((request, response) => {
+    const signatureAgent = request.headers["signature-agent"];
+    signatureAgents.push(Array.isArray(signatureAgent) ? signatureAgent[0] : signatureAgent);
     observedRespond(
       new URL(`http://${request.headers.host ?? "invalid"}`).hostname,
       request.url ?? "",
@@ -98,6 +105,8 @@ async function authorizationHarness(
   const originPort = await listen(origin);
   servers.push(origin);
   const proxy = createServer((request, response) => {
+    const signatureAgent = request.headers["signature-agent"];
+    signatureAgents.push(Array.isArray(signatureAgent) ? signatureAgent[0] : signatureAgent);
     const target = new URL(request.url ?? "", "http://proxy.invalid");
     proxyTargets.push(target.toString());
     observedRespond(
@@ -128,6 +137,7 @@ async function authorizationHarness(
     profilesDir: join(dataDir, "profiles"),
     proxyEndpoints: endpoints,
     browserTimeoutMs: 5_000,
+    ...configOverrides,
   };
   const profiles = new ProfileManager(config);
   profiles.create("research");
@@ -136,6 +146,7 @@ async function authorizationHarness(
     dataDir,
     observedRequests,
     proxyTargets,
+    signatureAgents,
     fetcher: new BrowserPageFetcher(
       config,
       new UrlPolicy(async () => publicResolver()),
@@ -246,6 +257,35 @@ describe("BrowserPageFetcher authorization boundary", () => {
       expect(trace.dom.map(({ tag }) => tag)).toContain("main");
       expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(32_768);
       expect(serialized).not.toMatch(/private-message|token=hidden|data-secret|authorization|cookie/iu);
+    } finally {
+      await fetcher.close();
+    }
+  }, 15_000);
+
+  it("signs the main document request when Web Bot Auth is configured", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-browser-wba-"));
+    temporaryDirectories.push(directory);
+    const pair = generateKeyPairSync("ed25519");
+    const path = join(directory, "private.jwk.json");
+    writeFileSync(path, JSON.stringify(pair.privateKey.export({ format: "jwk" })), { mode: 0o600 });
+    const { fetcher, signatureAgents } = await authorizationHarness(
+      (_hostname, _path, response) => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end(`<main>${"signed article content ".repeat(40)}</main>`);
+      },
+      {
+        agentIdentityUrl: "https://example.com/.well-known/crawlume.json",
+        webBotAuthJwkPath: path,
+      },
+    );
+
+    try {
+      const page = await fetcher.fetch(new URL("http://allowed.example/article"));
+      expect(page.agentIdentity).toMatchObject({
+        signed: true,
+        profile: "cloudflare-legacy",
+      });
+      expect(signatureAgents.some((header) => header !== undefined && header.length > 0)).toBe(true);
     } finally {
       await fetcher.close();
     }

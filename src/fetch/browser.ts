@@ -12,7 +12,8 @@ import {
   type BrowserTracePhase,
 } from "../browser-trace.js";
 import type { AppConfig } from "../config.js";
-import { agentIdentityEvidence } from "../identity.js";
+import { AgentIdentity } from "../identity.js";
+import { addTransferBytes, runWithTransferMeter } from "../transfer-meter.js";
 import {
   crawlCancelledError,
   errorForHttpStatus,
@@ -214,9 +215,15 @@ export class BrowserPageFetcher implements PageFetcher {
     ),
     private readonly traceStore = new BrowserFailureTraceStore(config.dataDir),
     private readonly policyProxy = new PolicyEgressProxy(urlPolicy),
+    private readonly identity = new AgentIdentity(config),
   ) {}
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
+    const { result, bytes } = await runWithTransferMeter(() => this.fetchUnmetered(url, options));
+    return { ...result, networkBytesIn: bytes };
+  }
+
+  private async fetchUnmetered(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     const { authProfile, signal, browserReadiness } = options;
     const allowedOrigins = authProfile === undefined
       ? null
@@ -300,6 +307,13 @@ export class BrowserPageFetcher implements PageFetcher {
       });
       activePage.on("response", (networkResponse) => {
         incrementCounter(statusClasses, statusBucket(networkResponse.status()));
+        const request = networkResponse.request();
+        const isMain = request.isNavigationRequest() && request.frame() === activePage.mainFrame();
+        if (isMain) {
+          return;
+        }
+        const declaredLength = Number.parseInt(networkResponse.headers()["content-length"] ?? "", 10);
+        addTransferBytes(Number.isFinite(declaredLength) ? declaredLength : 0);
       });
       activePage.on("console", (message) => {
         incrementCounter(consoleCounts, consoleBucket(message.type()));
@@ -351,9 +365,10 @@ export class BrowserPageFetcher implements PageFetcher {
                 maxRedirects: 0,
                 timeout: timeoutMs,
                 ...(signal === undefined ? {} : { signal }),
-                ...(authorization === null
-                  ? {}
-                  : { headers: { ...request.headers(), authorization } }),
+                headers: this.identity.headers(parsed, {
+                  ...request.headers(),
+                  ...(authorization === null ? {} : { authorization }),
+                }),
               });
             } catch (error) {
               throw new ReadError("UPSTREAM_ERROR", "The authorized browser request failed.", {
@@ -383,9 +398,12 @@ export class BrowserPageFetcher implements PageFetcher {
             await route.fulfill({ response: intercepted });
             return;
           }
-          if (authorization !== null) {
+          if (isMainNavigation) {
             await route.continue({
-              headers: { ...request.headers(), authorization },
+              headers: this.identity.headers(parsed, {
+                ...request.headers(),
+                ...(authorization === null ? {} : { authorization }),
+              }),
             });
             return;
           }
@@ -489,7 +507,7 @@ export class BrowserPageFetcher implements PageFetcher {
         responseBytes,
         retryAfterMs: parseRetryAfterMs(responseHeaders["retry-after"] ?? null),
         proxyUsed: proxy !== null,
-        agentIdentity: agentIdentityEvidence(this.config, false),
+        agentIdentity: this.identity.evidence(),
         linkHeader: responseHeaders.link ?? null,
       }, presentedAuthorization !== null, presentedAuthorization);
       if (
@@ -515,6 +533,7 @@ export class BrowserPageFetcher implements PageFetcher {
       if (statusError !== null) {
         throw statusError;
       }
+      addTransferBytes(responseBytes);
 
       return {
         body,
@@ -541,7 +560,7 @@ export class BrowserPageFetcher implements PageFetcher {
             : {}),
         },
         proxyUsed: proxy !== null,
-        agentIdentity: agentIdentityEvidence(this.config, false),
+        agentIdentity: this.identity.evidence(),
         rsl,
       };
     } catch (error) {

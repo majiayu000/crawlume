@@ -48,7 +48,8 @@
 
 ## 浏览器与其他请求边界
 
-- 浏览器抓取不发送 Web Bot Auth 签名。Playwright 会发起多种动态子请求，首版不声称这些请求获得统一、正确的逐请求签名。
+- 浏览器主导航请求在启用签名时发送与 HTTP 路径相同的 Web Bot Auth 头；子资源请求不签名。
+- `evidence.agentIdentity.signed` 表示主文档请求是否带签名，不表示子资源已签名。
 - SearXNG 提供方请求不发送页面爬虫签名。
 - robots.txt 通过 HTTP transport 获取，因此在启用时使用同一自有身份和签名规则。
 - SSRF、DNS、robots、响应大小、超时、代理池和重试策略保持不变。签名不能绕过任何现有策略。
@@ -69,7 +70,7 @@
 规则：
 
 - `signed` 表示最终内容请求是否实际带签名，不表示目标站验证或信任了签名。
-- HTTP 签名启用时为 `true`；浏览器结果为 `false`。
+- HTTP 与浏览器主导航在签名启用时为 `true`；未配置 JWK 时为 `false`。
 - 未配置公开身份 URL 时 `identityUrl` 和 `profile` 为 `null`。
 - 不返回私钥、JWK 路径、完整 JWK、代理信息或任何密钥材料。
 - 旧缓存条目可能没有该字段，读取时保持向后兼容。
@@ -86,7 +87,7 @@ Crawlume 首版只消费本地私钥并生成请求签名，不替管理员托�
 - 有效 Ed25519 JWK 生成可验证的 RFC 9421 签名，且覆盖正确的 authority 和 Signature-Agent。
 - 同一次抓取的每个重定向逐跳重新生成签名。
 - 签名器失败时请求失败，不静默回退。
-- HTTP 与浏览器结果准确区分 `signed: true|false`。
+- HTTP 与浏览器主导航在启用签名时均为 `signed: true`；子资源不签名。
 - 私钥和路径不出现在返回证据与错误 details 中。
 - 类型检查、构建和全部测试通过。
 

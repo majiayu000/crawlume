@@ -161,6 +161,7 @@
 - `extract_page` / `crawlume extract`：把已声明的 `ReadIntent.operation=extract` 接到 CLI 与 MCP，返回结构化 JSON；未知 `schemaId` 失败关闭。
 - 本地 FTS 对含汉字且零命中的查询返回 `LEXICAL_LANGUAGE_MISMATCH` 警告，不提供翻译或跨语言改写。
 - RSL RSS/Atom 模块发现与同进程内容 URL catalog；媒体容器内嵌元数据、真实付款和站点 Adapter 仍未启用。
+- `evidence.networkBytesIn` 计入 robots/RSL/重定向和浏览器子资源；页级 `maxDocumentBytes` 仍是主文档。浏览器主导航可发送 Web Bot Auth。
 
 ## 可选的托管服务外壳
 

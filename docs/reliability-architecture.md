@@ -155,9 +155,9 @@ type ExecutionBudget = {
 预算是硬边界。超出预算返回 `BUDGET_EXHAUSTED`，不得 warning 后继续消耗。Map/Crawl 当前把调用方
 同步 Map/Crawl 仍把预算独立应用到每个页面；异步 Crawl 另有持久化累计 `CrawlBudget`，在 claim
 事务中 reservation、完成后 settlement/refund，并为每页生成唯一 requestId。首版
-`maxDocumentBytes` 只累计 Provider 返回的主文档字节；robots、RSL、重定向响应和 Browser 子资源尚未
-纳入，因此不得把它解释成全链路网络流量。需要总流量预算时，计量必须继续下推到 Transport 和
-Browser network events。
+`maxDocumentBytes` 仍按最终主文档字节结算，避免把 robots 缓存命中差算进页级预算。
+`evidence.networkBytesIn` 记录该次请求实际 inbound 传输：主文档、robots、RSL、重定向
+`Content-Length` 和浏览器子资源声明长度。
 
 ### AccessPlan
 

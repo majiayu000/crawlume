@@ -308,6 +308,7 @@ export type FetchEvidence = {
   httpStatus: number;
   contentType: string;
   responseBytes: number;
+  networkBytesIn?: number;
   finalUrl: string;
   redirects?: UrlRedirect[];
   etag?: string;
@@ -362,6 +363,7 @@ export type ReadPageResult = {
     httpStatus: number;
     contentType: string;
     responseBytes: number;
+    networkBytesIn?: number;
       contentCharacters: number;
       extractionMethod: ExtractionMethod;
       extractorVersion: string;

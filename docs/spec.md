@@ -184,8 +184,9 @@ Browser 默认使用正文指纹稳定窗口作为通用兜底。显式目标策
 
 429 的合法 `Retry-After` 必须被遵守；如果它超过管理员允许的最大等待，则保留失败而不是提前
 重试。异步 Crawl Job 取消可以打断退避等待。新鲜成功结果的 evidence 返回 `attempts`、
-`totalRetryDelayMs`、按 HTTP/Browser 拆分的 fetch 次数、响应字节和耗时；最终失败在 details
-返回同样的扁平成本证据，供 Benchmark 和后续 Attempt Ledger 归因。
+`totalRetryDelayMs`、按 HTTP/Browser 拆分的 fetch 次数、主文档 `responseBytes`、全链路
+`networkBytesIn` 和耗时；最终失败在 details 返回同样的扁平成本证据，供 Benchmark 和后续
+Attempt Ledger 归因。
 
 ## 管理员代理池
 
@@ -208,8 +209,9 @@ JWK 不得出现在工具输入、返回、缓存或错误 details。
 `@authority` 与 `signature-agent`，重定向逐跳重新签名。签名只证明请求携带了某个自有密钥，
 不代表站点已经注册或信任该 Agent，也不得用于绕过 robots、认证、付费或访问拒绝。
 
-浏览器路径不发送 Web Bot Auth 签名。新鲜结果的 `evidence.agentIdentity` 必须准确返回最终内容
-请求使用的 User-Agent、公开身份 URL、`signed` 状态和兼容档，不得把浏览器结果标成已签名。
+浏览器主导航在启用签名时发送同一套 Web Bot Auth 头；子资源不签名。新鲜结果的
+`evidence.agentIdentity` 必须准确返回最终内容请求使用的 User-Agent、公开身份 URL、`signed`
+状态和兼容档。
 旧缓存结果可以没有该字段。完整约束见 `docs/agent-identity-spec.md`。
 
 ## RSL 许可策略
