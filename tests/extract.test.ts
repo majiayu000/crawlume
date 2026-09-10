@@ -84,4 +84,11 @@ describe("extractPage", () => {
     expect(result.extractionMethod).toBe("plain");
     expect(result.markdown).toBe(body.trim());
   });
+
+  it("extracts text/markdown with the plain extractor", async () => {
+    const body = "# Guide\n\n" + "plain source content ".repeat(20);
+    const result = await extracted(rawPage({ body, contentType: "text/markdown; charset=utf-8" }), "plain");
+    expect(result.extractionMethod).toBe("plain");
+    expect(result.markdown).toBe(body.trim());
+  });
 });

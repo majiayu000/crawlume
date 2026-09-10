@@ -28,7 +28,7 @@
 - `401` / `402` 等响应中的 RSL Link 或 `application/rsl+xml` 正文。
 
 robots 许可在主请求前获取和执行。响应头及 HTML 许可在正文提取前执行。初始 URL 和每次重定向都重新检查 robots 许可。
-RSS/Atom 馈送中的 `rsl:content` 作为 `rss` 发现面执行；匹配内容 URL 的许可会记入进程内 catalog，供同一运行时后续读取使用。PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行；无法安全解析的内嵌声明失败关闭。浏览器子资源仍不逐个执行 RSL，因此不得宣称通用媒体许可执行器。
+RSS/Atom 馈送中的 `rsl:content` 作为 `rss` 发现面执行；匹配内容 URL 的许可会记入进程内 catalog，供同一运行时后续读取使用。PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行，包括 UTF-16 LE/BE XMP 包和带 BOM 的 UTF-16 XML；无法安全解析的内嵌声明失败关闭。浏览器子资源仍不逐个执行 RSL，因此不得宣称通用媒体许可执行器。
 
 ## 获取与验证
 

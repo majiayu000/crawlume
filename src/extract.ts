@@ -522,7 +522,10 @@ const extractors: CandidateExtractor[] = [
   },
   {
     id: "plain", version: "plain-v1",
-    supports: (page) => mediaType(page) === "text/plain",
+    supports: (page) => {
+      const type = mediaType(page);
+      return type === "text/plain" || type === "text/markdown";
+    },
     extract: (page) => artifact(page, "plain", page.body),
   },
 ];

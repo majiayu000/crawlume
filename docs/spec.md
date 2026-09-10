@@ -160,7 +160,7 @@ JSON-LD Article 只有非空 `articleBody` 或 `text` 才提供正文候选，�
 - Provider Registry 使用统一 `StageResult` 执行 Cache、HTTP、Browser、Feed 和 PDF；Adapter Provider
   默认明确 unavailable，未知 Provider 不得误路由 Browser。
 - Extractor Registry 可在同一 raw response 上确定性尝试 JSON、JSON-LD、RSS、Atom、Sitemap、PDF、
-  Readability、Clean Document 和 Plain，不因换 Extractor 重新下载。
+  Readability、Clean Document 和 Plain（`text/plain` 与 `text/markdown`），不因换 Extractor 重新下载。
 - 版本化 Validator 独占 `valid/uncertain/invalid` 判定；Provider 和 Extractor 只能产生候选。
 - Raw object 与 Artifact 都内容寻址且不可变；共享 Artifact key 绑定 Intent、授权/许可上下文和
   Extractor/Validator 版本。授权 Profile 或受限 RSL 内容不得进入共享 Store/Index。
@@ -233,7 +233,7 @@ x402 facilitator、支付 Provider 或 custom endpoint。完整边界见 `docs/r
 
 新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
 支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS/Atom 馈送中的 `rsl:content` 会被发现，并在同一进程内应用于随后读取的匹配内容 URL。
-PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行。浏览器子资源仍不逐个
+PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行，包括 UTF-16 XMP 包。浏览器子资源仍不逐个
 执行 RSL，因此不得宣称通用媒体许可执行器。完整边界见 `docs/rsl-policy-spec.md`。
 
 ## RSL 批准与访问审计

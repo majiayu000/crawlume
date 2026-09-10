@@ -161,7 +161,7 @@
 - `extract_page` / `crawlume extract`：把已声明的 `ReadIntent.operation=extract` 接到 CLI 与 MCP，返回结构化 JSON；未知 `schemaId` 失败关闭。
 - 本地 FTS 对含汉字且零命中的查询返回 `LEXICAL_LANGUAGE_MISMATCH` 警告，不提供翻译或跨语言改写。
 - RSL RSS/Atom 模块发现与同进程内容 URL catalog。
-- PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行；真实付款和站点 Adapter 仍未启用。
+- PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行，包括 UTF-16 XMP 包；真实付款和站点 Adapter 仍未启用。
 - 文档试用支持从官方域名首页发现语料；目标页未发现不计为索引命中。官方 domain 每日抓取深度 3；发现队列跳过图片、压缩包、脚本、样式、字体和音视频。
 - `evidence.networkBytesIn` 计入 robots/RSL/重定向和浏览器子资源；页级 `maxDocumentBytes` 仍是主文档。浏览器主导航可发送 Web Bot Auth。
 

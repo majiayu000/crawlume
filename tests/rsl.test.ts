@@ -264,6 +264,49 @@ describe("RSL policy", () => {
     });
   });
 
+  it("discovers an RSL license inside a UTF-16 XML file with a byte-order mark", async () => {
+    const xml = document(
+      `<content url="https://example.com/photo.tif"><license><permits>ai-input</permits></license></content>`,
+    );
+    const bytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(xml, "utf16le")]);
+    const image = {
+      ...response("https://example.com/photo.tif", bytes.toString("latin1"), "image/tiff"),
+      bodyBytes: new Uint8Array(bytes),
+      responseBytes: bytes.byteLength,
+    };
+
+    await expect(policy().evaluateResponse(image.url, image)).resolves.toMatchObject({
+      status: "permitted",
+      discoveredBy: ["file"],
+    });
+  });
+
+  it("discovers an RSL license inside a UTF-16 XMP packet", async () => {
+    const inner = document(
+      `<content url="https://example.com/photo.jpg"><license><permits>ai-input</permits></license></content>`,
+    );
+    const packet = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>${inner}<?xpacket end="w"?>`;
+    const le = Buffer.from(packet, "utf16le");
+    const be = Buffer.alloc(le.length);
+    for (let index = 0; index < le.length; index += 2) {
+      be[index] = le[index + 1]!;
+      be[index + 1] = le[index]!;
+    }
+
+    for (const encoded of [le, be]) {
+      const bytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1]), encoded]);
+      const image = {
+        ...response("https://example.com/photo.jpg", bytes.toString("latin1"), "image/jpeg"),
+        bodyBytes: new Uint8Array(bytes),
+        responseBytes: bytes.byteLength,
+      };
+      await expect(policy().evaluateResponse(image.url, image)).resolves.toMatchObject({
+        status: "permitted",
+        discoveredBy: ["file"],
+      });
+    }
+  });
+
   it("fails closed when a JPEG declares unreadable RSL metadata", async () => {
     const bytes = Buffer.from(`fake-jpeg https://rslstandard.org/rsl without a document`);
     const image = {

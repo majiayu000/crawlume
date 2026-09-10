@@ -150,6 +150,60 @@ function xmlText(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("latin1");
 }
 
+function encodedAscii(text: string, encoding: "utf16le" | "utf16be"): Buffer {
+  const le = Buffer.from(text, "utf16le");
+  if (encoding === "utf16le") return le;
+  const be = Buffer.alloc(le.length);
+  for (let index = 0; index < le.length; index += 2) {
+    be[index] = le[index + 1]!;
+    be[index + 1] = le[index]!;
+  }
+  return be;
+}
+
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from = 0): number {
+  if (needle.byteLength === 0 || from > haystack.byteLength - needle.byteLength) return -1;
+  outer: for (let index = from; index <= haystack.byteLength - needle.byteLength; index += 1) {
+    for (let offset = 0; offset < needle.byteLength; offset += 1) {
+      if (haystack[index + offset] !== needle[offset]) continue outer;
+    }
+    return index;
+  }
+  return -1;
+}
+
+function decodePacket(bytes: Uint8Array, encoding: "utf16le" | "utf16be"): string {
+  if (encoding === "utf16le") return Buffer.from(bytes).toString("utf16le");
+  const swapped = Buffer.alloc(bytes.byteLength);
+  for (let index = 0; index + 1 < bytes.byteLength; index += 2) {
+    swapped[index] = bytes[index + 1]!;
+    swapped[index + 1] = bytes[index]!;
+  }
+  return swapped.toString("utf16le");
+}
+
+function extractUtf16Xpackets(bytes: Uint8Array): string[] {
+  const packets: string[] = [];
+  for (const encoding of ["utf16le", "utf16be"] as const) {
+    const begin = encodedAscii("<?xpacket begin", encoding);
+    const end = encodedAscii("<?xpacket end", encoding);
+    const close = encodedAscii("?>", encoding);
+    let from = 0;
+    while (from < bytes.byteLength) {
+      const start = indexOfBytes(bytes, begin, from);
+      if (start === -1) break;
+      const endAt = indexOfBytes(bytes, end, start + begin.byteLength);
+      if (endAt === -1) break;
+      const closeAt = indexOfBytes(bytes, close, endAt + end.byteLength);
+      if (closeAt === -1) break;
+      const packetEnd = closeAt + close.byteLength;
+      packets.push(decodePacket(bytes.subarray(start, packetEnd), encoding));
+      from = packetEnd;
+    }
+  }
+  return packets;
+}
+
 function toCoreDocument(xml: string): string | null {
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
     throw new ReadError("RSL_INVALID", "RSL documents must not contain DTD or entity declarations.");
@@ -194,16 +248,36 @@ function documentsFromText(text: string): string[] {
   return [...new Set(documents)];
 }
 
+function bomDecodedTexts(bytes: Uint8Array): string[] {
+  if (bytes.byteLength < 2) return [];
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return [Buffer.from(bytes.subarray(2)).toString("utf16le")];
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return [decodePacket(bytes.subarray(2), "utf16be")];
+  }
+  return [];
+}
+
+function documentsFromBytes(bytes: Uint8Array): string[] {
+  const documents: string[] = [];
+  for (const text of [xmlText(bytes), ...bomDecodedTexts(bytes), ...extractUtf16Xpackets(bytes)]) {
+    if (!text.includes(RSL_NAMESPACE_MARK)) continue;
+    documents.push(...documentsFromText(text));
+  }
+  return [...new Set(documents)];
+}
+
 function documentsFromContainer(bytes: Uint8Array): string[] {
   if (bytes.byteLength >= 4 && readU32(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), 0) === ZIP_LOCAL) {
     const documents: string[] = [];
     for (const [name, data] of unzip(bytes)) {
       if (!XML_TEXT_NAME.test(name)) continue;
-      documents.push(...documentsFromText(xmlText(data)));
+      documents.push(...documentsFromBytes(data));
     }
     return [...new Set(documents)];
   }
-  return documentsFromText(xmlText(bytes));
+  return documentsFromBytes(bytes);
 }
 
 export function mediaContainerLicenseXml(
