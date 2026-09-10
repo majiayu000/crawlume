@@ -217,6 +217,45 @@ describe("ReaderService", () => {
     });
   });
 
+  it("extracts structured JSON without wrapping markdown as the root payload", async () => {
+    const reader = readerWith(
+      new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() })),
+      new StubFetcher(new Error("unused")),
+    );
+
+    const extracted = await reader.extractPage({
+      url: "https://example.com/article",
+      browserAllowed: false,
+    });
+
+    expect(extracted).toMatchObject({
+      status: "ok",
+      schemaId: null,
+      title: "Example article",
+      data: {
+        title: "Example article",
+        byline: null,
+      },
+    });
+    expect(extracted.data.markdown).toContain("complete article");
+    expect(extracted).not.toHaveProperty("contentMarkdown");
+  });
+
+  it("fails closed when extract requests an unmatched schema", async () => {
+    const reader = readerWith(
+      new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() })),
+      new StubFetcher(new Error("unused")),
+    );
+
+    await expect(reader.extractPage({
+      url: "https://example.com/article",
+      browserAllowed: false,
+      schemaId: "article-v1",
+    })).rejects.toMatchObject({
+      code: "INCOMPLETE_CONTENT",
+    });
+  });
+
   it("returns a successful cached result without refetching", async () => {
     const http = new StubFetcher(rawPage({ fetchedAt: new Date().toISOString() }));
     const browser = new StubFetcher(new Error("unused"));

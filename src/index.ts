@@ -13,6 +13,7 @@ import {
 } from "./page-history.js";
 export { localSearchIndexerVersion } from "./page-history.js";
 import type { DurableCrawlService } from "./runtime/frontier.js";
+import { toFtsQuery } from "./search-query.js";
 import type {
   CrawlJob,
   DurableCrawlOptions,
@@ -24,37 +25,24 @@ import type {
 } from "./types.js";
 
 type CountRow = { count: number };
-
 type SearchRow = {
   final_url: string;
   title: string;
   content_markdown: string;
   published_time: string | null;
 };
-
 type VersionRow = {
   content_hash: string;
   fetched_at_ms: number;
   extractor_version: string;
   validator_version: string;
 };
-
 export type IndexedPageVersion = {
   contentHash: string;
   fetchedAt: string;
   extractorVersion: string;
   validatorVersion: string;
 };
-
-const maximumFtsTerms = 32;
-
-function toFtsQuery(query: string): string | null {
-  const terms = query.match(/[\p{L}\p{N}_]+/gu)?.slice(0, maximumFtsTerms) ?? [];
-  if (terms.length === 0) {
-    return null;
-  }
-  return terms.map((term) => `"${term.replaceAll('"', '""')}"*`).join(" AND ");
-}
 
 function timeThreshold(timeRange: SearchTimeRange | undefined): number | null {
   if (timeRange === undefined) {

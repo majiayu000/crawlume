@@ -379,10 +379,10 @@ Crawlume 抓取、验证和解析
 | 已知 URL 获取 | 已具备 | 继续提升可靠性和执行成本 |
 | 站内发现 | 已具备，bounded | 增加跨站点和长期 frontier |
 | 搜索发现 | SearXNG 或本地已读页面 | 建立自己的 URL corpus 和增量发现 |
-| 原始数据 | 以读取产物和任务状态为主 | 保存原始响应、页面版本和 provenance |
+| 原始数据 | 本地 Raw/Artifact CAS、URL 身份观察与可重建 FTS 投影已落地 | 近似重复、WARC 和跨域折叠仍按二期 ADR 排除 |
 | 索引 | SQLite FTS5，本地可选 | 可演进的 lexical、vector、link indexes |
-| 排序 | 本地 FTS/SearXNG 顺序 | 自有混合召回、质量信号和 reranker |
-| 评测 | 抓取可靠性 Benchmark 正在建设 | 增加固定搜索 query set 和 relevance judgments |
+| 排序 | 生产仍为本地 FTS lexical baseline | 自有混合召回、质量信号和 reranker |
+| 评测 | 抓取 Reliability Benchmark 与垂直 query judgment 已落地 | 真实 embedding/reranker 仍需独立质量证据 |
 
 ## 9. 目标 C：自主搜索引擎架构
 

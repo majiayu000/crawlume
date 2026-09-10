@@ -245,7 +245,7 @@ export type BrowserReadinessEvidence = {
   interactionSteps?: number | undefined;
 };
 
-export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline";
+export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline" | "rss";
 
 export type RslEvidence = {
   status: "not-declared" | "not-applicable" | "permitted";
@@ -301,6 +301,7 @@ export type ReadPageOptions = {
   authProfile?: string;
   browserReadiness?: BrowserReadinessPolicy;
   budget?: ExecutionBudget;
+  schemaId?: string;
 };
 
 export type FetchEvidence = {
@@ -387,6 +388,19 @@ export type ReadPageResult = {
 };
 
 export type InspectPageResult = Omit<ReadPageResult, "contentMarkdown">;
+
+export type ExtractPageData = {
+  title: string;
+  byline: string | null;
+  publishedTime: string | null;
+  markdown: string;
+  links: string[];
+};
+
+export type ExtractPageResult = InspectPageResult & {
+  schemaId: string | null;
+  data: ExtractPageData;
+};
 
 export type PageReadArtifact = ReadPageResult & {
   discoveredLinks: string[];

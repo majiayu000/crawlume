@@ -45,6 +45,12 @@ const readPageInput = z.object({
   ),
 });
 
+const extractPageInput = readPageInput.extend({
+  schemaId: z.string().trim().min(1).max(128).optional().describe(
+    "Optional versioned output schema. Unknown schemas fail closed.",
+  ),
+});
+
 const siteScopeInput = {
   maxPages: z.int().positive(),
   maxDepth: z.int().min(0).max(10).default(2),
@@ -156,6 +162,13 @@ function toReadOptions(args: z.infer<typeof readPageInput>): ReadPageOptions {
   };
 }
 
+function toExtractOptions(args: z.infer<typeof extractPageInput>): ReadPageOptions {
+  return {
+    ...toReadOptions(args),
+    ...(args.schemaId === undefined ? {} : { schemaId: args.schemaId }),
+  };
+}
+
 function toMapOptions(args: z.infer<typeof mapSiteInput>): MapSiteOptions {
   return {
     url: args.url,
@@ -206,10 +219,11 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
 
 export function createMcpServer(app: CrawlumeApp): McpServer {
   const server = new McpServer(
-    { name: "crawlume", version: "0.10.4" },
+    { name: "crawlume", version: "0.17.0" },
     {
       instructions:
-        "Use read_page for a supplied URL, map_site for bounded same-site discovery, " +
+        "Use read_page for a supplied URL, extract_page for structured JSON, " +
+        "map_site for bounded same-site discovery, " +
         "crawl_site for synchronous bounded reading, and start/get/pause/resume/cancel/get-pages controls for durable crawling, " +
         "inspect_page for diagnostics, " +
         "get_crawler_stats for local operational metrics, " +
@@ -288,6 +302,26 @@ export function createMcpServer(app: CrawlumeApp): McpServer {
     async (args): Promise<CallToolResult> => {
       try {
         const result = await app.reader.readPage(toReadOptions(args));
+        return successResult({ ...result });
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "extract_page",
+    {
+      title: "Extract page JSON",
+      description:
+        "Read one authorized web page and return structured JSON fields with source evidence. " +
+        "An optional schemaId requires a matching schema validator or site adapter.",
+      inputSchema: extractPageInput,
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async (args): Promise<CallToolResult> => {
+      try {
+        const result = await app.reader.extractPage(toExtractOptions(args));
         return successResult({ ...result });
       } catch (error) {
         return errorResult(error);

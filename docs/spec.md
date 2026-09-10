@@ -1,4 +1,4 @@
-# Crawlume Crawler v0.10.4
+# Crawlume Crawler v0.17.0
 
 ## 目标
 
@@ -69,6 +69,13 @@ p50/p95/max、结果/警告数和失败原因；它不保存 query、URL、正�
   已执行步数。
 
 失败返回 MCP `isError: true`，正文为结构化错误 JSON。
+
+### `extract_page`
+
+执行与 `read_page` 相同的读取、缓存、完整性和授权规则，返回结构化 JSON 而不是把 Markdown
+作为根字段。成功结果包含 `data.title`、`data.byline`、`data.publishedTime`、`data.markdown` 和
+`data.links`，以及与 `inspect_page` 相同的证据。可选 `schemaId` 只有在匹配的 Adapter 或 schema
+validator 存在时才能成功；未知 schema 返回 `INCOMPLETE_CONTENT`，不得把通用正文包装成已满足 schema。
 
 ### `inspect_page`
 
@@ -222,8 +229,10 @@ quote，并固定标记预算 `disabled`、结算 `not-attempted`。服务不执
 x402 facilitator、支付 Provider 或 custom endpoint。完整边界见 `docs/rsl-payment-boundary-spec.md`。
 
 新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
-支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS 与媒体容器元数据
-尚未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见 `docs/rsl-policy-spec.md`。
+支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS/Atom 馈送中的
+`rsl:content` 会被发现，并在同一进程内应用于随后读取的匹配内容 URL。图片、音频、PDF 和 EPUB
+容器内嵌元数据仍未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见
+`docs/rsl-policy-spec.md`。
 
 ## RSL 批准与访问审计
 
@@ -374,7 +383,7 @@ Clash/TUN Fake-IP 兼容必须通过 `CRAWLUME_ALLOW_DNS_FAKE_IP=1` 显式开启
 - 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
 - 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
 - 单元测试覆盖低成本验收状态与稳定 warning code。
-- MCP 客户端可以列出并调用二十个工具。
+- MCP 客户端可以列出并调用二十一个工具。
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。

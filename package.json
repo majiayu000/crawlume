@@ -1,6 +1,6 @@
 {
   "name": "crawlume",
-  "version": "0.10.4",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
   "description": "Resumable web crawling and retrieval for AI agents",

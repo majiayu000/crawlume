@@ -115,6 +115,20 @@ describe("MCP server", () => {
       const { contentMarkdown: _contentMarkdown, ...inspection } = result();
       return inspection;
     });
+    const extractPage = vi.fn(async () => {
+      const { contentMarkdown, ...inspection } = result();
+      return {
+        ...inspection,
+        schemaId: null,
+        data: {
+          title: result().title,
+          byline: result().byline,
+          publishedTime: result().publishedTime,
+          markdown: contentMarkdown,
+          links: [],
+        },
+      };
+    });
     const waitForPages = vi.fn(async () => ({
       jobId: "00000000-0000-4000-8000-000000000001",
       pages: [],
@@ -122,7 +136,7 @@ describe("MCP server", () => {
       done: false,
     }));
     const app = {
-      reader: { readPage, inspectPage },
+      reader: { readPage, inspectPage, extractPage },
       site: {
         mapSite: vi.fn(async () => ({
           ...siteResult(),
@@ -251,6 +265,7 @@ describe("MCP server", () => {
 
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "extract_page",
       "inspect_page",
       "list_auth_profiles",
       "map_site",
@@ -308,6 +323,18 @@ describe("MCP server", () => {
       url: "https://example.com/article",
       browserAllowed: false,
     });
+
+    const extracted = await client.callTool({
+      name: "extract_page",
+      arguments: { url: "https://example.com/article", browserAllowed: false },
+    });
+    expect(extracted.isError).not.toBe(true);
+    expect(extracted.structuredContent).toMatchObject({
+      status: "ok",
+      schemaId: null,
+      data: { title: "Example article" },
+    });
+    expect(extractPage).toHaveBeenCalledOnce();
 
     const targetedRead = await client.callTool({
       name: "read_page",

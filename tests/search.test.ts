@@ -111,6 +111,27 @@ describe("SearchService", () => {
     }
   });
 
+  it("warns when a CJK local query matches no indexed pages", async () => {
+    const index = new LocalPageIndex(":memory:");
+    index.put(indexedPage());
+    try {
+      const result = await new SearchService(null, index).searchWeb({
+        query: "推理优化",
+        source: "local",
+      });
+      expect(result).toMatchObject({
+        status: "ok",
+        results: [],
+        warnings: [{
+          code: "LEXICAL_LANGUAGE_MISMATCH",
+          retryable: false,
+        }],
+      });
+    } finally {
+      index.close();
+    }
+  });
+
   it("reports the serving status without running a query", () => {
     const index = new LocalPageIndex(":memory:");
     index.put(indexedPage());

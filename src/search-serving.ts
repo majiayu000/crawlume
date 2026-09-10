@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { normalizeError, ReadError } from "./errors.js";
 import { LocalPageIndex } from "./index.js";
 import type { SearchServingMetricsRecorder } from "./search-metrics.js";
+import { containsHan } from "./search-query.js";
 import {
   searchSources,
   searchTimeRanges,
@@ -87,6 +88,7 @@ export class SearchService {
     return localResult(
       options,
       this.localIndex.search(options.query, options.limit, options.page, options.timeRange),
+      this.localIndex.count(),
     );
   }
 
@@ -108,11 +110,17 @@ export class SearchService {
       options.timeRange,
     ) ?? [];
     if (localResults.length >= options.limit) {
-      return { result: localResult(options, localResults), sources: ["local"] };
+      return {
+        result: localResult(options, localResults, this.localIndex?.count() ?? 0),
+        sources: ["local"],
+      };
     }
     if (this.provider === null) {
       if ((this.localIndex?.count() ?? 0) > 0) {
-        return { result: localResult(options, localResults), sources: ["local"] };
+        return {
+          result: localResult(options, localResults, this.localIndex?.count() ?? 0),
+          sources: ["local"],
+        };
       }
       throw new ReadError(
         "SEARCH_PROVIDER_NOT_CONFIGURED",
@@ -220,7 +228,19 @@ function normalizeOptions(options: SearchWebOptions): ProviderSearchOptions {
   };
 }
 
-function localResult(options: ProviderSearchOptions, results: SearchResult[]): SearchWebResult {
+function localResult(
+  options: ProviderSearchOptions,
+  results: SearchResult[],
+  documents = 0,
+): SearchWebResult {
+  const warnings = results.length === 0 && documents > 0 && containsHan(options.query)
+    ? [{
+      code: "LEXICAL_LANGUAGE_MISMATCH",
+      message:
+        "Local search is lexical and same-script. This query contained CJK characters and matched no indexed pages.",
+      retryable: false,
+    }]
+    : [];
   return {
     status: "ok",
     query: options.query,
@@ -229,7 +249,7 @@ function localResult(options: ProviderSearchOptions, results: SearchResult[]): S
     page: options.page,
     results,
     totalResults: null,
-    warnings: [],
+    warnings,
   };
 }
 

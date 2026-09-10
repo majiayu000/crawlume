@@ -28,7 +28,7 @@
 - `401` / `402` 等响应中的 RSL Link 或 `application/rsl+xml` 正文。
 
 robots 许可在主请求前获取和执行。响应头及 HTML 许可在正文提取前执行。初始 URL 和每次重定向都重新检查 robots 许可。
-RSS module 与图片、音频、PDF、EPUB 等容器元数据不在首版范围，因此首版不得宣称完整 RSL Conformance。
+RSS/Atom 馈送中的 `rsl:content` 作为 `rss` 发现面执行；匹配内容 URL 的许可会记入进程内 catalog，供同一运行时后续读取使用。图片、音频、PDF、EPUB 等容器内嵌元数据仍不在范围内，因此不得宣称完整 RSL Conformance。
 
 ## 获取与验证
 

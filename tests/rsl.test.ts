@@ -167,6 +167,51 @@ describe("RSL policy", () => {
     });
   });
 
+  it("discovers RSL licenses in RSS feeds and applies them to later item URLs", async () => {
+    const rsl = policy();
+    const feed = response(
+      "https://example.com/feed.xml",
+      `<rss xmlns:rsl="${namespace}" version="2.0"><channel>
+        <item>
+          <title>Iris</title>
+          <rsl:content url="https://example.com/iris.zip">
+            <rsl:license><rsl:payment type="free"/></rsl:license>
+          </rsl:content>
+        </item>
+      </channel></rss>`,
+      "application/rss+xml",
+    );
+
+    await expect(rsl.evaluateResponse(feed.url, feed)).resolves.toMatchObject({
+      status: "not-applicable",
+      discoveredBy: ["rss"],
+    });
+
+    const item = response(
+      "https://example.com/iris.zip",
+      "binary",
+      "application/zip",
+    );
+    await expect(rsl.evaluateResponse(item.url, item)).resolves.toMatchObject({
+      status: "permitted",
+      discoveredBy: ["rss"],
+    });
+  });
+
+  it("fails closed when an RSS feed contains malformed RSL content", async () => {
+    const feed = response(
+      "https://example.com/feed.xml",
+      `<rss xmlns:rsl="${namespace}" version="2.0"><channel>
+        <item><rsl:content url="https://example.com/iris.zip"></rsl:content></item>
+      </channel></rss>`,
+      "application/rss+xml",
+    );
+
+    await expect(policy().evaluateResponse(feed.url, feed)).rejects.toMatchObject({
+      code: "RSL_INVALID",
+    });
+  });
+
   it("returns not-declared evidence when no association exists", async () => {
     const page = response("https://example.com/article", "<html></html>", "text/html");
 

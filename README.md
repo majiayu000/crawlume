@@ -56,6 +56,7 @@ Use an external search tool to find URLs. Local indexing remains off by default.
 Available tools:
 
 - `read_page`: return complete Markdown plus source evidence.
+- `extract_page`: return structured JSON fields plus source evidence.
 - `inspect_page`: run the same checks without returning the body.
 - `map_site`: discover a bounded set of same-site links.
 - `crawl_site`: read a bounded set of same-site pages with per-page evidence and failures.
@@ -132,6 +133,7 @@ from the previous completion time. The first success establishes a baseline; lat
 Use the same reader directly without an MCP client:
 
 ```bash
+pnpm cli extract https://httpbin.org/html
 pnpm cli read https://httpbin.org/html
 pnpm cli read https://httpbin.org/html --markdown
 pnpm cli read https://example.com/app --cache-mode live
@@ -144,8 +146,8 @@ pnpm cli search inference optimization --source local
 pnpm cli stats --days 7
 ```
 
-After installing or linking the package, use `crawlume search`, `crawlume read`, `crawlume map`,
-`crawlume crawl`, or `crawlume stats`.
+After installing or linking the package, use `crawlume search`, `crawlume read`, `crawlume extract`,
+`crawlume map`, `crawlume crawl`, or `crawlume stats`.
 JSON is the default output so scripts and Agents can inspect evidence and stable error codes;
 `--markdown` prints only the extracted page body. Run `crawlume --help` for all options.
 
