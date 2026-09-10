@@ -58,6 +58,41 @@ function policy(
   return new RslPolicy(config, new StubTransport(routes) as unknown as HttpTransport);
 }
 
+function zipStore(files: Array<{ name: string; data: Buffer }>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(file.name, "utf8");
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(file.data.length, 18);
+    local.writeUInt32LE(file.data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const entry = Buffer.concat([local, name, file.data]);
+    locals.push(entry);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(file.data.length, 20);
+    central.writeUInt32LE(file.data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(Buffer.concat([central, name]));
+    offset += entry.length;
+  }
+  const centralDir = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(files.length, 8);
+  eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralDir.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralDir, eocd]);
+}
+
 describe("robots RSL discovery", () => {
   it("uses the most specific matching group and ignores global licenses", () => {
     const robots = `
@@ -209,6 +244,61 @@ describe("RSL policy", () => {
 
     await expect(policy().evaluateResponse(feed.url, feed)).rejects.toMatchObject({
       code: "RSL_INVALID",
+    });
+  });
+
+  it("discovers an RSL license embedded in a PDF container", async () => {
+    const license = document(
+      `<content url="https://example.com/doc.pdf"><license><permits>ai-input</permits></license></content>`,
+    );
+    const bytes = Buffer.concat([Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\n%%EOF\n"), Buffer.from(license)]);
+    const pdf = {
+      ...response("https://example.com/doc.pdf", bytes.toString("latin1"), "application/pdf"),
+      bodyBytes: new Uint8Array(bytes),
+      responseBytes: bytes.byteLength,
+    };
+
+    await expect(policy().evaluateResponse(pdf.url, pdf)).resolves.toMatchObject({
+      status: "permitted",
+      discoveredBy: ["file"],
+    });
+  });
+
+  it("fails closed when a JPEG declares unreadable RSL metadata", async () => {
+    const bytes = Buffer.from(`fake-jpeg https://rslstandard.org/rsl without a document`);
+    const image = {
+      ...response("https://example.com/photo.jpg", bytes.toString("latin1"), "image/jpeg"),
+      bodyBytes: new Uint8Array(bytes),
+      responseBytes: bytes.byteLength,
+    };
+
+    await expect(policy().evaluateResponse(image.url, image)).rejects.toMatchObject({
+      code: "RSL_INVALID",
+    });
+  });
+
+  it("discovers an RSL license inside an EPUB OPF", async () => {
+    const opf = `<?xml version="1.0"?>
+      <package xmlns="http://www.idpf.org/2007/opf" xmlns:rsl="${namespace}">
+        <metadata>
+          <rsl:content url="https://example.com/book.epub">
+            <rsl:license><rsl:payment type="free"/></rsl:license>
+          </rsl:content>
+        </metadata>
+      </package>`;
+    const bytes = zipStore([
+      { name: "mimetype", data: Buffer.from("application/epub+zip") },
+      { name: "OEBPS/content.opf", data: Buffer.from(opf) },
+    ]);
+    const epub = {
+      ...response("https://example.com/book.epub", bytes.toString("latin1"), "application/epub+zip"),
+      bodyBytes: new Uint8Array(bytes),
+      responseBytes: bytes.byteLength,
+    };
+
+    await expect(policy().evaluateResponse(epub.url, epub)).resolves.toMatchObject({
+      status: "permitted",
+      discoveredBy: ["file"],
     });
   });
 

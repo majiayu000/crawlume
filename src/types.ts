@@ -245,7 +245,7 @@ export type BrowserReadinessEvidence = {
   interactionSteps?: number | undefined;
 };
 
-export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline" | "rss";
+export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline" | "rss" | "file";
 
 export type RslEvidence = {
   status: "not-declared" | "not-applicable" | "permitted";

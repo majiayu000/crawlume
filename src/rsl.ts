@@ -10,6 +10,7 @@ import type { HttpTransport } from "./fetch/http.js";
 import { RslApprovalStore } from "./rsl-approvals.js";
 import { normalizeRslServer } from "./rsl-client-credentials.js";
 import { RslOlpClient } from "./rsl-olp.js";
+import { mediaContainerLicenseXml } from "./rsl-file.js";
 import {
   evaluateRslPayment,
   rslUrlObligation,
@@ -504,6 +505,15 @@ export class RslPolicy {
       const feed = feedAssociations(response.body, target);
       for (const [url, xml] of feed.catalog) this.feedLicenses.set(url, xml);
       associations.push(...feed.associations);
+    } else {
+      for (const inlineXml of mediaContainerLicenseXml(mediaType ?? "", response.body, response.bodyBytes)) {
+        associations.push({
+          method: "file",
+          licenseUrl: null,
+          inlineXml,
+          htmlScope: false,
+        });
+      }
     }
     return this.evaluate(
       target,

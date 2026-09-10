@@ -231,10 +231,9 @@ quote，并固定标记预算 `disabled`、结算 `not-attempted`。服务不执
 x402 facilitator、支付 Provider 或 custom endpoint。完整边界见 `docs/rsl-payment-boundary-spec.md`。
 
 新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
-支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS/Atom 馈送中的
-`rsl:content` 会被发现，并在同一进程内应用于随后读取的匹配内容 URL。图片、音频、PDF 和 EPUB
-容器内嵌元数据仍未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见
-`docs/rsl-policy-spec.md`。
+支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS/Atom 馈送中的 `rsl:content` 会被发现，并在同一进程内应用于随后读取的匹配内容 URL。
+PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行。浏览器子资源仍不逐个
+执行 RSL，因此不得宣称通用媒体许可执行器。完整边界见 `docs/rsl-policy-spec.md`。
 
 ## RSL 批准与访问审计
 
