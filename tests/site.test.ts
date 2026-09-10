@@ -381,6 +381,33 @@ describe("SiteService", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("does not enqueue static asset links that cannot yield documents", async () => {
+    const root = "https://example.com/";
+    const guide = "https://example.com/guide";
+    const routes = new Map<string, RawPage | Error>([
+      [root, page(root, [
+        "/guide",
+        "/static/TypeScript%20Classes-abc.png",
+        "/assets/cheatsheets.zip",
+        "/app.js",
+      ], true)],
+      [guide, page(guide, [], true)],
+    ]);
+    const { service, http } = serviceWith(routes);
+
+    const result = await service.crawlSite({
+      url: root,
+      browserAllowed: false,
+      cacheMode: "live",
+      maxPages: 10,
+      maxDepth: 1,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.pages.map(({ url }) => url)).toEqual([root, guide]);
+    expect(http.calls).toEqual([root, guide]);
+  });
+
   it("stops a crawl before fetching when its job signal is cancelled", async () => {
     const root = "https://example.com/";
     const { service, http } = serviceWith(new Map([[root, page(root, [], true)]]));

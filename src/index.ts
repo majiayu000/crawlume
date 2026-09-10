@@ -408,7 +408,7 @@ function crawlOptions(seed: VerticalRuntimeSeed, attempts: number): DurableCrawl
     url: seed.url,
     cacheMode: "live",
     maxPages: attempts,
-    maxDepth: seed.scope === "domain" ? 2 : 0,
+    maxDepth: seed.scope === "domain" ? 3 : 0,
     includeSubdomains: false,
     ignoreQueryParameters: true,
     concurrency: Math.min(4, attempts),

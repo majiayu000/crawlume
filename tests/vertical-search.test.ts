@@ -251,6 +251,28 @@ describe("VerticalSearchService daily incremental runs", () => {
       0,
     )).toBe(60_000);
     expect(start.mock.calls.every(([options]) => options.maxPages === 100)).toBe(true);
+    expect(start.mock.calls.every(([options]) => options.maxDepth === 3)).toBe(true);
+  });
+
+  it("crawls official domains three hops deep and exact URLs as single pages", () => {
+    const start = vi.fn((options: DurableCrawlOptions) => crawlJob(`job-${options.url}`));
+    const service = createService({
+      start,
+      now: () => Date.parse("2026-08-31T08:00:00.000Z"),
+    });
+    service.addOfficialDomain("https://docs.example.com/ignored-path");
+    service.addManualUrl("https://docs.example.com/exact");
+
+    service.startDailyRun();
+
+    expect(start.mock.calls.map(([options]) => ({
+      url: options.url,
+      maxDepth: options.maxDepth,
+      maxPages: options.maxPages,
+    }))).toEqual([
+      { url: "https://docs.example.com/exact", maxDepth: 0, maxPages: 1 },
+      { url: "https://docs.example.com/", maxDepth: 3, maxPages: 100 },
+    ]);
   });
 
   it("uses remaining index capacity as a hard plan limit and rejects a full index", () => {

@@ -40,6 +40,22 @@ describe("docs-trial corpus fixtures", () => {
     expect(added).toEqual(discovery.sites.map((site) => site.seedUrl));
   });
 
+  it("points discovery MCP gold at the current spec revision linked from the homepage", () => {
+    const mcp = discovery.cases.filter((entry) => entry.site === "MCP");
+    expect(mcp.map((entry) => entry.url)).toEqual([
+      "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
+      "https://modelcontextprotocol.io/specification/2026-07-28/server/resources",
+      "https://modelcontextprotocol.io/specification/2026-07-28/server/prompts",
+      "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports",
+    ]);
+    expect(exact.cases.filter((entry) => entry.site === "MCP").map((entry) => entry.url)).toEqual([
+      "https://modelcontextprotocol.io/specification/2025-06-18/server/tools",
+      "https://modelcontextprotocol.io/specification/2025-06-18/server/resources",
+      "https://modelcontextprotocol.io/specification/2025-06-18/server/prompts",
+      "https://modelcontextprotocol.io/specification/2025-06-18/basic/transports",
+    ]);
+  });
+
   it("matches a discovered gold page by requested or final URL", () => {
     const item = discovery.cases.find((entry) => entry.id === "vite-1");
     const publications = [

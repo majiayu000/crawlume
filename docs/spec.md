@@ -31,7 +31,8 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 不同 content hash 记录首次抓取时间和 extractor/validator 版本。启用本地索引时，
 `CrawlumeApp.verticalSearch` 提供 AI 工具与开发者文档的一期控制面：官方 domain、人工 URL、
 SearXNG candidate、显式准入、每日 durable crawl run 和固定 query judgment。每日计划最多
-60,000 次 Provider 尝试、官方 domain 最多 600 个；质量评测只查询自有 FTS5。
+60,000 次 Provider 尝试、官方 domain 最多 600 个；官方 domain 抓取深度 3、每域每天最多 100 页，
+精确 URL 深度 0。质量评测只查询自有 FTS5。
 
 长期数据层记录 requested/redirect/final/declared canonical 身份观察和历史 Raw/Artifact 引用，支持
 离线重建当前 FTS 投影，并按变化率与陈旧时间确定 exact URL 的重抓优先级。检索实验在同一 judgment
@@ -83,13 +84,13 @@ validator 存在时才能成功；未知 schema 返回 `INCOMPLETE_CONTENT`，�
 
 ### `map_site`
 
-从一个公开 URL 开始，串行发现同主机链接。默认最多扫描 50 页、深度 2，并移除查询参数和锚点后去重。可显式允许子域或保留查询参数，最多 500 页、深度 10。
+从一个公开 URL 开始，串行发现同主机链接。默认最多扫描 50 页、深度 2，并移除查询参数和锚点后去重。可显式允许子域或保留查询参数，最多 500 页、深度 10。图片、压缩包、脚本、样式、字体和音视频等静态资源链接不进入发现队列。
 
 成功返回已扫描 URL、发现来源、深度、截断状态和逐页失败。起始页失败时整个调用失败；后续页面失败时返回 `partial`，不得静默丢弃。
 
 ### `crawl_site`
 
-使用与 `read_page` 相同的读取、缓存、完整性和授权规则，边发现边读取同主机页面。默认最多 10 页、深度 2，硬上限 50 页。每页返回 Markdown、证据、发现来源和深度。
+使用与 `read_page` 相同的读取、缓存、完整性和授权规则，边发现边读取同主机页面。默认最多 10 页、深度 2，硬上限 50 页。发现规则与 `map_site` 相同：静态资源链接不入队。每页返回 Markdown、证据、发现来源和深度。
 
 起始页失败时整个调用失败；后续页面失败时返回 `partial` 与逐页结构化错误。
 

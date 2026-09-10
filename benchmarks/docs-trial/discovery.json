@@ -1,5 +1,5 @@
 {
-  "description": "Same 20 gold questions, but the corpus is discovered from five official docs homepages instead of exact URLs. Unrelated same-site pages become ranking distractors. Not an open-web benchmark.",
+  "description": "Same 20 gold questions, but the corpus is discovered from five official docs homepages instead of exact URLs. MCP gold is the current spec revision linked from the homepage, not the frozen 2025-06-18 exact-URL corpus. Unrelated same-site pages become ranking distractors. Not an open-web benchmark.",
   "mode": "discovery",
   "sites": [
     { "id": "mcp", "name": "MCP", "seedUrl": "https://modelcontextprotocol.io/" },
@@ -12,28 +12,28 @@
     {
       "id": "mcp-1",
       "site": "MCP",
-      "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/tools",
+      "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools",
       "question": "MCP 工具如何返回执行错误，并让模型看到错误信息？",
       "agentQuery": "MCP tools isError"
     },
     {
       "id": "mcp-2",
       "site": "MCP",
-      "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/resources",
+      "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/resources",
       "question": "MCP 如何列出和读取资源？",
       "agentQuery": "MCP resources read"
     },
     {
       "id": "mcp-3",
       "site": "MCP",
-      "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/prompts",
+      "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/prompts",
       "question": "MCP 提示模板如何接收参数？",
       "agentQuery": "MCP prompts arguments"
     },
     {
       "id": "mcp-4",
       "site": "MCP",
-      "url": "https://modelcontextprotocol.io/specification/2025-06-18/basic/transports",
+      "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports",
       "question": "MCP 的 stdio 和 Streamable HTTP 传输有什么区别？",
       "agentQuery": "stdio Streamable HTTP"
     },
