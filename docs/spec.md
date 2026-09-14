@@ -161,6 +161,7 @@ JSON-LD Article 只有非空 `articleBody` 或 `text` 才提供正文候选，�
   默认明确 unavailable，未知 Provider 不得误路由 Browser。
 - Extractor Registry 可在同一 raw response 上确定性尝试 JSON、JSON-LD、RSS、Atom、Sitemap、PDF、
   Readability、Clean Document 和 Plain（`text/plain` 与 `text/markdown`），不因换 Extractor 重新下载。
+  `plain-v2` 从 Markdown 目录链接发现文档 URL；若路径含 `YYYY-MM-DD` 版本，只保留该目录中最新日期，并在存在日期版本时忽略 `/draft/`。
 - 版本化 Validator 独占 `valid/uncertain/invalid` 判定；Provider 和 Extractor 只能产生候选。
 - Raw object 与 Artifact 都内容寻址且不可变；共享 Artifact key 绑定 Intent、授权/许可上下文和
   Extractor/Validator 版本。授权 Profile 或受限 RSL 内容不得进入共享 Store/Index。

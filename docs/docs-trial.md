@@ -4,7 +4,7 @@
 
 首轮采用 20 个精确人工 URL，通过已有 `VerticalSearchService` 与 durable crawl 抓取、保存来源并建立本地 FTS5 索引。它检验受控语料的采集和检索，不代表全站覆盖或开放 Web 搜索质量。MCP 使用固定的 2025-06-18 协议版本。
 
-站点发现试用改用五个官方域名首页作为 seed，由 Durable Frontier 在深度 3、每域最多 100 页内发现页面；图片和压缩包等静态资源不入队。目标页必须被发现才会进入索引；同站无关页面作为检索干扰。题集仍是那 20 个问题，fixture 为 `benchmarks/docs-trial/discovery.json`。MCP 发现金标使用首页当前链接到的规范版本；精确 URL 试用仍冻结 2025-06-18。
+站点发现试用改用五个官方域名首页作为 seed，由 Durable Frontier 在深度 3、每域最多 100 页内发现页面；图片和压缩包等静态资源不入队。`llms.txt` 等 Markdown 目录会发现文档链接，但只保留目录中最新的 `YYYY-MM-DD` 版本，避免历史版本文档占满每域页预算。目标页必须被发现才会进入索引；同站无关页面作为检索干扰。题集仍是那 20 个问题，fixture 为 `benchmarks/docs-trial/discovery.json`。MCP 发现金标使用首页当前链接到的规范版本；精确 URL 试用仍冻结 2025-06-18。
 
 ## 运行
 

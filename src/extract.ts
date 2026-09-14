@@ -7,6 +7,7 @@ import { JSDOM } from "jsdom";
 import TurndownService from "turndown";
 
 import { defaultSiteAdapterRegistry, type SiteAdapterRegistry } from "./adapters.js";
+import { markdownCatalogLinks } from "./catalog-links.js";
 import { normalizeError, ReadError, type ReadErrorCode } from "./errors.js";
 import type { ExtractedPage, ExtractionMethod, RawPage } from "./types.js";
 
@@ -521,12 +522,14 @@ const extractors: CandidateExtractor[] = [
     extract: documentExtractor,
   },
   {
-    id: "plain", version: "plain-v1",
+    id: "plain", version: "plain-v2",
     supports: (page) => {
       const type = mediaType(page);
       return type === "text/plain" || type === "text/markdown";
     },
-    extract: (page) => artifact(page, "plain", page.body),
+    extract: (page) => artifact(page, "plain", page.body, {
+      links: markdownCatalogLinks(page.body, page.finalUrl),
+    }),
   },
 ];
 

@@ -91,4 +91,20 @@ describe("extractPage", () => {
     expect(result.extractionMethod).toBe("plain");
     expect(result.markdown).toBe(body.trim());
   });
+
+  it("discovers current-version catalog links from llms.txt", async () => {
+    const body = `# Docs
+- [Old](https://docs.example.com/specification/2025-06-18/server/tools.md)
+- [Transports](https://docs.example.com/specification/2026-07-28/basic/transports/index.md)
+`;
+    const result = await extracted(rawPage({
+      body,
+      contentType: "text/plain",
+      finalUrl: "https://docs.example.com/llms.txt",
+    }), "plain");
+    expect(result.links).toEqual([
+      "https://docs.example.com/specification/2026-07-28/basic/transports",
+    ]);
+  });
 });
+

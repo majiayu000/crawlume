@@ -381,6 +381,38 @@ describe("SiteService", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("discovers current-version pages listed in a markdown catalog", async () => {
+    const root = "https://docs.example.com/llms.txt";
+    const transports = "https://docs.example.com/specification/2026-07-28/basic/transports";
+    const catalog = [
+      "# Index",
+      "This catalog lists official documentation pages for discovery. ".repeat(8),
+      "- [Old](https://docs.example.com/specification/2025-06-18/server/tools.md)",
+      "- [Transports](https://docs.example.com/specification/2026-07-28/basic/transports/index.md)",
+    ].join("\n");
+    const { service, http } = serviceWith(new Map<string, RawPage | Error>([
+      [root, rawPage({
+        body: catalog,
+        contentType: "text/plain",
+        finalUrl: root,
+        responseBytes: Buffer.byteLength(catalog),
+      })],
+      [transports, page(transports, [], true)],
+    ]));
+
+    const result = await service.crawlSite({
+      url: root,
+      browserAllowed: false,
+      cacheMode: "live",
+      maxPages: 10,
+      maxDepth: 1,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.pages.map(({ url }) => url)).toEqual([root, transports]);
+    expect(http.calls).toEqual([root, transports]);
+  });
+
   it("does not enqueue static asset links that cannot yield documents", async () => {
     const root = "https://example.com/";
     const guide = "https://example.com/guide";
