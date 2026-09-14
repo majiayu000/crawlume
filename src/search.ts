@@ -9,13 +9,13 @@ import { z } from "zod";
 
 import { ReadError } from "./errors.js";
 import { maximumSearchResults, type ProviderSearchOptions, type SearchProvider } from "./search-serving.js";
+import { LocalPageIndex } from "./index.js";
 import {
-  LocalPageIndex,
   VerticalSearchRuntime,
   type VerticalQueryEvaluationReport,
   type VerticalRetrievalExperimentReport,
   type VerticalRun,
-} from "./index.js";
+} from "./vertical-search-runtime.js";
 import type { DurableCrawlService } from "./runtime/frontier.js";
 import type { UrlPolicy } from "./security/url-policy.js";
 import {

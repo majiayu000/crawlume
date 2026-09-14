@@ -93,6 +93,7 @@ SQLite 文件，但使用独立表。
 ## 影响文件
 
 - `src/index.ts`：SQLite FTS5 存储和查询。
+- `src/vertical-search-runtime.ts`：官方域名每日抓取与 query judgment。
 - `src/page-history.ts`：URL 身份观察、内容版本、离线重建和 recrawl priority。
 - `src/index-release.ts`：内容可验证的本地索引 release、显式激活和回滚。
 - `src/search-metrics.ts`：隐私安全的查询结果与时延证据。
