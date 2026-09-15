@@ -1,0 +1,145 @@
+{
+  "description": "Agent-authored developer-task questions; curated URL corpus, not user logs or an open-web benchmark. MCP targets a fixed 2025-06-18 revision.",
+  "cases": [
+    {
+      "id": "mcp-1",
+      "site": "MCP",
+      "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/tools",
+      "question": "MCP 工具如何返回执行错误，并让模型看到错误信息？",
+      "agentQuery": "MCP tools isError"
+    },
+    {
+      "id": "mcp-2",
+      "site": "MCP",
+      "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/resources",
+      "question": "MCP 如何列出和读取资源？",
+      "agentQuery": "MCP resources read"
+    },
+    {
+      "id": "mcp-3",
+      "site": "MCP",
+      "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/prompts",
+      "question": "MCP 提示模板如何接收参数？",
+      "agentQuery": "MCP prompts arguments"
+    },
+    {
+      "id": "mcp-4",
+      "site": "MCP",
+      "url": "https://modelcontextprotocol.io/specification/2025-06-18/basic/transports",
+      "question": "MCP 的 stdio 和 Streamable HTTP 传输有什么区别？",
+      "agentQuery": "stdio Streamable HTTP"
+    },
+    {
+      "id": "playwright-1",
+      "site": "Playwright",
+      "url": "https://playwright.dev/docs/locators",
+      "question": "Playwright 如何用角色和可访问名称定位按钮？",
+      "agentQuery": "Playwright getByRole button"
+    },
+    {
+      "id": "playwright-2",
+      "site": "Playwright",
+      "url": "https://playwright.dev/docs/actionability",
+      "question": "Playwright 点击元素前会自动等待哪些条件？",
+      "agentQuery": "Playwright actionability visible stable"
+    },
+    {
+      "id": "playwright-3",
+      "site": "Playwright",
+      "url": "https://playwright.dev/docs/auth",
+      "question": "Playwright 如何保存登录状态并在测试中复用？",
+      "agentQuery": "Playwright authentication storageState"
+    },
+    {
+      "id": "playwright-4",
+      "site": "Playwright",
+      "url": "https://playwright.dev/docs/network",
+      "question": "Playwright 如何拦截请求并返回模拟响应？",
+      "agentQuery": "Playwright route fulfill"
+    },
+    {
+      "id": "typescript-1",
+      "site": "TypeScript",
+      "url": "https://www.typescriptlang.org/docs/handbook/2/narrowing.html",
+      "question": "TypeScript 如何通过类型谓词缩小联合类型？",
+      "agentQuery": "TypeScript type predicates"
+    },
+    {
+      "id": "typescript-2",
+      "site": "TypeScript",
+      "url": "https://www.typescriptlang.org/docs/handbook/2/generics.html",
+      "question": "TypeScript 如何约束泛型参数必须具有 length 属性？",
+      "agentQuery": "TypeScript generics length"
+    },
+    {
+      "id": "typescript-3",
+      "site": "TypeScript",
+      "url": "https://www.typescriptlang.org/docs/handbook/2/keyof-types.html",
+      "question": "TypeScript 的 keyof 运算符会得到什么类型？",
+      "agentQuery": "TypeScript keyof operator"
+    },
+    {
+      "id": "typescript-4",
+      "site": "TypeScript",
+      "url": "https://www.typescriptlang.org/docs/handbook/utility-types.html",
+      "question": "TypeScript 的 Pick 和 Omit 如何选择或排除对象属性？",
+      "agentQuery": "TypeScript Pick Omit"
+    },
+    {
+      "id": "httpx-1",
+      "site": "HTTPX",
+      "url": "https://www.python-httpx.org/advanced/timeouts/",
+      "question": "HTTPX 如何分别设置连接、读取、写入和连接池超时？",
+      "agentQuery": "HTTPX connect read write pool timeout"
+    },
+    {
+      "id": "httpx-2",
+      "site": "HTTPX",
+      "url": "https://www.python-httpx.org/async/",
+      "question": "HTTPX 如何使用 AsyncClient 发送异步请求？",
+      "agentQuery": "HTTPX AsyncClient async"
+    },
+    {
+      "id": "httpx-3",
+      "site": "HTTPX",
+      "url": "https://www.python-httpx.org/advanced/clients/",
+      "question": "HTTPX Client 为什么能复用连接？",
+      "agentQuery": "HTTPX client connection pooling"
+    },
+    {
+      "id": "httpx-4",
+      "site": "HTTPX",
+      "url": "https://www.python-httpx.org/quickstart/",
+      "question": "HTTPX 如何发送 JSON 请求体并检查错误状态码？",
+      "agentQuery": "HTTPX json raise_for_status"
+    },
+    {
+      "id": "vite-1",
+      "site": "Vite",
+      "url": "https://vite.dev/guide/env-and-mode",
+      "question": "Vite 中哪些环境变量会暴露给浏览器代码？",
+      "agentQuery": "Vite VITE_ import.meta.env"
+    },
+    {
+      "id": "vite-2",
+      "site": "Vite",
+      "url": "https://vite.dev/guide/build",
+      "question": "Vite 应用部署到子路径时如何设置 base？",
+      "agentQuery": "Vite public base path"
+    },
+    {
+      "id": "vite-3",
+      "site": "Vite",
+      "url": "https://vite.dev/guide/static-deploy",
+      "question": "Vite 如何本地预览生产构建？",
+      "agentQuery": "Vite preview dist"
+    },
+    {
+      "id": "vite-4",
+      "site": "Vite",
+      "url": "https://vite.dev/guide/features",
+      "question": "Vite 会为 TypeScript 执行类型检查吗？",
+      "agentQuery": "Vite TypeScript type checking"
+    }
+  ]
+}

@@ -245,7 +245,7 @@ export type BrowserReadinessEvidence = {
   interactionSteps?: number | undefined;
 };
 
-export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline";
+export type RslDiscoveryMethod = "robots" | "http-link" | "html-link" | "html-inline" | "rss" | "file";
 
 export type RslEvidence = {
   status: "not-declared" | "not-applicable" | "permitted";
@@ -301,12 +301,14 @@ export type ReadPageOptions = {
   authProfile?: string;
   browserReadiness?: BrowserReadinessPolicy;
   budget?: ExecutionBudget;
+  schemaId?: string;
 };
 
 export type FetchEvidence = {
   httpStatus: number;
   contentType: string;
   responseBytes: number;
+  networkBytesIn?: number;
   finalUrl: string;
   redirects?: UrlRedirect[];
   etag?: string;
@@ -361,6 +363,7 @@ export type ReadPageResult = {
     httpStatus: number;
     contentType: string;
     responseBytes: number;
+    networkBytesIn?: number;
       contentCharacters: number;
       extractionMethod: ExtractionMethod;
       extractorVersion: string;
@@ -387,6 +390,19 @@ export type ReadPageResult = {
 };
 
 export type InspectPageResult = Omit<ReadPageResult, "contentMarkdown">;
+
+export type ExtractPageData = {
+  title: string;
+  byline: string | null;
+  publishedTime: string | null;
+  markdown: string;
+  links: string[];
+};
+
+export type ExtractPageResult = InspectPageResult & {
+  schemaId: string | null;
+  data: ExtractPageData;
+};
 
 export type PageReadArtifact = ReadPageResult & {
   discoveredLinks: string[];
@@ -748,6 +764,7 @@ export type PageFetchOptions = {
   browserReadiness?: BrowserReadinessPolicy;
   maxResponseBytes?: number;
   timeoutMs?: number;
+  onNetworkRequestStart?: () => void;
   revalidate?: {
     url: string;
     etag?: string;

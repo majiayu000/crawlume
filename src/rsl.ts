@@ -10,6 +10,7 @@ import type { HttpTransport } from "./fetch/http.js";
 import { RslApprovalStore } from "./rsl-approvals.js";
 import { normalizeRslServer } from "./rsl-client-credentials.js";
 import { RslOlpClient } from "./rsl-olp.js";
+import { mediaContainerLicenseXml } from "./rsl-file.js";
 import {
   evaluateRslPayment,
   rslUrlObligation,
@@ -338,12 +339,76 @@ function htmlAssociations(body: string): Association[] {
   return associations;
 }
 
+function wrapRslContents(contents: Element[]): string {
+  return `<rsl xmlns="${RSL_NAMESPACE}">${contents.map((content) => content.outerHTML).join("")}</rsl>`;
+}
+
+function isFeedResponse(mediaType: string, body: string): boolean {
+  if (mediaType === "application/rss+xml" || mediaType === "application/atom+xml") {
+    return true;
+  }
+  if (mediaType === "application/xml" || mediaType === "text/xml") {
+    return /<(?:rss|feed)[\s>]/i.test(body);
+  }
+  return /^\s*<(?:rss|feed)[\s>]/i.test(body);
+}
+
+function feedAssociations(body: string, feedUrl: URL): {
+  associations: Association[];
+  catalog: Array<[string, string]>;
+} {
+  if (/<!DOCTYPE|<!ENTITY/i.test(body)) {
+    throw new ReadError("RSL_INVALID", "RSL documents must not contain DTD or entity declarations.");
+  }
+  const document = new JSDOM(body, { contentType: "application/xml" }).window.document;
+  const contents = Array.from(document.getElementsByTagNameNS(RSL_NAMESPACE, "content"));
+  if (contents.length === 0) {
+    return { associations: [], catalog: [] };
+  }
+  for (const element of Array.from(document.getElementsByTagNameNS(RSL_NAMESPACE, "*"))) {
+    if (!KNOWN_RSL_ELEMENTS.has(element.localName)) {
+      throw new ReadError("RSL_INVALID", "The RSL document contains an unknown core element.", {
+        details: { element: element.localName },
+      });
+    }
+  }
+  const catalog: Array<[string, string]> = [];
+  const associations: Association[] = [];
+  for (const content of contents) {
+    const scope = content.getAttribute("url");
+    if (scope === null || directChildren(content, "license").length === 0) {
+      throw new ReadError("RSL_INVALID", "Each RSL content entry must have a url and a license.");
+    }
+    const xml = wrapRslContents([content]);
+    parseRsl(xml);
+    let resolved: URL;
+    try {
+      resolved = new URL(scope, feedUrl);
+    } catch {
+      throw new ReadError("RSL_INVALID", "An RSL content scope must be a path or absolute URL.");
+    }
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      throw new ReadError("RSL_INVALID", "An RSL content scope must be a path or absolute URL.");
+    }
+    resolved.hash = "";
+    catalog.push([resolved.toString(), xml]);
+    associations.push({
+      method: "rss",
+      licenseUrl: null,
+      inlineXml: xml,
+      htmlScope: false,
+    });
+  }
+  return { associations, catalog };
+}
+
 function outcomePriority(outcome: Outcome): number {
   return { permitted: 0, confirmation: 1, payment: 2, license: 3, prohibited: 4 }[outcome];
 }
 
 export class RslPolicy {
   private readonly cache = new Map<string, CachedRsl>();
+  private readonly feedLicenses = new Map<string, string>();
   private readonly approvals: RslApprovalStore;
   private readonly olp: RslOlpClient;
 
@@ -421,10 +486,34 @@ export class RslPolicy {
       htmlScope: false,
     }));
     const mediaType = response.contentType.split(";", 1)[0]?.trim().toLowerCase();
+    const targetKey = new URL(target);
+    targetKey.hash = "";
+    const remembered = this.feedLicenses.get(targetKey.toString());
+    if (remembered !== undefined) {
+      associations.push({
+        method: "rss",
+        licenseUrl: null,
+        inlineXml: remembered,
+        htmlScope: false,
+      });
+    }
     if (mediaType === RSL_MEDIA_TYPE) {
       associations.push({ method: "http-link", licenseUrl: null, inlineXml: response.body, htmlScope: false });
     } else if (mediaType === "text/html" || mediaType === "application/xhtml+xml") {
       associations.push(...htmlAssociations(response.body));
+    } else if (isFeedResponse(mediaType ?? "", response.body)) {
+      const feed = feedAssociations(response.body, target);
+      for (const [url, xml] of feed.catalog) this.feedLicenses.set(url, xml);
+      associations.push(...feed.associations);
+    } else {
+      for (const inlineXml of mediaContainerLicenseXml(mediaType ?? "", response.body, response.bodyBytes)) {
+        associations.push({
+          method: "file",
+          licenseUrl: null,
+          inlineXml,
+          htmlScope: false,
+        });
+      }
     }
     return this.evaluate(
       target,

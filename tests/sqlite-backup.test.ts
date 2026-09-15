@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function temporaryDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), "diaoyan-sqlite-backup-"));
+  const directory = mkdtempSync(join(tmpdir(), "crawlume-sqlite-backup-"));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -62,7 +62,7 @@ describe("SQLite backup and recovery", () => {
       { final_url: "https://example.com/from-wal" },
     ]);
     expect(metadata).toMatchObject({
-      format: "diaoyan-sqlite-backup-v1",
+      format: "crawlume-sqlite-backup-v1",
       createdAt: "2026-08-31T10:00:00.000Z",
       integrityCheck: "ok",
       pageCount: expect.any(Number),

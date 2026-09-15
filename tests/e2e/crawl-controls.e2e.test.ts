@@ -37,14 +37,14 @@ const crawlBudget = {
 
 function processEnvironment(proxyUrl: string): Record<string, string> {
   return {
-    DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-    DIAOYAN_CRAWL_MAX_ATTEMPTS: "1",
-    DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "0",
-    DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-    DIAOYAN_CRAWL_WORKER_CONCURRENCY: "4",
-    DIAOYAN_LOCAL_INDEX_ENABLED: "0",
-    DIAOYAN_PROXY_URLS: proxyUrl,
-    DIAOYAN_REQUEST_TIMEOUT_MS: "10000",
+    CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+    CRAWLUME_CRAWL_MAX_ATTEMPTS: "1",
+    CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
+    CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+    CRAWLUME_CRAWL_WORKER_CONCURRENCY: "4",
+    CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+    CRAWLUME_PROXY_URLS: proxyUrl,
+    CRAWLUME_REQUEST_TIMEOUT_MS: "10000",
   };
 }
 
@@ -89,7 +89,7 @@ async function waitForObservation<T>(
 
 describe("durable crawl controls through the built MCP process", () => {
   it("pauses before new claims, resumes, and demonstrates real concurrent HTTP work", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-pause-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-pause-e2e-"));
     const databasePath = join(dataDirectory, "cache.sqlite");
     const site = await createDurableCrawlSite({ pages: 5, holdPageResponses: true });
     let process: BuiltMcpProcess | null = null;
@@ -165,7 +165,7 @@ describe("durable crawl controls through the built MCP process", () => {
   }, 60_000);
 
   it("cancels active sockets and publishes a clean terminal frontier", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-cancel-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-cancel-e2e-"));
     const databasePath = join(dataDirectory, "cache.sqlite");
     const site = await createDurableCrawlSite({ pages: 6, holdPageResponses: true });
     let process: BuiltMcpProcess | null = null;
@@ -227,7 +227,7 @@ describe("durable crawl controls through the built MCP process", () => {
   }, 60_000);
 
   it("enforces the cumulative provider-attempt budget across concurrent claims", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-budget-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-budget-e2e-"));
     const databasePath = join(dataDirectory, "cache.sqlite");
     const site = await createDurableCrawlSite({ pages: 6 });
     let process: BuiltMcpProcess | null = null;
@@ -273,7 +273,7 @@ describe("durable crawl controls through the built MCP process", () => {
   }, 60_000);
 
   it("applies a real Retry-After response to later claims on the same origin", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-retry-after-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-retry-after-e2e-"));
     const site = await createDurableCrawlSite({
       pages: 4,
       holdPageResponses: true,
@@ -318,7 +318,7 @@ describe("durable crawl controls through the built MCP process", () => {
   }, 60_000);
 
   it("schedules two origins independently while spacing starts within each origin", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-origins-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-origins-e2e-"));
     const site = await createDurableCrawlSite({
       pages: 5,
       holdPageResponses: true,
@@ -330,7 +330,7 @@ describe("durable crawl controls through the built MCP process", () => {
         dataDirectory,
         environment: {
           ...processEnvironment(site.proxyUrl),
-          DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "1000",
+          CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "1000",
         },
       });
       const started = await startCrawl(process, {

@@ -253,7 +253,7 @@ describe("content-addressed raw and artifact storage", () => {
   });
 
   it("runs bounded retention cleanup when a persistent cache starts", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-cache-retention-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cache-retention-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "cache.sqlite");
     const first = new PageCache(path);

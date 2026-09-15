@@ -8,7 +8,15 @@ import { LocalPageIndex } from "./index.js";
 import { AttemptLedger } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
 import { normalizeReadRequest } from "./reliability/read-intent.js";
-import type { InspectPageResult, PageReadArtifact, PageFetcher, ReadPageOptions, ReadPageResult } from "./types.js";
+import type {
+  ExtractPageResult,
+  InspectPageResult,
+  PageReadArtifact,
+  PageFetcher,
+  ReadPageOptions,
+  ReadPageResult,
+} from "./types.js";
+import type { ReadOperation } from "./reliability/read-intent.js";
 import type { NormalizedBrowserReadinessPolicy } from "./runtime/readiness.js";
 import { StageExecutor, type StageExecutionResult } from "./runtime/executor.js";
 import { createBuiltinProviderRegistry, type ProviderRegistry } from "./runtime/providers.js";
@@ -22,15 +30,17 @@ function cacheKey(
   authProfile: string | null,
   browserReadiness: NormalizedBrowserReadinessPolicy | undefined,
   config: AppConfig,
+  schemaId: string | null,
 ): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        schema: 6,
+        schema: 7,
         url,
         artifactKind,
         authProfile,
         browserReadiness: browserReadiness ?? null,
+        schemaId,
         userAgent: config.userAgent,
         rslUsage: config.rslUsage,
         rslUserClass: config.rslUserClass,
@@ -69,7 +79,10 @@ function failureTerminalState(error: ReadError):
   return "failed";
 }
 
-type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
+type ReadExecutionOptions = ReadPageOptions & {
+  signal?: AbortSignal;
+  onNetworkRequestStart?: () => void;
+};
 
 type PreparedPageArtifact = {
   result: PageReadArtifact;
@@ -114,9 +127,25 @@ export class ReaderService {
     return this.executeRecordedPageArtifact(options, "crawl");
   }
 
+  async extractPage(options: ReadPageOptions): Promise<ExtractPageResult> {
+    const artifact = await this.executeRecordedPageArtifact(options, "extract");
+    const { contentMarkdown, ...inspection } = withoutLinks(artifact);
+    return {
+      ...inspection,
+      schemaId: options.schemaId ?? null,
+      data: {
+        title: artifact.title,
+        byline: artifact.byline,
+        publishedTime: artifact.publishedTime,
+        markdown: contentMarkdown,
+        links: artifact.discoveredLinks,
+      },
+    };
+  }
+
   private async executeRecordedPageArtifact(
     options: ReadExecutionOptions,
-    operation: "read" | "map" | "crawl",
+    operation: ReadOperation,
   ): Promise<PageReadArtifact> {
     const startedAt = Date.now();
     let prepared: PreparedPageArtifact;
@@ -158,7 +187,7 @@ export class ReaderService {
 
   private async preparePageArtifact(
     options: ReadExecutionOptions,
-    operation: "read" | "map" | "crawl",
+    operation: ReadOperation,
   ): Promise<PreparedPageArtifact> {
     const url = this.urlPolicy.parse(options.url);
     await this.urlPolicy.assertPublic(url);
@@ -181,6 +210,7 @@ export class ReaderService {
         authProfile,
         browserReadiness,
         this.config,
+        intent.output.schemaId ?? null,
       ))
       .update(approvalContextHash)
       .digest("hex");
@@ -250,6 +280,9 @@ export class ReaderService {
         plan,
         budget,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.onNetworkRequestStart === undefined
+          ? {}
+          : { onNetworkRequestStart: options.onNetworkRequestStart }),
       });
     }
     const {
@@ -356,12 +389,13 @@ export class ReaderService {
   private scheduleBackgroundRevalidation(
     key: string,
     options: ReadExecutionOptions,
-    operation: "read" | "map" | "crawl",
+    operation: ReadOperation,
   ): void {
     if (this.backgroundRevalidations.has(key)) return;
     const {
       signal: _signal,
       requestId: _requestId,
+      onNetworkRequestStart: _onNetworkRequestStart,
       staleWhileRevalidateSeconds: _staleWhileRevalidateSeconds,
       ...refreshOptions
     } = options;

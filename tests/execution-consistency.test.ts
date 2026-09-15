@@ -38,7 +38,7 @@ function runtime(path: string, http: StubFetcher, ledger: AttemptLedger): Reader
 
 describe("request terminal and artifact consistency", () => {
   it("replays a committed public artifact by requestId after restart without refetching", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-request-replay-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-request-replay-"));
     directories.push(directory);
     const path = join(directory, "runtime.sqlite");
     const firstLedger = new AttemptLedger(path);
@@ -74,7 +74,7 @@ describe("request terminal and artifact consistency", () => {
   });
 
   it("replays a committed terminal failure instead of rerunning its provider", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-failure-replay-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-failure-replay-"));
     directories.push(directory);
     const path = join(directory, "runtime.sqlite");
     const firstLedger = new AttemptLedger(path);
@@ -106,7 +106,7 @@ describe("request terminal and artifact consistency", () => {
   });
 
   it("expires terminal projections with the artifacts they reference", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-terminal-retention-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-terminal-retention-"));
     directories.push(directory);
     const path = join(directory, "runtime.sqlite");
     const ledger = new AttemptLedger(path);

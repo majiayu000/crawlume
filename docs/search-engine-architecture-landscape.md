@@ -2,7 +2,7 @@
 
 状态：Architecture Research
 研究日期：2026-08-30
-适用项目：Diaoyan / FetchTrail
+适用项目：Crawlume
 相关文档：[爬虫技术架构全景](./crawler-architecture-landscape.md)、
 [技术选型 RFC](./technology-selection-rfc.md)、[本地搜索规范](./local-search-spec.md)
 
@@ -13,7 +13,7 @@
 1. Brave Search、Firecrawl、Exa 实际分别是什么系统。
 2. 它们的数据从哪里来，哪些能力真正由自己拥有。
 3. Firefox 是否属于同一类产品。
-4. Diaoyan/FetchTrail 如果以“自主搜索引擎 C”为终极目标，应该补齐哪些架构层。
+4. Crawlume 如果以“自主搜索引擎 C”为终极目标，应该补齐哪些架构层。
 
 结论是：三款看起来都能“搜索并读取网页”的产品，实际上处于不同系统层。
 
@@ -213,7 +213,7 @@ Scrape 能力读取和清洗结果页。托管 Fire Engine 的内部数据来源
 - [Firecrawl SearXNG adapter](https://github.com/firecrawl/firecrawl/blob/main/apps/api/src/search/v2/searxng.ts)
 
 当前源码还会在搜索异常时记录错误并返回空对象。这可能使调用方无法区分“没有搜索结果”和“搜索
-后端失败”。Diaoyan 不应复制这种 failure contract，应继续坚持错误可见。
+后端失败”。Crawlume 不应复制这种 failure contract，应继续坚持错误可见。
 
 ### 5.4 Firecrawl 值得复用与不应误判的部分
 
@@ -304,7 +304,7 @@ Exa 公开的向量数据库设计包括：
 来源：[Exa Web-scale vector database](https://exa.ai/blog/building-web-scale-vector-db)
 
 这不是本项目现阶段应该复制的组件。Exa 是在通用方案无法满足其数十亿向量、延迟和单位成本目标
-之后才自研数据库。Diaoyan 只有在真实负载证明现有索引成为瓶颈后，才应考虑同类投入。
+之后才自研数据库。Crawlume 只有在真实负载证明现有索引成为瓶颈后，才应考虑同类投入。
 
 ### 6.5 Canon 查询编排
 
@@ -343,7 +343,7 @@ Firefox 是浏览器，不是搜索引擎后端。Firefox Search Service 管理�
 Firefox 值得研究的是搜索入口、provider 配置和浏览器体验，不是 crawler、index 或 ranking 后端。
 在本项目此前语境中，“Firefox”更可能是“Firecrawl”的口误，因此主体比较采用 Firecrawl。
 
-## 8. Diaoyan/FetchTrail 当前所处位置
+## 8. Crawlume 当前所处位置
 
 当前项目已具备：
 
@@ -366,7 +366,7 @@ Firefox 值得研究的是搜索入口、provider 配置和浏览器体验，不
         └─ 已经读取过的本地页面
         │
         ▼
-Diaoyan 抓取、验证和解析
+Crawlume 抓取、验证和解析
         │
         ▼
 可选 SQLite FTS5
@@ -379,10 +379,10 @@ Diaoyan 抓取、验证和解析
 | 已知 URL 获取 | 已具备 | 继续提升可靠性和执行成本 |
 | 站内发现 | 已具备，bounded | 增加跨站点和长期 frontier |
 | 搜索发现 | SearXNG 或本地已读页面 | 建立自己的 URL corpus 和增量发现 |
-| 原始数据 | 以读取产物和任务状态为主 | 保存原始响应、页面版本和 provenance |
+| 原始数据 | 本地 Raw/Artifact CAS、URL 身份观察与可重建 FTS 投影已落地 | 近似重复、WARC 和跨域折叠仍按二期 ADR 排除 |
 | 索引 | SQLite FTS5，本地可选 | 可演进的 lexical、vector、link indexes |
-| 排序 | 本地 FTS/SearXNG 顺序 | 自有混合召回、质量信号和 reranker |
-| 评测 | 抓取可靠性 Benchmark 正在建设 | 增加固定搜索 query set 和 relevance judgments |
+| 排序 | 生产仍为本地 FTS lexical baseline | 自有混合召回、质量信号和 reranker |
+| 评测 | 抓取 Reliability Benchmark 与垂直 query judgment 已落地 | 真实 embedding/reranker 仍需独立质量证据 |
 
 ## 9. 目标 C：自主搜索引擎架构
 

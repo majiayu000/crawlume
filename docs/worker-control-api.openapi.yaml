@@ -1,0 +1,964 @@
+openapi: 3.2.0
+info:
+  title: Diaoyan Worker Control API
+  version: 1.0.0
+  description: Worker bootstrap, identity, and outbound-only execution protocol.
+servers:
+  - url: https://control.example/v1
+security:
+  - WorkerSession: []
+x-max-body-bytes: 65536
+x-max-response-body-bytes: 262144
+paths:
+  /workers/{worker_id}/claims:
+    post:
+      operationId: claimWorkerJob
+      summary: Long-poll for one eligible Job
+      parameters:
+        - $ref: '#/components/parameters/WorkerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                wait_ms:
+                  type: integer
+                  minimum: 0
+                  maximum: 30000
+                  default: 0
+      responses:
+        '200':
+          description: A Job and its fenced Lease
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '204':
+          description: No eligible Job became available before the bounded wait ended
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /job-leases/{lease_id}:
+    patch:
+      operationId: heartbeatJobLease
+      summary: Heartbeat the exact active Lease generation
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaseGenerationRequest'
+      responses:
+        '200':
+          description: Refreshed Lease
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, lease]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  lease:
+                    $ref: '#/components/schemas/Lease'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/LeaseFenced'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /job-leases/{lease_id}/events:
+    post:
+      operationId: appendJobEvent
+      summary: Append idempotent structured Job evidence
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobEventRequest'
+      responses:
+        '200':
+          description: Newly appended or idempotently replayed Event
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, event]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  event:
+                    $ref: '#/components/schemas/JobEvent'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/SubmissionConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /job-leases/{lease_id}/publications:
+    post:
+      operationId: publishJobResult
+      summary: Publish idempotent Artifact metadata without transferring private bytes
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobPublicationRequest'
+      responses:
+        '200':
+          description: Newly created or idempotently replayed Publication
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, publication]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  publication:
+                    $ref: '#/components/schemas/JobPublication'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/SubmissionConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /job-leases/{lease_id}/complete:
+    post:
+      operationId: completeJobLease
+      summary: Commit the exact active Lease generation to a terminal Job state
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteJobRequest'
+      responses:
+        '200':
+          description: Terminal Job projection
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, job]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/LeaseFenced'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/worker-enrollments:
+    post:
+      operationId: createWorkerEnrollment
+      summary: Mint a one-time Worker enrollment credential
+      description: This credential-mint operation is non-idempotent and must not be retried automatically.
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkerEnrollmentRequest' }
+      responses:
+        '201':
+          description: Enrollment metadata and the one-time enrollment credential
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkerEnrollmentResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /worker-enrollments:
+    post:
+      operationId: enrollWorker
+      summary: Consume an enrollment credential and bind an Ed25519 Worker identity
+      description: Consumes the one-time enrollment credential. This operation is non-idempotent and must not be retried automatically.
+      security:
+        - WorkerEnrollmentToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollWorkerRequest' }
+      responses:
+        '201':
+          description: The enrolled active Worker
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkerResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/WorkerEnrollmentUnauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /worker-sessions/challenges:
+    post:
+      operationId: createWorkerSessionChallenge
+      summary: Create a bounded Worker proof-of-possession challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkerChallengeRequest' }
+      responses:
+        '201':
+          description: A short-lived challenge and exact signing payload
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkerChallengeResponse' }
+        '400': { $ref: '#/components/responses/WorkerProofInvalid' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/WorkerChallengeRateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /worker-sessions:
+    post:
+      operationId: createWorkerSession
+      summary: Exchange a valid Worker signature for a short-lived Session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkerSessionRequest' }
+      responses:
+        '201':
+          description: Five-minute Worker Session credential
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkerSessionResponse' }
+        '400': { $ref: '#/components/responses/WorkerProofInvalid' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/workers/{worker_id}/disable:
+    post:
+      operationId: disableProjectWorker
+      summary: Disable a Project Worker and revoke its credentials
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+        - name: worker_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '200':
+          description: Disabled Worker metadata
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkerResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanForbidden' }
+        '404': { $ref: '#/components/responses/WorkerNotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+components:
+  securitySchemes:
+    WorkerSession:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Five-minute EdDSA Worker Session token with worker API audience.
+    HumanAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived human Access Token issued after OIDC Authorization Code + PKCE.
+    WorkerEnrollmentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: dya_we
+      description: One-time, ten-minute Worker enrollment credential.
+  headers:
+    NoStore:
+      schema: { type: string, const: no-store }
+    RetryAfter:
+      description: Whole seconds until another challenge may be requested.
+      schema: { type: integer, minimum: 1 }
+  parameters:
+    WorkerId:
+      name: worker_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+    LeaseId:
+      name: lease_id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Uuid'
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+    CreateWorkerEnrollmentRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_name]
+      properties:
+        worker_name: { type: string, minLength: 1, maxLength: 128, pattern: '\S' }
+    WorkerEnrollment:
+      type: object
+      additionalProperties: false
+      required: [id, project_id, worker_name, created_by_user_id, expires_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        project_id: { $ref: '#/components/schemas/Uuid' }
+        worker_name: { type: string }
+        created_by_user_id: { $ref: '#/components/schemas/Uuid' }
+        expires_at: { type: string, format: date-time }
+    CreateWorkerEnrollmentResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, enrollment, enrollment_token]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        enrollment: { $ref: '#/components/schemas/WorkerEnrollment' }
+        enrollment_token:
+          type: string
+          pattern: '^dya_we_[A-Za-z0-9_-]{43}$'
+          readOnly: true
+          x-sensitive: true
+          description: Returned only by the initial successful creation response.
+    EnrollWorkerRequest:
+      type: object
+      additionalProperties: false
+      required: [public_key_spki, version, capabilities]
+      properties:
+        public_key_spki:
+          type: string
+          minLength: 1
+          maxLength: 512
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: Canonical base64url Ed25519 SPKI DER bytes.
+        version: { type: string, minLength: 1, maxLength: 128, pattern: '\S' }
+        capabilities:
+          type: object
+          additionalProperties: true
+          x-max-json-bytes: 16384
+    WorkerIdentity:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - project_id
+        - name
+        - kind
+        - version
+        - capability_hash
+        - status
+        - created_by_user_id
+        - created_at
+        - disabled_at
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        project_id: { $ref: '#/components/schemas/Uuid' }
+        name: { type: string }
+        kind: { type: string, enum: [public, private] }
+        version: { type: string }
+        capability_hash: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+        status: { type: string, enum: [active, disabled] }
+        created_by_user_id: { $ref: '#/components/schemas/Uuid' }
+        created_at: { type: string, format: date-time }
+        disabled_at:
+          oneOf: [{ type: string, format: date-time }, { type: 'null' }]
+    WorkerResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, worker]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        worker: { $ref: '#/components/schemas/WorkerIdentity' }
+    CreateWorkerChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id]
+      properties:
+        worker_id: { $ref: '#/components/schemas/Uuid' }
+    CreateWorkerChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, challenge]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        challenge:
+          type: object
+          additionalProperties: false
+          required: [worker_id, challenge, signing_payload, expires_at]
+          properties:
+            worker_id: { $ref: '#/components/schemas/Uuid' }
+            challenge: { type: string, pattern: '^dya_wc_[A-Za-z0-9_-]{43}$', x-sensitive: true }
+            signing_payload: { type: string, x-sensitive: true }
+            expires_at: { type: string, format: date-time }
+    CreateWorkerSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id, challenge, signature]
+      properties:
+        worker_id: { $ref: '#/components/schemas/Uuid' }
+        challenge: { type: string, pattern: '^dya_wc_[A-Za-z0-9_-]{43}$' }
+        signature: { type: string, pattern: '^[A-Za-z0-9_-]{86}$', x-sensitive: true }
+    CreateWorkerSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, session]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        session:
+          type: object
+          additionalProperties: false
+          required: [token, expires_at]
+          properties:
+            token:
+              type: string
+              pattern: '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+              readOnly: true
+              x-sensitive: true
+            expires_at: { type: string, format: date-time }
+    ContentHash:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      description: Canonical base64url encoding of a 32-byte digest.
+    PublicHttpUrl:
+      type: string
+      format: uri
+      pattern: '^https?://[^/?#@\s]+(?:[/?#][^\s]*)?$'
+      description: Exact lowercase HTTP or HTTPS URL without whitespace or user information.
+    BrowserReadiness:
+      type: object
+      additionalProperties: false
+      required: [target]
+      properties:
+        target:
+          type: object
+          additionalProperties: false
+          required: [selector]
+          properties:
+            selector: { type: string, minLength: 1, maxLength: 512, pattern: '\S' }
+            state: { type: string, enum: [attached, visible] }
+            minCount: { type: integer, minimum: 1, maximum: 10000 }
+        interaction:
+          type: object
+          additionalProperties: false
+          required: [type, maxSteps]
+          properties:
+            type: { type: string, const: scroll-to-end }
+            maxSteps: { type: integer, minimum: 1, maximum: 100 }
+            stepDelayMs: { type: integer, minimum: 0, maximum: 5000 }
+        timeoutMs: { type: integer, minimum: 100, maximum: 120000 }
+    ReadJobInput:
+      type: object
+      additionalProperties: false
+      required: [url]
+      not:
+        required: [browserAllowed, browserReadiness]
+        properties:
+          browserAllowed: { const: false }
+      properties:
+        url: { $ref: '#/components/schemas/PublicHttpUrl' }
+        browserAllowed: { type: boolean }
+        cacheMode: { type: string, enum: [prefer-cache, live, cache-only] }
+        maxAgeSeconds: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        browserReadiness: { $ref: '#/components/schemas/BrowserReadiness' }
+    MapJobInput:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url: { $ref: '#/components/schemas/PublicHttpUrl' }
+        browserAllowed: { type: boolean }
+        maxPages: { type: integer, minimum: 1, maximum: 500 }
+        maxDepth: { type: integer, minimum: 0, maximum: 10 }
+        includeSubdomains: { type: boolean }
+        ignoreQueryParameters: { type: boolean }
+    CrawlJobInput:
+      type: object
+      additionalProperties: false
+      required: [url]
+      not:
+        required: [browserAllowed, browserReadiness]
+        properties:
+          browserAllowed: { const: false }
+      properties:
+        url: { $ref: '#/components/schemas/PublicHttpUrl' }
+        browserAllowed: { type: boolean }
+        cacheMode: { type: string, enum: [prefer-cache, live, cache-only] }
+        maxAgeSeconds: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        browserReadiness: { $ref: '#/components/schemas/BrowserReadiness' }
+        maxPages: { type: integer, minimum: 1, maximum: 10000 }
+        maxDepth: { type: integer, minimum: 0, maximum: 10 }
+        includeSubdomains: { type: boolean }
+        ignoreQueryParameters: { type: boolean }
+        concurrency: { type: integer, minimum: 1, maximum: 32 }
+    SearchJobInput:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 512, pattern: '\S' }
+        limit: { type: integer, minimum: 1, maximum: 20 }
+        page: { type: integer, minimum: 1, maximum: 100 }
+        language:
+          type: string
+          pattern: '^(?:all|[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?)$'
+        safeSearch: { type: integer, enum: [0, 1, 2] }
+        timeRange: { type: string, enum: [day, month, year] }
+        source: { type: string, enum: [auto, local, web] }
+    ControlPlaneRequiredCapabilities:
+      type: object
+      additionalProperties: false
+      properties:
+        http: { type: boolean, const: true }
+        browser: { type: boolean, const: true }
+        pdf: { type: boolean, const: true }
+        feed: { type: boolean, const: true }
+    LeaseGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [generation]
+      properties:
+        generation:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+    Lease:
+      type: object
+      additionalProperties: false
+      required: [id, job_id, generation, heartbeat_deadline, lease_deadline]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        job_id:
+          $ref: '#/components/schemas/Uuid'
+        generation:
+          type: integer
+          minimum: 1
+        heartbeat_deadline:
+          type: string
+          format: date-time
+        lease_deadline:
+          type: string
+          format: date-time
+    Job:
+      type: object
+      additionalProperties: false
+      required: [id, type, input, data_class, placement, required_capabilities, budget, policy_version, upload_private_artifact, priority, not_before, deadline_at, status, result_completeness, error_code]
+      properties:
+        id:
+          $ref: '#/components/schemas/Uuid'
+        type:
+          type: string
+          enum: [read, inspect, map, crawl, search]
+        input:
+          type: object
+        data_class:
+          type: string
+          enum: [public, authorized, intranet]
+        placement:
+          type: object
+          additionalProperties: false
+          required: [class, pinned_worker_id]
+          properties:
+            class:
+              type: string
+              enum: [public, private]
+            pinned_worker_id:
+              oneOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+        required_capabilities:
+          $ref: '#/components/schemas/ControlPlaneRequiredCapabilities'
+        budget:
+          type: object
+          additionalProperties: false
+          required: [deadline_ms, max_provider_attempts, max_document_bytes, max_browser_ms, max_browser_contexts]
+          properties:
+            deadline_ms: { type: integer, minimum: 1, maximum: 86400000 }
+            max_provider_attempts: { type: integer, minimum: 1, maximum: 1000000 }
+            max_document_bytes: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            max_browser_ms: { type: integer, minimum: 0, maximum: 86400000 }
+            max_browser_contexts: { type: integer, minimum: 0, maximum: 100000 }
+        policy_version:
+          type: string
+        upload_private_artifact:
+          type: boolean
+        priority:
+          type: integer
+        not_before:
+          type: string
+          format: date-time
+        deadline_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [assigned, running, completed, failed]
+        result_completeness:
+          oneOf:
+            - type: string
+              enum: [complete, partial]
+            - type: 'null'
+        error_code:
+          oneOf:
+            - type: string
+            - type: 'null'
+      allOf:
+        - oneOf:
+            - properties:
+                type: { const: read }
+                input: { $ref: '#/components/schemas/ReadJobInput' }
+            - properties:
+                type: { const: inspect }
+                input: { $ref: '#/components/schemas/ReadJobInput' }
+            - properties:
+                type: { const: map }
+                input: { $ref: '#/components/schemas/MapJobInput' }
+            - properties:
+                type: { const: crawl }
+                input: { $ref: '#/components/schemas/CrawlJobInput' }
+            - properties:
+                type: { const: search }
+                input: { $ref: '#/components/schemas/SearchJobInput' }
+    ClaimResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, job, lease]
+      properties:
+        request_id:
+          $ref: '#/components/schemas/Uuid'
+        job:
+          $ref: '#/components/schemas/Job'
+        lease:
+          $ref: '#/components/schemas/Lease'
+    JobEventRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, local_sequence, event_type, page_status, error_code, provider, byte_count, duration_ms, content_hash, usage, occurred_at]
+      properties:
+        generation: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        local_sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        event_type: { type: string, minLength: 1, maxLength: 64 }
+        page_status:
+          oneOf:
+            - { type: integer, minimum: 100, maximum: 599 }
+            - { type: 'null' }
+        error_code:
+          oneOf:
+            - { type: string, minLength: 1, maxLength: 128 }
+            - { type: 'null' }
+        provider:
+          oneOf:
+            - { type: string, minLength: 1, maxLength: 128 }
+            - { type: 'null' }
+        byte_count: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        duration_ms: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        content_hash:
+          oneOf:
+            - $ref: '#/components/schemas/ContentHash'
+            - { type: 'null' }
+        usage:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+        occurred_at:
+          type: string
+          format: date-time
+    JobEvent:
+      type: object
+      additionalProperties: false
+      required: [id, job_id, lease_id, lease_generation, local_sequence, sequence, event_type, page_status, error_code, provider, byte_count, duration_ms, content_hash, usage, occurred_at, recorded_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        job_id: { $ref: '#/components/schemas/Uuid' }
+        lease_id: { $ref: '#/components/schemas/Uuid' }
+        lease_generation: { type: integer, minimum: 1 }
+        local_sequence: { type: integer, minimum: 1 }
+        sequence: { type: integer, minimum: 1 }
+        event_type: { type: string }
+        page_status: {}
+        error_code: {}
+        provider: {}
+        byte_count: { type: integer, minimum: 0 }
+        duration_ms: { type: integer, minimum: 0 }
+        content_hash: {}
+        usage: { type: object }
+        occurred_at: { type: string, format: date-time }
+        recorded_at: { type: string, format: date-time }
+    JobPublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, local_sequence, content_hash, byte_count, media_type, completeness, storage]
+      properties:
+        generation: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        local_sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        byte_count: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        media_type: { type: string, minLength: 1, maxLength: 255 }
+        completeness: { type: string, enum: [complete, partial] }
+        storage: { type: string, enum: [worker_local, cloud_object] }
+    JobPublication:
+      type: object
+      additionalProperties: false
+      required: [id, job_id, lease_id, lease_generation, local_sequence, sequence, completeness, recorded_at, artifact]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        job_id: { $ref: '#/components/schemas/Uuid' }
+        lease_id: { $ref: '#/components/schemas/Uuid' }
+        lease_generation: { type: integer, minimum: 1 }
+        local_sequence: { type: integer, minimum: 1 }
+        sequence: { type: integer, minimum: 1 }
+        completeness: { type: string, enum: [complete, partial] }
+        recorded_at: { type: string, format: date-time }
+        artifact:
+          type: object
+          additionalProperties: false
+          required: [id, version, content_hash, byte_count, media_type, storage, object_key, created_at]
+          properties:
+            id: { $ref: '#/components/schemas/Uuid' }
+            version: { type: integer, minimum: 1 }
+            content_hash: { $ref: '#/components/schemas/ContentHash' }
+            byte_count: { type: integer, minimum: 0 }
+            media_type: { type: string }
+            storage: { type: string, enum: [worker_local, cloud_object] }
+            object_key:
+              oneOf:
+                - { type: string }
+                - { type: 'null' }
+            created_at: { type: string, format: date-time }
+    CompleteJobRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [generation, status, result_completeness, error_code]
+          properties:
+            generation: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            status: { const: completed }
+            result_completeness: { type: string, enum: [complete, partial] }
+            error_code: { type: 'null' }
+        - type: object
+          additionalProperties: false
+          required: [generation, status, result_completeness, error_code]
+          properties:
+            generation: { type: integer, minimum: 1, maximum: 9007199254740991 }
+            status: { const: failed }
+            result_completeness: { type: 'null' }
+            error_code: { type: string, minLength: 1, maxLength: 128 }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, detail, instance, code, request_id, retryable]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string }
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        retryable: { type: boolean }
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+  responses:
+    HumanUnauthorized:
+      description: The human Access Token is missing, invalid, expired, or revoked
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, const: Bearer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    HumanForbidden:
+      description: The authenticated user cannot administer Workers in this Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerEnrollmentUnauthorized:
+      description: The one-time Worker enrollment credential is invalid, expired, or consumed
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, const: Bearer }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerProofInvalid:
+      description: The Worker identity, challenge, signature, or session proof is invalid
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerChallengeRateLimited:
+      description: Too many anonymous challenge attempts for this Worker
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+        Cache-Control: { $ref: '#/components/headers/NoStore' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    WorkerNotFound:
+      description: The Worker does not exist in this Project or is already disabled
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    MalformedRequest:
+      description: Malformed request target, headers, UTF-8, or JSON
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: Request body exceeds 65536 bytes
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing, malformed, expired, revoked, or otherwise invalid Worker Session
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated Worker is not authorized for this operation
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    LeaseFenced:
+      description: Lease is inactive, expired, or superseded
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    SubmissionConflict:
+      description: Lease is fenced or a local sequence was reused with different metadata
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationFailed:
+      description: Request body failed semantic validation
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnsupportedMediaType:
+      description: Request does not use application/json
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InternalError:
+      description: Unexpected control-plane failure
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

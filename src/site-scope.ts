@@ -30,13 +30,26 @@ export function siteSourceUrl(root: URL, scope: SiteScope): string {
   return normalizeSiteCandidate(root.toString(), scope) ?? root.toString();
 }
 
+const skippedDiscoveryExtensions = new Set([
+  "7z", "avi", "avif", "bin", "bmp", "bz2", "cjs", "css", "dmg", "eot", "exe",
+  "gif", "gz", "ico", "iso", "jpeg", "jpg", "js", "map", "mjs", "mkv", "mov",
+  "mp3", "mp4", "ogg", "otf", "pkg", "png", "rar", "svg", "tar", "tgz", "tif",
+  "tiff", "ttf", "wasm", "wav", "webm", "webp", "woff", "woff2", "zip",
+]);
+
+function isStaticAssetUrl(url: string): boolean {
+  const last = new URL(url).pathname.split("/").pop() ?? "";
+  const dot = last.lastIndexOf(".");
+  if (dot <= 0 || dot === last.length - 1) return false;
+  return skippedDiscoveryExtensions.has(last.slice(dot + 1).toLowerCase());
+}
+
 export function normalizeDiscoveredLink(
   rawUrl: string,
   parent: DiscoveredUrl,
   scope: SiteScope,
 ): DiscoveredUrl | null {
   const url = normalizeSiteCandidate(rawUrl, scope);
-  return url === null
-    ? null
-    : { url, depth: parent.depth + 1, discoveredFrom: parent.url };
+  if (url === null || isStaticAssetUrl(url)) return null;
+  return { url, depth: parent.depth + 1, discoveredFrom: parent.url };
 }

@@ -141,7 +141,7 @@ describe("CrawlerMetrics", () => {
   });
 
   it("keeps aggregates across database reopen", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-metrics-test-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-metrics-test-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "crawler.sqlite");
     const now = Date.parse("2026-08-25T12:00:00.000Z");
@@ -159,7 +159,7 @@ describe("CrawlerMetrics", () => {
   });
 
   it("projects versioned runtime truth, stages, resources, transitions, cache, and crawl coverage", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-runtime-metrics-test-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-runtime-metrics-test-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "crawler.sqlite");
     const now = Date.parse("2026-08-25T12:00:00.000Z");

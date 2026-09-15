@@ -1,4 +1,4 @@
-# Diaoyan 路线图
+# Crawlume 路线图
 
 ## v0.1 已完成
 
@@ -155,6 +155,15 @@
 - `get_search_stats` 返回脱敏的查询结果、source、p50/p95/max 与失败原因，不硬编码 SLO 门槛。
 - 真实 embedding/vector/reranker、自动 rollout、托管 HTTP API、分布式索引和开放 Web 仍由真实
   质量或容量证据触发。
+
+## v0.17 本地合同补全（已完成）
+
+- `extract_page` / `crawlume extract`：把已声明的 `ReadIntent.operation=extract` 接到 CLI 与 MCP，返回结构化 JSON；未知 `schemaId` 失败关闭。
+- 本地 FTS 对含汉字且零命中的查询返回 `LEXICAL_LANGUAGE_MISMATCH` 警告，不提供翻译或跨语言改写。
+- RSL RSS/Atom 模块发现与同进程内容 URL catalog。
+- PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行，包括 UTF-16 XMP 包；真实付款和站点 Adapter 仍未启用。
+- 文档试用支持从官方域名首页发现语料；目标页未发现不计为索引命中。官方 domain 每日抓取深度 3；发现队列跳过图片、压缩包、脚本、样式、字体和音视频。Markdown 目录只保留最新日期版本的链接。
+- `evidence.networkBytesIn` 计入 robots/RSL/重定向和浏览器子资源；页级 `maxDocumentBytes` 仍是主文档。浏览器主导航可发送 Web Bot Auth。
 
 ## 可选的托管服务外壳
 

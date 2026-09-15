@@ -31,17 +31,17 @@ function publishedCount(job: JsonRecord): number {
 
 describe("durable crawl process recovery", () => {
   it("keeps committed publications across SIGKILL and resumes from the same SQLite frontier", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-recovery-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-recovery-e2e-"));
     const databasePath = join(dataDirectory, "cache.sqlite");
     const site = await createDurableCrawlSite({ pages: 6, holdPageResponses: true });
     const environment = {
-      DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-      DIAOYAN_CRAWL_MAX_ATTEMPTS: "1",
-      DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "0",
-      DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-      DIAOYAN_LOCAL_INDEX_ENABLED: "0",
-      DIAOYAN_PROXY_URLS: site.proxyUrl,
-      DIAOYAN_REQUEST_TIMEOUT_MS: "10000",
+      CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+      CRAWLUME_CRAWL_MAX_ATTEMPTS: "1",
+      CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
+      CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+      CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+      CRAWLUME_PROXY_URLS: site.proxyUrl,
+      CRAWLUME_REQUEST_TIMEOUT_MS: "10000",
     };
     let first: BuiltMcpProcess | null = null;
     let restarted: BuiltMcpProcess | null = null;
@@ -114,18 +114,18 @@ describe("durable crawl process recovery", () => {
   }, 90_000);
 
   it("preserves the same-origin start interval across a worker restart", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-origin-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-origin-e2e-"));
     const site = await createDurableCrawlSite({ pages: 3, holdPageResponses: true });
     const environment = {
-      DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-      DIAOYAN_CRAWL_LEASE_MS: "500",
-      DIAOYAN_CRAWL_MAX_ATTEMPTS: "1",
-      DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "2000",
-      DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-      DIAOYAN_CRAWL_WORKER_CONCURRENCY: "2",
-      DIAOYAN_LOCAL_INDEX_ENABLED: "0",
-      DIAOYAN_PROXY_URLS: site.proxyUrl,
-      DIAOYAN_REQUEST_TIMEOUT_MS: "10000",
+      CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+      CRAWLUME_CRAWL_LEASE_MS: "500",
+      CRAWLUME_CRAWL_MAX_ATTEMPTS: "1",
+      CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "2000",
+      CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+      CRAWLUME_CRAWL_WORKER_CONCURRENCY: "2",
+      CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+      CRAWLUME_PROXY_URLS: site.proxyUrl,
+      CRAWLUME_REQUEST_TIMEOUT_MS: "10000",
     };
     let first: BuiltMcpProcess | null = null;
     let restarted: BuiltMcpProcess | null = null;

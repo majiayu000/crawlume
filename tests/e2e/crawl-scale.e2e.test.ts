@@ -25,15 +25,15 @@ import {
 
 function processEnvironment(proxyUrl: string): Record<string, string> {
   return {
-    DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-    DIAOYAN_CRAWL_LEASE_MS: "1000",
-    DIAOYAN_CRAWL_MAX_ATTEMPTS: "2",
-    DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "0",
-    DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-    DIAOYAN_CRAWL_WORKER_CONCURRENCY: "16",
-    DIAOYAN_LOCAL_INDEX_ENABLED: "0",
-    DIAOYAN_PROXY_URLS: proxyUrl,
-    DIAOYAN_REQUEST_TIMEOUT_MS: "30000",
+    CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+    CRAWLUME_CRAWL_LEASE_MS: "1000",
+    CRAWLUME_CRAWL_MAX_ATTEMPTS: "2",
+    CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
+    CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+    CRAWLUME_CRAWL_WORKER_CONCURRENCY: "16",
+    CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+    CRAWLUME_PROXY_URLS: proxyUrl,
+    CRAWLUME_REQUEST_TIMEOUT_MS: "30000",
   };
 }
 
@@ -86,7 +86,7 @@ async function collectCursorBatches(
 
 describe("durable crawl production-scale acceptance", () => {
   it("completes 500 real pages concurrently with stable cursor publications", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-500-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-500-e2e-"));
     const databasePath = join(dataDirectory, "cache.sqlite");
     const site = await createDurableCrawlSite({ pages: 500, holdPageResponses: true });
     let process: BuiltMcpProcess | null = null;
@@ -176,7 +176,7 @@ describe("durable crawl production-scale acceptance", () => {
   }, 300_000);
 
   it("resumes 1000 pages after SIGKILL without refetching committed publications", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-1000-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-1000-e2e-"));
     const databasePath = join(dataDirectory, "cache.sqlite");
     const site = await createDurableCrawlSite({ pages: 1_000, holdPageResponses: true });
     const environment = processEnvironment(site.proxyUrl);

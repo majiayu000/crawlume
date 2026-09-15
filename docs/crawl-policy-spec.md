@@ -1,4 +1,4 @@
-# Diaoyan v0.6 域名限速与有界重试规范
+# Crawlume v0.6 域名限速与有界重试规范
 
 ## 目标
 
@@ -14,10 +14,10 @@
 
 ## 配置
 
-- `DIAOYAN_CRAWL_MAX_ATTEMPTS`：每页最大尝试次数，默认 3，设置 1 可关闭重试。
-- `DIAOYAN_CRAWL_RETRY_BASE_MS`：指数退避基数，默认 500ms，可设置 0。
-- `DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS`：单次最大允许等待，默认 30000ms。
-- `DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS`：同一 hostname 两次尝试的最小启动间隔，默认 250ms，可设置 0。
+- `CRAWLUME_CRAWL_MAX_ATTEMPTS`：每页最大尝试次数，默认 3，设置 1 可关闭重试。
+- `CRAWLUME_CRAWL_RETRY_BASE_MS`：指数退避基数，默认 500ms，可设置 0。
+- `CRAWLUME_CRAWL_MAX_RETRY_DELAY_MS`：单次最大允许等待，默认 30000ms。
+- `CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS`：同一 hostname 两次尝试的最小启动间隔，默认 250ms，可设置 0。
 
 ## 重试规则
 

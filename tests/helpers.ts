@@ -5,10 +5,10 @@ import type { PageFetcher, RawPage } from "../src/types.js";
 
 export function testConfig(): AppConfig {
   return {
-    dataDir: "/tmp/diaoyan-test",
+    dataDir: "/tmp/crawlume-test",
     cachePath: ":memory:",
-    profilesDir: "/tmp/diaoyan-test/profiles",
-    userAgent: "DiaoyanWebReaderTest/0.1",
+    profilesDir: "/tmp/crawlume-test/profiles",
+    userAgent: "CrawlumeTest/0.1",
     agentIdentityUrl: null,
     webBotAuthJwkPath: null,
     webBotAuthProfile: "cloudflare-legacy",
@@ -16,8 +16,8 @@ export function testConfig(): AppConfig {
     rslUsage: "ai-input",
     rslUserClass: null,
     rslGeo: null,
-    rslApprovalsPath: "/tmp/diaoyan-test/rsl-approvals.json",
-    rslClientsPath: "/tmp/diaoyan-test/rsl-clients.json",
+    rslApprovalsPath: "/tmp/crawlume-test/rsl-approvals.json",
+    rslClientsPath: "/tmp/crawlume-test/rsl-clients.json",
     requestTimeoutMs: 2_000,
     browserTimeoutMs: 2_000,
     maxResponseBytes: 1_000_000,

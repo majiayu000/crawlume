@@ -16,7 +16,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { ReadError } from "./errors.js";
 
 export type SqliteBackupMetadata = {
-  format: "diaoyan-sqlite-backup-v1";
+  format: "crawlume-sqlite-backup-v1";
   createdAt: string;
   integrityCheck: "ok";
   pageCount: number;
@@ -115,7 +115,7 @@ function publishWithoutOverwrite(
 
 function requireMetadata(metadata: SqliteBackupMetadata, path: string): void {
   if (
-    metadata.format !== "diaoyan-sqlite-backup-v1" ||
+    metadata.format !== "crawlume-sqlite-backup-v1" ||
     metadata.integrityCheck !== "ok" ||
     !Number.isFinite(Date.parse(metadata.createdAt)) ||
     !Number.isSafeInteger(metadata.pageCount) ||
@@ -187,7 +187,7 @@ export async function createSqliteBackup(
     chmodSync(pendingPath, 0o600);
     const verification = await inspectSqliteBackup(pendingPath);
     const metadata: SqliteBackupMetadata = {
-      format: "diaoyan-sqlite-backup-v1",
+      format: "crawlume-sqlite-backup-v1",
       createdAt: (options.now ?? (() => new Date()))().toISOString(),
       ...verification,
     };

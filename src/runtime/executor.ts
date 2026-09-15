@@ -66,6 +66,7 @@ export type StageExecutionInput = {
   plan: AccessPlan;
   budget: ExecutionBudget;
   signal?: AbortSignal;
+  onNetworkRequestStart?: () => void;
 };
 
 function emptyUsage(): ResourceUsage {
@@ -323,6 +324,9 @@ export class StageExecutor {
       timeoutMs: method === "browser"
         ? Math.max(1, Math.floor(input.budget.maxBrowserMs - trace.fetchDurationMsByMethod.browser))
         : Math.max(1, input.budget.deadlineMs),
+      ...(input.onNetworkRequestStart === undefined
+        ? {}
+        : { onNetworkRequestStart: input.onNetworkRequestStart }),
     }, signal);
     const durationMs = Math.max(0, Date.parse(result.completedAt) - Date.parse(result.startedAt));
     if (method !== null) {
@@ -540,6 +544,7 @@ export class StageExecutor {
         httpStatus: page.httpStatus,
         contentType: page.contentType,
         responseBytes: page.responseBytes,
+        ...(page.networkBytesIn === undefined ? {} : { networkBytesIn: page.networkBytesIn }),
         contentCharacters: extracted.contentCharacters,
         extractionMethod: extracted.extractionMethod,
         extractorVersion,

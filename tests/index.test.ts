@@ -70,8 +70,21 @@ describe("LocalPageIndex", () => {
         title: "MiniMax H3 inference guide",
         url: "https://example.com/article",
         source: "local",
-        engines: ["diaoyan-local"],
+        engines: ["crawlume-local"],
       }),
+    ]);
+  });
+
+  it("matches Chinese queries against Chinese page text", () => {
+    const index = createIndex();
+    index.put(artifact({
+      title: "推理优化指南",
+      contentMarkdown: "本文介绍推理优化与批处理吞吐。",
+      finalUrl: "https://example.com/zh",
+    }));
+
+    expect(index.search("推理优化", 10, 1)).toEqual([
+      expect.objectContaining({ url: "https://example.com/zh", title: "推理优化指南" }),
     ]);
   });
 

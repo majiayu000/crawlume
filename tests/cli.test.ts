@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseCli } from "../src/cli/main.js";
 
-describe("diaoyan CLI", () => {
+describe("crawlume CLI", () => {
   it("leaves reader semantic defaults to the shared ReadIntent boundary", () => {
     expect(parseCli(["read", "https://example.com/article"])).toEqual({
       kind: "read",
@@ -121,6 +121,13 @@ describe("diaoyan CLI", () => {
   });
 
   it("parses bounded RSL audit queries", () => {
+    expect(parseCli(["extract", "https://example.com/article", "--schema-id", "article-v1"])).toEqual({
+      kind: "extract",
+      options: {
+        url: "https://example.com/article",
+        schemaId: "article-v1",
+      },
+    });
     expect(parseCli(["rsl-audit"])).toEqual({ kind: "rsl-audit", limit: 100 });
     expect(parseCli(["rsl-audit", "--limit", "250"])).toEqual({
       kind: "rsl-audit",
@@ -131,6 +138,8 @@ describe("diaoyan CLI", () => {
   it.each([
     [["read"], "read requires a URL"],
     [["write", "https://example.com"], "Supported commands"],
+    [["extract", "--markdown", "https://example.com"], "only for read"],
+    [["read", "--schema-id", "article-v1", "https://example.com"], "only for extract"],
     [["read", "--max-age-seconds", "1.5", "https://example.com"], "positive integer"],
     [["read", "--stale-while-revalidate-seconds", "-1", "https://example.com"], "non-negative integer"],
     [["read", "--unknown", "https://example.com"], "Unknown command-line option"],

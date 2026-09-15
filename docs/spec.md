@@ -1,4 +1,4 @@
-# Diaoyan Crawler v0.10.4
+# Crawlume Crawler v0.17.0
 
 ## 目标
 
@@ -20,7 +20,7 @@ v1 不伪装第三方 AI 爬虫，不自动破解 CAPTCHA，不绕过登录、�
 - `timeRange`：可选的 `day`、`month` 或 `year`。
 - `source`：`auto`、`local` 或 `web`，默认 `auto`。
 
-仅当管理员显式设置 `DIAOYAN_LOCAL_INDEX_ENABLED=1` 时，成功公开读取才写入本地 FTS5；
+仅当管理员显式设置 `CRAWLUME_LOCAL_INDEX_ENABLED=1` 时，成功公开读取才写入本地 FTS5；
 爬虫默认不建设记忆索引，授权 Profile 页面始终不得索引。启用后，`auto` 第 1 页本地优先，并由
 SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足失败但已有本地命中时必须返回
 `partial` 和 warning。没有本地语料且未配置 Provider 时必须返回
@@ -29,9 +29,10 @@ SearXNG 补足和按 URL 去重；后续页使用外部 Provider。外部补足�
 
 本地 FTS 当前投影最多 300,000 个 final URL；满容量拒绝新 URL，但允许已有 URL 更新。公开内容的
 不同 content hash 记录首次抓取时间和 extractor/validator 版本。启用本地索引时，
-`DiaoyanApp.verticalSearch` 提供 AI 工具与开发者文档的一期控制面：官方 domain、人工 URL、
+`CrawlumeApp.verticalSearch` 提供 AI 工具与开发者文档的一期控制面：官方 domain、人工 URL、
 SearXNG candidate、显式准入、每日 durable crawl run 和固定 query judgment。每日计划最多
-60,000 次 Provider 尝试、官方 domain 最多 600 个；质量评测只查询自有 FTS5。
+60,000 次 Provider 尝试、官方 domain 最多 600 个；官方 domain 抓取深度 3、每域每天最多 100 页，
+精确 URL 深度 0。质量评测只查询自有 FTS5。
 
 长期数据层记录 requested/redirect/final/declared canonical 身份观察和历史 Raw/Artifact 引用，支持
 离线重建当前 FTS 投影，并按变化率与陈旧时间确定 exact URL 的重抓优先级。检索实验在同一 judgment
@@ -70,19 +71,26 @@ p50/p95/max、结果/警告数和失败原因；它不保存 query、URL、正�
 
 失败返回 MCP `isError: true`，正文为结构化错误 JSON。
 
+### `extract_page`
+
+执行与 `read_page` 相同的读取、缓存、完整性和授权规则，返回结构化 JSON 而不是把 Markdown
+作为根字段。成功结果包含 `data.title`、`data.byline`、`data.publishedTime`、`data.markdown` 和
+`data.links`，以及与 `inspect_page` 相同的证据。可选 `schemaId` 只有在匹配的 Adapter 或 schema
+validator 存在时才能成功；未知 schema 返回 `INCOMPLETE_CONTENT`，不得把通用正文包装成已满足 schema。
+
 ### `inspect_page`
 
 执行与 `read_page` 相同的读取和校验，但不返回正文，只返回诊断证据。
 
 ### `map_site`
 
-从一个公开 URL 开始，串行发现同主机链接。默认最多扫描 50 页、深度 2，并移除查询参数和锚点后去重。可显式允许子域或保留查询参数，最多 500 页、深度 10。
+从一个公开 URL 开始，串行发现同主机链接。默认最多扫描 50 页、深度 2，并移除查询参数和锚点后去重。可显式允许子域或保留查询参数，最多 500 页、深度 10。图片、压缩包、脚本、样式、字体和音视频等静态资源链接不进入发现队列。
 
 成功返回已扫描 URL、发现来源、深度、截断状态和逐页失败。起始页失败时整个调用失败；后续页面失败时返回 `partial`，不得静默丢弃。
 
 ### `crawl_site`
 
-使用与 `read_page` 相同的读取、缓存、完整性和授权规则，边发现边读取同主机页面。默认最多 10 页、深度 2，硬上限 50 页。每页返回 Markdown、证据、发现来源和深度。
+使用与 `read_page` 相同的读取、缓存、完整性和授权规则，边发现边读取同主机页面。默认最多 10 页、深度 2，硬上限 50 页。发现规则与 `map_site` 相同：静态资源链接不入队。每页返回 Markdown、证据、发现来源和深度。
 
 起始页失败时整个调用失败；后续页面失败时返回 `partial` 与逐页结构化错误。
 
@@ -141,12 +149,19 @@ Worker 使用 lease heartbeat 与 owner/generation fencing；进程中断后只�
 
 ## 可靠性运行时
 
+HTML 正文提取先将代码块转换为语义化 `pre/code`，避免仅含代码的滚动样式容器被误删。`readability-v2` 与 `document-v2` 保留代码行分隔、空行和行尾空格；高亮器的类型信息与编译器诊断放到代码块外，隐藏面板和重复覆盖层不进入源码。
+
+正文验证的访问门检测不把 HTML 脚本、样式、模板和代码示例文字当作页面展示的验证码或登录提示；真实密码表单和可见访问门仍会明确失败。该行为由 `generic-content-v2` 标识。
+
+JSON-LD Article 只有非空 `articleBody` 或 `text` 才提供正文候选，只有标题或 `description` 的元数据不替代网页正文；该行为由 `json-ld-v2` 标识。
+
 - CLI、MCP 和 Reader 通过同一个 `ReadIntent` 归一化边界产生内容寻址 Plan；相同输入得到相同默认值、
   错误和 Plan ID。
 - Provider Registry 使用统一 `StageResult` 执行 Cache、HTTP、Browser、Feed 和 PDF；Adapter Provider
   默认明确 unavailable，未知 Provider 不得误路由 Browser。
 - Extractor Registry 可在同一 raw response 上确定性尝试 JSON、JSON-LD、RSS、Atom、Sitemap、PDF、
-  Readability、Clean Document 和 Plain，不因换 Extractor 重新下载。
+  Readability、Clean Document 和 Plain（`text/plain` 与 `text/markdown`），不因换 Extractor 重新下载。
+  `plain-v2` 从 Markdown 目录链接发现文档 URL；若路径含 `YYYY-MM-DD` 版本，只保留该目录中最新日期，并在存在日期版本时忽略 `/draft/`。
 - 版本化 Validator 独占 `valid/uncertain/invalid` 判定；Provider 和 Extractor 只能产生候选。
 - Raw object 与 Artifact 都内容寻址且不可变；共享 Artifact key 绑定 Intent、授权/许可上下文和
   Extractor/Validator 版本。授权 Profile 或受限 RSL 内容不得进入共享 Store/Index。
@@ -171,12 +186,13 @@ Browser 默认使用正文指纹稳定窗口作为通用兜底。显式目标策
 
 429 的合法 `Retry-After` 必须被遵守；如果它超过管理员允许的最大等待，则保留失败而不是提前
 重试。异步 Crawl Job 取消可以打断退避等待。新鲜成功结果的 evidence 返回 `attempts`、
-`totalRetryDelayMs`、按 HTTP/Browser 拆分的 fetch 次数、响应字节和耗时；最终失败在 details
-返回同样的扁平成本证据，供 Benchmark 和后续 Attempt Ledger 归因。
+`totalRetryDelayMs`、按 HTTP/Browser 拆分的 fetch 次数、主文档 `responseBytes`、全链路
+`networkBytesIn` 和耗时；最终失败在 details 返回同样的扁平成本证据，供 Benchmark 和后续
+Attempt Ledger 归因。
 
 ## 管理员代理池
 
-`DIAOYAN_PROXY_URLS` 可配置逗号分隔的 HTTP(S) 代理。该配置只能由管理员提供，不接受 Agent
+`CRAWLUME_PROXY_URLS` 可配置逗号分隔的 HTTP(S) 代理。该配置只能由管理员提供，不接受 Agent
 工具参数。普通请求按进程内 round-robin 轮换；同一次 HTTP 重定向链和同一个浏览器上下文固定
 出口；授权 Profile 根据名称稳定绑定代理，手动登录与后续抓取保持一致。
 
@@ -186,8 +202,8 @@ Browser 默认使用正文指纹稳定窗口作为通用兜底。显式目标策
 
 ## 自有 Agent 身份
 
-管理员可通过 `DIAOYAN_AGENT_IDENTITY_URL` 声明自有的公开 HTTPS 身份，并通过
-`DIAOYAN_WEB_BOT_AUTH_JWK_PATH` 为 HTTP 抓取开启 Web Bot Auth 签名。私钥文件必须为
+管理员可通过 `CRAWLUME_AGENT_IDENTITY_URL` 声明自有的公开 HTTPS 身份，并通过
+`CRAWLUME_WEB_BOT_AUTH_JWK_PATH` 为 HTTP 抓取开启 Web Bot Auth 签名。私钥文件必须为
 Ed25519 私钥 JWK、使用绝对路径，并在 POSIX 系统上拒绝 group/other 权限。私钥、路径和完整
 JWK 不得出现在工具输入、返回、缓存或错误 details。
 
@@ -195,8 +211,9 @@ JWK 不得出现在工具输入、返回、缓存或错误 details。
 `@authority` 与 `signature-agent`，重定向逐跳重新签名。签名只证明请求携带了某个自有密钥，
 不代表站点已经注册或信任该 Agent，也不得用于绕过 robots、认证、付费或访问拒绝。
 
-浏览器路径不发送 Web Bot Auth 签名。新鲜结果的 `evidence.agentIdentity` 必须准确返回最终内容
-请求使用的 User-Agent、公开身份 URL、`signed` 状态和兼容档，不得把浏览器结果标成已签名。
+浏览器主导航在启用签名时发送同一套 Web Bot Auth 头；子资源不签名。新鲜结果的
+`evidence.agentIdentity` 必须准确返回最终内容请求使用的 User-Agent、公开身份 URL、`signed`
+状态和兼容档。
 旧缓存结果可以没有该字段。完整约束见 `docs/agent-identity-spec.md`。
 
 ## RSL 许可策略
@@ -205,7 +222,7 @@ JWK 不得出现在工具输入、返回、缓存或错误 details。
 HTTP RSL Link、HTML RSL link 和 inline script。外部 RSL 文件继续经过 URL policy、DNS、重定向、
 响应大小和内容类型校验；声明存在但无法安全判断时返回 `RSL_INVALID`，不得静默放行。
 
-管理员通过 `DIAOYAN_RSL_USAGE` 声明稳定用途，默认 `ai-input`；可选配置真实的 user class 与 geo。
+管理员通过 `CRAWLUME_RSL_USAGE` 声明稳定用途，默认 `ai-input`；可选配置真实的 user class 与 geo。
 明确禁止返回 `RSL_PROHIBITED`，缺少对应 OLP client 的 License Server 返回
 `RSL_LICENSE_REQUIRED`，付费或 custom 流程返回 `RSL_PAYMENT_REQUIRED`，未批准的归因、standard、
 reporting、legal 或 terms 返回 `RSL_CONFIRMATION_REQUIRED`。服务不自动购买许可或提交报告。
@@ -216,24 +233,25 @@ quote，并固定标记预算 `disabled`、结算 `not-attempted`。服务不执
 x402 facilitator、支付 Provider 或 custom endpoint。完整边界见 `docs/rsl-payment-boundary-spec.md`。
 
 新鲜结果的 `evidence.rsl` 返回用途、决策状态、发现方式与公开许可 URL。`not-declared` 只说明
-支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS 与媒体容器元数据
-尚未实现，因此当前能力不得宣称完整 RSL Conformance。完整边界见 `docs/rsl-policy-spec.md`。
+支持的发现面没有 RSL 声明，不代表不存在版权、站点条款或其他许可义务。RSS/Atom 馈送中的 `rsl:content` 会被发现，并在同一进程内应用于随后读取的匹配内容 URL。
+PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行，包括 UTF-16 XMP 包。浏览器子资源仍不逐个
+执行 RSL，因此不得宣称通用媒体许可执行器。完整边界见 `docs/rsl-policy-spec.md`。
 
 ## RSL 批准与访问审计
 
-管理员可在 mode-0600 的 `DIAOYAN_RSL_APPROVALS_PATH` 文件中批准 attribution、standard、legal
+管理员可在 mode-0600 的 `CRAWLUME_RSL_APPROVALS_PATH` 文件中批准 attribution、standard、legal
 或 terms 义务。批准必须精确绑定 `<license>` XML Hash、`<content url>`、usage、user class、geo、
 全部义务和未来到期时间。服务不通过 MCP 或普通 CLI 修改批准文件，批准到期后立即停止命中，
 页面缓存键同步变化。禁止、付费、reporting 和 License Server 不能由静态批准放行。
 
 每次最终页面读取向 `cache.sqlite` 的独立审计表写入成功或失败、去 query 的 URL、fetch/cache
 状态、RSL 决策、许可 URL/Hash、批准数量和安全付款 quote。审计不保存正文、标题、authProfile、Token、Cookie、
-客户端密钥或代理配置。写入失败必须使读取失败。`diaoyan rsl-audit` 和 `get_rsl_audit` 只读返回
+客户端密钥或代理配置。写入失败必须使读取失败。`crawlume rsl-audit` 和 `get_rsl_audit` 只读返回
 最近最多 1000 条安全字段。完整约束见 `docs/rsl-approval-audit-spec.md`。
 
 ## RSL OLP 与 CAP
 
-管理员可在 mode-0600 的 `DIAOYAN_RSL_CLIENTS_PATH` 中为精确 HTTPS License Server 配置 OAuth
+管理员可在 mode-0600 的 `CRAWLUME_RSL_CLIENTS_PATH` 中为精确 HTTPS License Server 配置 OAuth
 client。只有已经满足用途/用户/地区约束、没有付费或 reporting 条款、且其非付款义务已精确批准的
 许可可以请求 OLP `/token`。请求使用直连 HTTPS、HTTP Basic、表单编码、64 KiB 响应上限且禁止
 重定向；返回的 opaque Token 只保存在进程内存。
@@ -352,14 +370,14 @@ Webhook，也不把读取错误转换成“未变化”。
 
 ## 本地数据
 
-默认数据目录为平台用户数据目录下的 `diaoyan`，可通过 `DIAOYAN_DATA_DIR` 覆盖。
+默认数据目录为平台用户数据目录下的 `crawlume`，可通过 `CRAWLUME_DATA_DIR` 覆盖。
 
 - `cache.sqlite`: 成功正文缓存、持久 Crawl Job、页面 Monitor、隐私安全的运行聚合，以及显式启用时的本地 FTS5 全文索引。
 - `profiles/<name>/`: 专用 Chromium Profile。
 
 Profile 名称只允许字母、数字、点、下划线和连字符。
 
-Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启。它只允许域名解析所得的
+Clash/TUN Fake-IP 兼容必须通过 `CRAWLUME_ALLOW_DNS_FAKE_IP=1` 显式开启。它只允许域名解析所得的
 `198.18.0.0/15` 地址，URL 直接使用该网段仍按 SSRF 拦截。
 
 ## 验收
@@ -368,7 +386,7 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 单元测试覆盖 URL/SSRF、状态码映射、登录墙、挑战页、壳页、正文提取和缓存。
 - 单元测试覆盖站点范围、URL 去重、查询参数、深度、截断和部分失败语义。
 - 单元测试覆盖低成本验收状态与稳定 warning code。
-- MCP 客户端可以列出并调用二十个工具。
+- MCP 客户端可以列出并调用二十一个工具。
 - 公开页面读取后可通过 `source=local` 搜索，重复 URL 更新且授权页面不入索引。
 - 异步任务可完成、失败、取消并在服务重启后恢复。
 - retryable 页面失败按上限恢复，非 retryable 失败不重试，同主机尝试遵守最小间隔。
@@ -379,4 +397,4 @@ Clash/TUN Fake-IP 兼容必须通过 `DIAOYAN_ALLOW_DNS_FAKE_IP=1` 显式开启�
 - 对公开静态页面的真实冒烟读取返回正文和证据。
 - 对 402/403 或机器人挑战页面返回明确错误，不能返回伪正文。
 - `pnpm bench -- --mode pr` 的 46 个受控 Case×5 次通过；Nightly 的 10 个未过期公开 Canary 由
-  `DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly` 在 Fake-IP 环境复现。
+  `CRAWLUME_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly` 在 Fake-IP 环境复现。

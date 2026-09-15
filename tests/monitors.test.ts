@@ -268,7 +268,7 @@ describe("PageMonitorService", () => {
   });
 
   it("requeues a running monitor during service shutdown", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-monitor-shutdown-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-monitor-shutdown-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "crawler.sqlite");
     const runtime = new ManualRuntime(Date.parse("2026-08-25T00:00:00.000Z"));
@@ -354,7 +354,7 @@ describe("PageMonitorService", () => {
 
 describe("PageMonitorStore recovery", () => {
   it("recovers an interrupted running monitor as immediately scheduled", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-monitor-test-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-monitor-test-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "crawler.sqlite");
     const now = Date.parse("2026-08-25T00:00:00.000Z");

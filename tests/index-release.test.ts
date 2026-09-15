@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function dataPath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "diaoyan-index-release-"));
+  const directory = mkdtempSync(join(tmpdir(), "crawlume-index-release-"));
   temporaryDirectories.push(directory);
   return join(directory, "data.sqlite");
 }

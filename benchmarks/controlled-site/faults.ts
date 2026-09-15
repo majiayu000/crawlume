@@ -606,14 +606,14 @@ export function controlledFaultEnvironment(
 ): Record<string, string> {
   if (dataDirectory.length === 0) throw new Error("dataDirectory must be non-empty");
   return {
-    DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-    DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS: "5000",
-    DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "0",
-    DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-    DIAOYAN_DATA_DIR: dataDirectory,
-    DIAOYAN_MAX_REDIRECTS: String(fixture.maxRedirects),
-    DIAOYAN_MAX_RESPONSE_BYTES: String(fixture.maxDocumentBytes),
-    DIAOYAN_PROXY_URLS: site.proxyUrl,
-    DIAOYAN_REQUEST_TIMEOUT_MS: String(fixture.requestTimeoutMs),
+    CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+    CRAWLUME_CRAWL_MAX_RETRY_DELAY_MS: "5000",
+    CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
+    CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+    CRAWLUME_DATA_DIR: dataDirectory,
+    CRAWLUME_MAX_REDIRECTS: String(fixture.maxRedirects),
+    CRAWLUME_MAX_RESPONSE_BYTES: String(fixture.maxDocumentBytes),
+    CRAWLUME_PROXY_URLS: site.proxyUrl,
+    CRAWLUME_REQUEST_TIMEOUT_MS: String(fixture.requestTimeoutMs),
   };
 }

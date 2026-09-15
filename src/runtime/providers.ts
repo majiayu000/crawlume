@@ -37,6 +37,7 @@ export type ProviderExecutionRequest = {
   intent: ReadIntent;
   maxResponseBytes: number;
   timeoutMs: number;
+  onNetworkRequestStart?: () => void;
 };
 
 export type ProviderCandidate =
@@ -315,6 +316,9 @@ class FetchAccessProvider implements AccessProvider {
             }),
         maxResponseBytes: request.maxResponseBytes,
         timeoutMs: request.timeoutMs,
+        ...(request.onNetworkRequestStart === undefined
+          ? {}
+          : { onNetworkRequestStart: request.onNetworkRequestStart }),
       });
       page = this.id === "browser"
         ? await fetchPage(signal)

@@ -67,6 +67,6 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`diaoyan-auth failed: ${message}\n`);
+  process.stderr.write(`crawlume-auth failed: ${message}\n`);
   process.exitCode = 1;
 });

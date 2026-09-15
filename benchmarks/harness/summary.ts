@@ -73,7 +73,7 @@ import scrapy
 from scrapy.crawler import CrawlerProcess
 
 class BenchmarkSpider(scrapy.Spider):
-    name = "diaoyan_benchmark"
+    name = "crawlume_benchmark"
     def __init__(self, seed_url, expected_pages, concurrency, **kwargs):
         super().__init__(**kwargs)
         self.seed_url = seed_url
@@ -152,7 +152,7 @@ process.crawl(BenchmarkSpider, seed_url=args.seed, expected_pages=args.pages, co
 process.start()
 `;
 
-const collyGoMod = `module diaoyan-benchmark-colly\n\ngo 1.25.0\n\nrequire github.com/gocolly/colly/v2 v2.3.0\n`;
+const collyGoMod = `module crawlume-benchmark-colly\n\ngo 1.25.0\n\nrequire github.com/gocolly/colly/v2 v2.3.0\n`;
 
 const collyRunner = String.raw`
 package main
@@ -362,7 +362,7 @@ async function runSetup(command: string, args: string[], cwd: string): Promise<v
 }
 
 async function prepareCollyRunner(): Promise<{ path: string; cleanup(): Promise<void> }> {
-  const directory = await mkdtemp(join(tmpdir(), "diaoyan-colly-"));
+  const directory = await mkdtemp(join(tmpdir(), "crawlume-colly-"));
   const binary = resolve(directory, "colly-runner");
   try {
     await Promise.all([

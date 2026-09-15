@@ -6,11 +6,11 @@
 
 本文件比较产品表面与市场位置；涉及 Frontier、队列、浏览器池、存储、恢复、提取和性能的深层
 架构对比，见 [爬虫技术架构全景与选型证据](./crawler-architecture-landscape.md)，最终技术决策见
-[Diaoyan 下一代爬虫技术选型 RFC](./technology-selection-rfc.md)。
+[Crawlume 下一代爬虫技术选型 RFC](./technology-selection-rfc.md)。
 
 ## Agent 网页上下文 API
 
-| 产品 | 核心能力 | 商业信号 | 对 Diaoyan 的含义 |
+| 产品 | 核心能力 | 商业信号 | 对 Crawlume 的含义 |
 |---|---|---|---|
 | [Firecrawl](https://www.firecrawl.dev/pricing) | Scrape、Crawl、Map、Search、Monitor、Interact | 免费 1,000 credits/月，按页计费 | 通用 LLM 网页读取已经成熟，不能只复制 API 表面 |
 | [Tavily](https://www.tavily.com/pricing) | Search、Extract、Crawl、Map、Research | 免费 1,000 credits/月，按请求/深度计费 | 搜索与研究已向一体化发展 |
@@ -21,16 +21,16 @@
 
 ## 浏览器基础设施
 
-| 产品 | 核心能力 | 对 Diaoyan 的含义 |
+| 产品 | 核心能力 | 对 Crawlume 的含义 |
 |---|---|---|
 | [Browserless](https://www.browserless.io/pricing) | 托管浏览器、Session、代理、验证码、MCP、自托管 | 单卖浏览器池没有明显空位 |
 | [Browserbase](https://www.browserbase.com/pricing) | Browser Session、Agent Runtime、Identity、代理、Fetch | Agent 浏览器、身份与读取正在融合 |
 | [Steel](https://steel.dev/) | 开源 Headless Browser API、云端浏览器 | 自托管浏览器 API 也有成熟替代 |
-| Playwright | 本地真实浏览器、完整交互 | Diaoyan 本地版可继续以它作为免费执行面 |
+| Playwright | 本地真实浏览器、完整交互 | Crawlume 本地版可继续以它作为免费执行面 |
 
 ## 抓取、代理与解封 API
 
-| 产品 | 核心能力 | 对 Diaoyan 的含义 |
+| 产品 | 核心能力 | 对 Crawlume 的含义 |
 |---|---|---|
 | [Bright Data Web Unlocker](https://brightdata.com/pricing/web-unlocker) | IP、TLS、浏览器指纹、验证码、结果验证 | 不应与大型代理网络正面竞争 |
 | [Zyte API](https://www.zyte.com/pricing/) | HTTP、浏览器、Session、自动提取、分级站点定价 | 高难站点读取具有真实且可变的边际成本 |
@@ -39,11 +39,11 @@
 
 ## 开源与自托管
 
-| 产品 | 核心能力 | 对 Diaoyan 的含义 |
+| 产品 | 核心能力 | 对 Crawlume 的含义 |
 |---|---|---|
 | [Firecrawl](https://github.com/firecrawl/firecrawl) | 完整 API、Worker、队列、Playwright、自托管 | 功能全面但基础设施较重 |
 | [Crawl4AI](https://github.com/unclecode/crawl4ai) | Markdown、过滤、引用、结构化提取、浏览器 | 免费本地路线已有强竞争者 |
-| Scrapy / Crawlee | 成熟的可编程爬虫框架 | Diaoyan 不应重新发明通用爬虫框架 |
+| Scrapy / Crawlee | 成熟的可编程爬虫框架 | Crawlume 不应重新发明通用爬虫框架 |
 
 ## 合规授权、身份与内容交易
 

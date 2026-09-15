@@ -23,7 +23,7 @@ afterEach(async () => {
 
 describe("Reader RSL audit commit ordering", () => {
   it("leaves no successful cache or terminal when the success audit fails", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "diaoyan-reader-audit-order-"));
+    const directory = await mkdtemp(join(tmpdir(), "crawlume-reader-audit-order-"));
     temporaryDirectories.push(directory);
     const databasePath = join(directory, "cache.sqlite");
     const config = { ...testConfig(), cachePath: databasePath };

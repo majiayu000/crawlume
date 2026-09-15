@@ -67,18 +67,18 @@ function enumValue<const T extends readonly string[]>(
 }
 
 function rslGeo(): string | null {
-  const raw = process.env.DIAOYAN_RSL_GEO;
+  const raw = process.env.CRAWLUME_RSL_GEO;
   if (raw === undefined || raw.length === 0) {
     return null;
   }
   if (!/^[A-Z]{2}$/.test(raw)) {
-    throw new Error("DIAOYAN_RSL_GEO must be two uppercase ASCII letters.");
+    throw new Error("CRAWLUME_RSL_GEO must be two uppercase ASCII letters.");
   }
   return raw;
 }
 
 function agentIdentityUrl(): string | null {
-  const raw = process.env.DIAOYAN_AGENT_IDENTITY_URL;
+  const raw = process.env.CRAWLUME_AGENT_IDENTITY_URL;
   if (raw === undefined || raw.length === 0) {
     return null;
   }
@@ -86,7 +86,7 @@ function agentIdentityUrl(): string | null {
   try {
     parsed = new URL(raw);
   } catch {
-    throw new Error("DIAOYAN_AGENT_IDENTITY_URL must be a valid HTTPS URL.");
+    throw new Error("CRAWLUME_AGENT_IDENTITY_URL must be a valid HTTPS URL.");
   }
   if (
     parsed.protocol !== "https:" ||
@@ -96,39 +96,39 @@ function agentIdentityUrl(): string | null {
     parsed.hash.length > 0
   ) {
     throw new Error(
-      "DIAOYAN_AGENT_IDENTITY_URL must be HTTPS and must not contain credentials, query, or fragment.",
+      "CRAWLUME_AGENT_IDENTITY_URL must be HTTPS and must not contain credentials, query, or fragment.",
     );
   }
   return parsed.toString();
 }
 
 function webBotAuthJwkPath(): string | null {
-  const raw = process.env.DIAOYAN_WEB_BOT_AUTH_JWK_PATH;
+  const raw = process.env.CRAWLUME_WEB_BOT_AUTH_JWK_PATH;
   if (raw === undefined || raw.length === 0) {
     return null;
   }
   if (!isAbsolute(raw)) {
-    throw new Error("DIAOYAN_WEB_BOT_AUTH_JWK_PATH must be an absolute path.");
+    throw new Error("CRAWLUME_WEB_BOT_AUTH_JWK_PATH must be an absolute path.");
   }
   return raw;
 }
 
 function webBotAuthProfile(): "cloudflare-legacy" {
-  const raw = process.env.DIAOYAN_WEB_BOT_AUTH_PROFILE ?? "cloudflare-legacy";
+  const raw = process.env.CRAWLUME_WEB_BOT_AUTH_PROFILE ?? "cloudflare-legacy";
   if (raw !== "cloudflare-legacy") {
-    throw new Error("DIAOYAN_WEB_BOT_AUTH_PROFILE must be cloudflare-legacy.");
+    throw new Error("CRAWLUME_WEB_BOT_AUTH_PROFILE must be cloudflare-legacy.");
   }
   return raw;
 }
 
 function defaultDataDir(): string {
   if (platform() === "darwin") {
-    return join(homedir(), "Library", "Application Support", "diaoyan");
+    return join(homedir(), "Library", "Application Support", "crawlume");
   }
   if (platform() === "win32") {
-    return join(process.env.LOCALAPPDATA ?? homedir(), "diaoyan");
+    return join(process.env.LOCALAPPDATA ?? homedir(), "crawlume");
   }
-  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "diaoyan");
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "crawlume");
 }
 
 function positiveInteger(name: string, fallback: number): number {
@@ -170,81 +170,81 @@ function integerInRange(name: string, fallback: number, minimum: number, maximum
 }
 
 export function loadConfig(): AppConfig {
-  const dataDir = process.env.DIAOYAN_DATA_DIR ?? defaultDataDir();
+  const dataDir = process.env.CRAWLUME_DATA_DIR ?? defaultDataDir();
   const identityUrl = agentIdentityUrl();
   const jwkPath = webBotAuthJwkPath();
   if (jwkPath !== null && identityUrl === null) {
     throw new Error(
-      "DIAOYAN_AGENT_IDENTITY_URL is required when DIAOYAN_WEB_BOT_AUTH_JWK_PATH is set.",
+      "CRAWLUME_AGENT_IDENTITY_URL is required when CRAWLUME_WEB_BOT_AUTH_JWK_PATH is set.",
     );
   }
-  const configuredApprovalsPath = process.env.DIAOYAN_RSL_APPROVALS_PATH;
+  const configuredApprovalsPath = process.env.CRAWLUME_RSL_APPROVALS_PATH;
   if (configuredApprovalsPath !== undefined && !isAbsolute(configuredApprovalsPath)) {
-    throw new Error("DIAOYAN_RSL_APPROVALS_PATH must be an absolute path.");
+    throw new Error("CRAWLUME_RSL_APPROVALS_PATH must be an absolute path.");
   }
-  const configuredClientsPath = process.env.DIAOYAN_RSL_CLIENTS_PATH;
+  const configuredClientsPath = process.env.CRAWLUME_RSL_CLIENTS_PATH;
   if (configuredClientsPath !== undefined && !isAbsolute(configuredClientsPath)) {
-    throw new Error("DIAOYAN_RSL_CLIENTS_PATH must be an absolute path.");
+    throw new Error("CRAWLUME_RSL_CLIENTS_PATH must be an absolute path.");
   }
   return {
     dataDir,
     cachePath: join(dataDir, "cache.sqlite"),
     profilesDir: join(dataDir, "profiles"),
-    userAgent: process.env.DIAOYAN_USER_AGENT ?? "DiaoyanWebReader/0.10",
+    userAgent: process.env.CRAWLUME_USER_AGENT ?? "Crawlume/0.10",
     agentIdentityUrl: identityUrl,
     webBotAuthJwkPath: jwkPath,
     webBotAuthProfile: webBotAuthProfile(),
     webBotAuthTtlSeconds: integerInRange(
-      "DIAOYAN_WEB_BOT_AUTH_TTL_SECONDS",
+      "CRAWLUME_WEB_BOT_AUTH_TTL_SECONDS",
       60,
       10,
       300,
     ),
-    rslUsage: enumValue("DIAOYAN_RSL_USAGE", rslUsages, "ai-input") ?? "ai-input",
-    rslUserClass: enumValue("DIAOYAN_RSL_USER_CLASS", rslUserClasses, null),
+    rslUsage: enumValue("CRAWLUME_RSL_USAGE", rslUsages, "ai-input") ?? "ai-input",
+    rslUserClass: enumValue("CRAWLUME_RSL_USER_CLASS", rslUserClasses, null),
     rslGeo: rslGeo(),
     rslApprovalsPath: configuredApprovalsPath ?? join(dataDir, "rsl-approvals.json"),
     rslClientsPath: configuredClientsPath ?? join(dataDir, "rsl-clients.json"),
-    requestTimeoutMs: positiveInteger("DIAOYAN_REQUEST_TIMEOUT_MS", 20_000),
-    browserTimeoutMs: positiveInteger("DIAOYAN_BROWSER_TIMEOUT_MS", 30_000),
-    maxResponseBytes: positiveInteger("DIAOYAN_MAX_RESPONSE_BYTES", 5_000_000),
-    maxRedirects: positiveInteger("DIAOYAN_MAX_REDIRECTS", 5),
-    robotsCacheSeconds: positiveInteger("DIAOYAN_ROBOTS_CACHE_SECONDS", 3_600),
-    defaultCacheSeconds: positiveInteger("DIAOYAN_DEFAULT_CACHE_SECONDS", 900),
-    crawlMaxAttempts: integerInRange("DIAOYAN_CRAWL_MAX_ATTEMPTS", 3, 1, 10),
-    crawlRetryBaseMs: integerInRange("DIAOYAN_CRAWL_RETRY_BASE_MS", 500, 0, 60_000),
+    requestTimeoutMs: positiveInteger("CRAWLUME_REQUEST_TIMEOUT_MS", 20_000),
+    browserTimeoutMs: positiveInteger("CRAWLUME_BROWSER_TIMEOUT_MS", 30_000),
+    maxResponseBytes: positiveInteger("CRAWLUME_MAX_RESPONSE_BYTES", 5_000_000),
+    maxRedirects: positiveInteger("CRAWLUME_MAX_REDIRECTS", 5),
+    robotsCacheSeconds: positiveInteger("CRAWLUME_ROBOTS_CACHE_SECONDS", 3_600),
+    defaultCacheSeconds: positiveInteger("CRAWLUME_DEFAULT_CACHE_SECONDS", 900),
+    crawlMaxAttempts: integerInRange("CRAWLUME_CRAWL_MAX_ATTEMPTS", 3, 1, 10),
+    crawlRetryBaseMs: integerInRange("CRAWLUME_CRAWL_RETRY_BASE_MS", 500, 0, 60_000),
     crawlMaxRetryDelayMs: integerInRange(
-      "DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS",
+      "CRAWLUME_CRAWL_MAX_RETRY_DELAY_MS",
       30_000,
       1,
       600_000,
     ),
     crawlMinHostIntervalMs: integerInRange(
-      "DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS",
+      "CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS",
       250,
       0,
       60_000,
     ),
     crawlWorkerConcurrency: integerInRange(
-      "DIAOYAN_CRAWL_WORKER_CONCURRENCY",
+      "CRAWLUME_CRAWL_WORKER_CONCURRENCY",
       8,
       1,
       32,
     ),
-    crawlLeaseMs: integerInRange("DIAOYAN_CRAWL_LEASE_MS", 5_000, 500, 300_000),
-    browserPoolSize: integerInRange("DIAOYAN_BROWSER_POOL_SIZE", 2, 1, 16),
+    crawlLeaseMs: integerInRange("CRAWLUME_CRAWL_LEASE_MS", 5_000, 500, 300_000),
+    browserPoolSize: integerInRange("CRAWLUME_BROWSER_POOL_SIZE", 2, 1, 16),
     browserContextsPerInstance: integerInRange(
-      "DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE",
+      "CRAWLUME_BROWSER_CONTEXTS_PER_INSTANCE",
       4,
       1,
       32,
     ),
-    browserPoolWaitMs: integerInRange("DIAOYAN_BROWSER_POOL_WAIT_MS", 30_000, 1, 300_000),
-    browserChannel: process.env.DIAOYAN_BROWSER_CHANNEL ?? "chrome",
-    browserExecutable: process.env.DIAOYAN_BROWSER_EXECUTABLE ?? null,
-    allowDnsFakeIp: booleanFlag("DIAOYAN_ALLOW_DNS_FAKE_IP", false),
-    localIndexEnabled: booleanFlag("DIAOYAN_LOCAL_INDEX_ENABLED", false),
-    proxyEndpoints: parseProxyEndpoints(process.env.DIAOYAN_PROXY_URLS),
-    searxngUrl: process.env.DIAOYAN_SEARXNG_URL ?? null,
+    browserPoolWaitMs: integerInRange("CRAWLUME_BROWSER_POOL_WAIT_MS", 30_000, 1, 300_000),
+    browserChannel: process.env.CRAWLUME_BROWSER_CHANNEL ?? "chrome",
+    browserExecutable: process.env.CRAWLUME_BROWSER_EXECUTABLE ?? null,
+    allowDnsFakeIp: booleanFlag("CRAWLUME_ALLOW_DNS_FAKE_IP", false),
+    localIndexEnabled: booleanFlag("CRAWLUME_LOCAL_INDEX_ENABLED", false),
+    proxyEndpoints: parseProxyEndpoints(process.env.CRAWLUME_PROXY_URLS),
+    searxngUrl: process.env.CRAWLUME_SEARXNG_URL ?? null,
   };
 }

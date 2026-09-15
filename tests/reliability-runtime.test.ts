@@ -178,7 +178,7 @@ describe("planned reader runtime", () => {
     expect(result.completeness).toBe("uncertain");
     expect(result.validation).toMatchObject({
       outcome: "uncertain",
-      validatorVersion: "generic-content-v1",
+      validatorVersion: "generic-content-v2",
     });
     expect(result.evidence.accessPlan.executedStages).toEqual(["http-read"]);
     expect(browser.calls).toBe(0);

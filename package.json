@@ -1,23 +1,25 @@
 {
-  "name": "diaoyan-web-reader",
-  "version": "0.10.4",
+  "name": "crawlume",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
-  "description": "Fail-visible self-hosted crawler gateway for long-running agents",
+  "description": "Resumable web crawling and retrieval for AI agents",
   "engines": {
     "node": ">=25.7.0"
   },
   "bin": {
-    "diaoyan": "./dist/cli/main.js",
-    "diaoyan-web-reader": "./dist/server.js",
-    "diaoyan-auth": "./dist/cli/auth.js"
+    "crawlume": "./dist/cli/main.js",
+    "crawlume-mcp": "./dist/server.js",
+    "crawlume-auth": "./dist/cli/auth.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:postgres": "sh scripts/test-control-plane-postgres.sh",
     "test:watch": "vitest",
     "start": "node dist/server.js",
+    "start:control-plane": "node dist/server.js --control-plane",
     "auth": "tsx src/cli/auth.ts",
     "bench": "tsx benchmarks/controlled-site/server.ts --runner benchmark-suite",
     "bench:optimize": "tsx benchmarks/optimization/runner.ts",
@@ -27,14 +29,17 @@
     "bench:http": "tsx benchmarks/harness/summary.ts",
     "bench:readiness": "tsx benchmarks/controlled-site/server.ts --runner readiness-tournament",
     "cli": "tsx src/cli/main.ts",
-    "smoke": "tsx src/cli/smoke.ts"
+    "smoke": "tsx src/cli/smoke.ts",
+    "trial:docs": "node benchmarks/docs-trial/run.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "@mozilla/readability": "0.6.0",
     "ipaddr.js": "2.2.0",
+    "jose": "6.2.10",
     "jsdom": "30.0.1",
     "pdfjs-dist": "6.3.289",
+    "pg": "8.23.0",
     "playwright-core": "1.62.1",
     "robots-parser": "3.0.1",
     "turndown": "7.2.4",
@@ -48,9 +53,11 @@
     "@modelcontextprotocol/client": "2.0.0",
     "@types/jsdom": "28.0.1",
     "@types/node": "25.5.0",
+    "@types/pg": "8.23.1",
     "@types/turndown": "5.0.6",
     "tsx": "4.20.5",
     "typescript": "5.9.3",
-    "vitest": "3.2.4"
+    "vitest": "3.2.4",
+    "yaml": "2.8.1"
   }
 }

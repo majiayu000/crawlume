@@ -45,15 +45,15 @@ export type BenchmarkSuiteResult = {
 };
 
 const controlledEnvironmentKeys = [
-  "DIAOYAN_ALLOW_DNS_FAKE_IP",
-  "DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS",
-  "DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS",
-  "DIAOYAN_CRAWL_RETRY_BASE_MS",
-  "DIAOYAN_DATA_DIR",
-  "DIAOYAN_MAX_REDIRECTS",
-  "DIAOYAN_MAX_RESPONSE_BYTES",
-  "DIAOYAN_PROXY_URLS",
-  "DIAOYAN_REQUEST_TIMEOUT_MS",
+  "CRAWLUME_ALLOW_DNS_FAKE_IP",
+  "CRAWLUME_CRAWL_MAX_RETRY_DELAY_MS",
+  "CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS",
+  "CRAWLUME_CRAWL_RETRY_BASE_MS",
+  "CRAWLUME_DATA_DIR",
+  "CRAWLUME_MAX_REDIRECTS",
+  "CRAWLUME_MAX_RESPONSE_BYTES",
+  "CRAWLUME_PROXY_URLS",
+  "CRAWLUME_REQUEST_TIMEOUT_MS",
 ] as const;
 
 function optionValue(arguments_: string[], index: number): string {
@@ -161,7 +161,7 @@ export async function runBenchmarkSuite(
       ),
     };
     const report = await runBenchmarkCorpus(caseSet, async (benchmarkCase) => {
-      const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-benchmark-run-"));
+      const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-benchmark-run-"));
       const snapshot = new Map<string, string | undefined>(
         controlledEnvironmentKeys.map((key) => [key, process.env[key]]),
       );
@@ -173,7 +173,7 @@ export async function runBenchmarkSuite(
           site.select(scenario);
           Object.assign(process.env, controlledFaultEnvironment(site, dataDirectory, fixture));
         } else {
-          process.env.DIAOYAN_DATA_DIR = dataDirectory;
+          process.env.CRAWLUME_DATA_DIR = dataDirectory;
         }
         return await executeReaderBenchmarkCase(benchmarkCase);
       } finally {

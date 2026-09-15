@@ -1,4 +1,4 @@
-# Diaoyan v0.10.1 RSL 核心发现与策略规范
+# Crawlume v0.10.1 RSL 核心发现与策略规范
 
 > 本文保留 v0.10.1 核心策略边界；v0.10.3 的 Token 获取与 CAP 请求见 `rsl-olp-cap-spec.md`。
 
@@ -11,9 +11,9 @@
 
 | 变量 | 默认值 | 规则 |
 |---|---|---|
-| `DIAOYAN_RSL_USAGE` | `ai-input` | `ai-train`、`ai-input`、`ai-index` 或 `search`。 |
-| `DIAOYAN_RSL_USER_CLASS` | 空 | 可选：`commercial`、`non-commercial`、`education`、`government` 或 `personal`。 |
-| `DIAOYAN_RSL_GEO` | 空 | 可选：两个大写 ASCII 字母的地区代码。 |
+| `CRAWLUME_RSL_USAGE` | `ai-input` | `ai-train`、`ai-input`、`ai-index` 或 `search`。 |
+| `CRAWLUME_RSL_USER_CLASS` | 空 | 可选：`commercial`、`non-commercial`、`education`、`government` 或 `personal`。 |
+| `CRAWLUME_RSL_GEO` | 空 | 可选：两个大写 ASCII 字母的地区代码。 |
 
 用途、用户类别和地区是管理员级事实，不开放为单次 Agent 工具参数，避免调用方为了放行而临时谎报。
 
@@ -28,7 +28,7 @@
 - `401` / `402` 等响应中的 RSL Link 或 `application/rsl+xml` 正文。
 
 robots 许可在主请求前获取和执行。响应头及 HTML 许可在正文提取前执行。初始 URL 和每次重定向都重新检查 robots 许可。
-RSS module 与图片、音频、PDF、EPUB 等容器元数据不在首版范围，因此首版不得宣称完整 RSL Conformance。
+RSS/Atom 馈送中的 `rsl:content` 作为 `rss` 发现面执行；匹配内容 URL 的许可会记入进程内 catalog，供同一运行时后续读取使用。PDF、EPUB、常见图片和音频容器中的内嵌 RSL/XMP 作为 `file` 发现面执行，包括 UTF-16 LE/BE XMP 包和带 BOM 的 UTF-16 XML；无法安全解析的内嵌声明失败关闭。浏览器子资源仍不逐个执行 RSL，因此不得宣称通用媒体许可执行器。
 
 ## 获取与验证
 
@@ -75,7 +75,7 @@ RSS module 与图片、音频、PDF、EPUB 等容器元数据不在首版范围�
 ## 浏览器边界
 
 浏览器主导航执行同样的 robots、响应头和 HTML RSL 决策，并在最终正文返回前阻断不允许的内容。
-首版不解析每个图片、脚本和媒体子资源自己的 RSL 元数据，因此只承诺页面正文读取策略，不承诺通用媒体许可执行器。
+HTTP 主文档若本身是 PDF/EPUB/图片/音频，会读取容器内嵌 RSL。浏览器不解析每个图片、脚本和媒体子资源自己的 RSL 元数据，因此不承诺通用媒体许可执行器。
 
 ## 验收
 
