@@ -13,7 +13,7 @@ import { testConfig } from "./helpers.js";
 const temporaryDirectories: string[] = [];
 
 function temporaryPath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "diaoyan-rsl-approval-test-"));
+  const directory = mkdtempSync(join(tmpdir(), "crawlume-rsl-approval-test-"));
   temporaryDirectories.push(directory);
   return join(directory, "rsl-approvals.json");
 }
@@ -134,7 +134,7 @@ describe("RslApprovalStore", () => {
       retryAfterMs: null,
       proxyUsed: false,
       agentIdentity: {
-        userAgent: "DiaoyanWebReaderTest/0.1",
+        userAgent: "CrawlumeTest/0.1",
         identityUrl: null,
         signed: false,
         profile: null,

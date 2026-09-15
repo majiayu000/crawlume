@@ -139,7 +139,7 @@ afterEach(async () => {
 
 describe("benchmark corpus coordinator", () => {
   it("loads JSON cases in stable id order and fingerprints the set", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "diaoyan-corpus-"));
+    const directory = await mkdtemp(join(tmpdir(), "crawlume-corpus-"));
     temporaryDirectories.push(directory);
     await writeFile(join(directory, "b.json"), JSON.stringify(benchmarkCase("case-b")));
     await writeFile(join(directory, "a.json"), JSON.stringify(benchmarkCase("case-a")));
@@ -153,8 +153,8 @@ describe("benchmark corpus coordinator", () => {
   });
 
   it("rejects empty and duplicate case sets", async () => {
-    const empty = await mkdtemp(join(tmpdir(), "diaoyan-corpus-empty-"));
-    const duplicate = await mkdtemp(join(tmpdir(), "diaoyan-corpus-duplicate-"));
+    const empty = await mkdtemp(join(tmpdir(), "crawlume-corpus-empty-"));
+    const duplicate = await mkdtemp(join(tmpdir(), "crawlume-corpus-duplicate-"));
     temporaryDirectories.push(empty, duplicate);
     await writeFile(join(duplicate, "a.json"), JSON.stringify(benchmarkCase("same-case")));
     await writeFile(join(duplicate, "b.json"), JSON.stringify(benchmarkCase("same-case")));

@@ -20,7 +20,7 @@ function clientsFile(
   clients: Array<{ server: string; clientId: string; clientSecret: string }>,
   mode = 0o600,
 ): string {
-  const directory = mkdtempSync(join(tmpdir(), "diaoyan-rsl-clients-test-"));
+  const directory = mkdtempSync(join(tmpdir(), "crawlume-rsl-clients-test-"));
   temporaryDirectories.push(directory);
   const path = join(directory, "clients.json");
   writeFileSync(path, JSON.stringify({ version: 1, clients }), { mode });
@@ -42,7 +42,7 @@ function transportResponse(
     retryAfterMs: null,
     proxyUsed: false,
     agentIdentity: {
-      userAgent: "DiaoyanWebReaderTest/0.1",
+      userAgent: "CrawlumeTest/0.1",
       identityUrl: null,
       signed: false,
       profile: null,

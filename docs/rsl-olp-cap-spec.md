@@ -10,14 +10,14 @@
 
 ## 管理员凭据
 
-默认从 `<data-dir>/rsl-clients.json` 读取，也可通过 `DIAOYAN_RSL_CLIENTS_PATH` 指向绝对路径：
+默认从 `<data-dir>/rsl-clients.json` 读取，也可通过 `CRAWLUME_RSL_CLIENTS_PATH` 指向绝对路径：
 
 ```json
 {
   "version": 1,
   "clients": [{
     "server": "https://licenses.example.com",
-    "clientId": "diaoyan-client",
+    "clientId": "crawlume-client",
     "clientSecret": "replace-with-secret"
   }]
 }

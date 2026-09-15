@@ -20,7 +20,7 @@ import { RslPolicy } from "./rsl.js";
 import { RslAccessAudit } from "./rsl-audit.js";
 import { DurableCrawlService } from "./runtime/frontier.js";
 
-export type DiaoyanApp = {
+export type CrawlumeApp = {
   reader: ReaderService;
   profiles: ProfileManager;
   site: SiteService;
@@ -49,7 +49,7 @@ async function captureClose(
 export function createApp(
   config: AppConfig,
   options: { runCrawlWorker?: boolean; runMonitorWorker?: boolean } = {},
-): DiaoyanApp {
+): CrawlumeApp {
   const urlPolicy = new UrlPolicy(undefined, config.allowDnsFakeIp);
   const proxyPool = new ProxyPool(config.proxyEndpoints);
   const transport = new HttpTransport(config, urlPolicy, proxyPool);

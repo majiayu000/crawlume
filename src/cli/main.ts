@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { createApp, type DiaoyanApp } from "../app.js";
+import { createApp, type CrawlumeApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { normalizeError, ReadError } from "../errors.js";
 import {
@@ -19,12 +19,13 @@ import {
 } from "../types.js";
 
 const usage = `Usage:
-  diaoyan read <url> [options]
-  diaoyan map <url> [options]
-  diaoyan crawl <url> [options]
-  diaoyan search <query> [options]
-  diaoyan stats [--days <1-90>]
-  diaoyan rsl-audit [--limit <1-1000>]
+  crawlume read <url> [options]
+  crawlume extract <url> [options]
+  crawlume map <url> [options]
+  crawlume crawl <url> [options]
+  crawlume search <query> [options]
+  crawlume stats [--days <1-90>]
+  crawlume rsl-audit [--limit <1-1000>]
 
 Options:
   --no-browser                               Forbid browser execution
@@ -32,6 +33,7 @@ Options:
   --max-age-seconds <seconds>                Maximum cache age (default: 900)
   --stale-while-revalidate-seconds <seconds> Serve bounded stale content while refreshing
   --auth-profile <name>                      Dedicated browser profile
+  --schema-id <id>                           Optional extract output schema (extract only)
   --max-pages <count>                        Site page limit (map: 50, crawl: 10)
   --max-depth <depth>                        Link depth limit (default: 2)
   --include-subdomains                       Include child subdomains
@@ -50,6 +52,7 @@ Options:
 export type CliAction =
   | { kind: "help" }
   | { kind: "read"; options: ReadPageOptions; markdown: boolean }
+  | { kind: "extract"; options: ReadPageOptions }
   | { kind: "map"; options: import("../types.js").MapSiteOptions }
   | { kind: "crawl"; options: import("../types.js").CrawlSiteOptions }
   | { kind: "search"; options: SearchWebOptions }
@@ -222,6 +225,7 @@ export function parseCli(argv: string[]): CliAction {
   const command = argv[0];
   if (
     command !== "read" &&
+    command !== "extract" &&
     command !== "map" &&
     command !== "crawl" &&
     command !== "search" &&
@@ -230,7 +234,7 @@ export function parseCli(argv: string[]): CliAction {
   ) {
     throw new ReadError(
       "INVALID_ARGUMENT",
-      "Supported commands are read, map, crawl, search, stats, and rsl-audit.",
+      "Supported commands are read, extract, map, crawl, search, stats, and rsl-audit.",
       { details: { command: argv[0] ?? null } },
     );
   }
@@ -250,6 +254,7 @@ export function parseCli(argv: string[]): CliAction {
   let maxAgeSeconds: number | undefined;
   let staleWhileRevalidateSeconds: number | undefined;
   let authProfile: string | undefined;
+  let schemaId: string | undefined;
   let markdown = false;
   let maxPages = command === "map" ? 50 : 10;
   let maxDepth = 2;
@@ -321,8 +326,19 @@ export function parseCli(argv: string[]): CliAction {
       index += 1;
       continue;
     }
+    if (argument === "--schema-id") {
+      if (command !== "extract") {
+        throw new ReadError("INVALID_ARGUMENT", "--schema-id is available only for extract.");
+      }
+      schemaId = nextValue(argv, index, argument);
+      if (schemaId.trim().length === 0) {
+        throw new ReadError("INVALID_ARGUMENT", "--schema-id must be non-empty.");
+      }
+      index += 1;
+      continue;
+    }
     if (argument === "--max-pages") {
-      if (command === "read") {
+      if (command === "read" || command === "extract") {
         throw new ReadError("INVALID_ARGUMENT", "--max-pages is available only for map or crawl.");
       }
       const value = nextValue(argv, index, argument);
@@ -339,7 +355,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--max-depth") {
-      if (command === "read") {
+      if (command === "read" || command === "extract") {
         throw new ReadError("INVALID_ARGUMENT", "--max-depth is available only for map or crawl.");
       }
       const value = nextValue(argv, index, argument);
@@ -353,7 +369,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--include-subdomains") {
-      if (command === "read") {
+      if (command === "read" || command === "extract") {
         throw new ReadError(
           "INVALID_ARGUMENT",
           "--include-subdomains is available only for map or crawl.",
@@ -363,7 +379,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--keep-query") {
-      if (command === "read") {
+      if (command === "read" || command === "extract") {
         throw new ReadError("INVALID_ARGUMENT", "--keep-query is available only for map or crawl.");
       }
       ignoreQueryParameters = false;
@@ -412,6 +428,9 @@ export function parseCli(argv: string[]): CliAction {
   if (authProfile !== undefined) {
     options.authProfile = authProfile;
   }
+  if (schemaId !== undefined) {
+    options.schemaId = schemaId;
+  }
   if (command === "crawl") {
     return {
       kind: "crawl",
@@ -424,11 +443,14 @@ export function parseCli(argv: string[]): CliAction {
       },
     };
   }
+  if (command === "extract") {
+    return { kind: "extract", options };
+  }
   return { kind: "read", options, markdown };
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
-  let app: DiaoyanApp | null = null;
+  let app: CrawlumeApp | null = null;
   try {
     const action = parseCli(argv);
     if (action.kind === "help") {
@@ -443,6 +465,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           ? `${result.contentMarkdown}\n`
           : `${JSON.stringify(result, null, 2)}\n`,
       );
+    } else if (action.kind === "extract") {
+      process.stdout.write(`${JSON.stringify(await app.reader.extractPage(action.options), null, 2)}\n`);
     } else if (action.kind === "map") {
       process.stdout.write(`${JSON.stringify(await app.site.mapSite(action.options), null, 2)}\n`);
     } else if (action.kind === "crawl") {

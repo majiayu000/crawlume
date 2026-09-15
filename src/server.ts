@@ -34,7 +34,7 @@ const entry = process.argv[1] === undefined ? "" : resolve(process.argv[1]);
 if (entry !== "" && realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    process.stderr.write(`diaoyan-web-reader failed: ${message}\n`);
+    process.stderr.write(`crawlume-mcp failed: ${message}\n`);
     process.exitCode = 1;
   });
 }

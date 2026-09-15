@@ -1,4 +1,4 @@
-# Diaoyan v0.7 管理员代理池规范
+# Crawlume v0.7 管理员代理池规范
 
 ## 目标
 
@@ -7,7 +7,7 @@
 
 ## 配置
 
-新增 `DIAOYAN_PROXY_URLS`，使用逗号分隔一到多个完整代理 URL：
+新增 `CRAWLUME_PROXY_URLS`，使用逗号分隔一到多个完整代理 URL：
 
 ```text
 http://proxy-a.internal:8080,https://user:password@proxy-b.internal:8443
@@ -26,7 +26,7 @@ http://proxy-a.internal:8080,https://user:password@proxy-b.internal:8443
 - 一次 HTTP 请求及其重定向固定使用同一代理。
 - 浏览器一次启动及其全部子资源固定使用同一代理。
 - 使用 `authProfile` 时，根据 Profile 名称稳定哈希到一个代理，保证跨进程重启仍选择同一出口。
-- 手动创建授权 Profile 的 `diaoyan-auth` 使用同样的稳定选择规则。
+- 手动创建授权 Profile 的 `crawlume-auth` 使用同样的稳定选择规则。
 
 ## HTTP 路径
 

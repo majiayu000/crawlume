@@ -1,16 +1,16 @@
 {
-  "name": "diaoyan-web-reader",
-  "version": "0.10.4",
+  "name": "crawlume",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
-  "description": "Fail-visible self-hosted crawler gateway for long-running agents",
+  "description": "Resumable web crawling and retrieval for AI agents",
   "engines": {
     "node": ">=25.7.0"
   },
   "bin": {
-    "diaoyan": "./dist/cli/main.js",
-    "diaoyan-web-reader": "./dist/server.js",
-    "diaoyan-auth": "./dist/cli/auth.js"
+    "crawlume": "./dist/cli/main.js",
+    "crawlume-mcp": "./dist/server.js",
+    "crawlume-auth": "./dist/cli/auth.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -27,7 +27,8 @@
     "bench:http": "tsx benchmarks/harness/summary.ts",
     "bench:readiness": "tsx benchmarks/controlled-site/server.ts --runner readiness-tournament",
     "cli": "tsx src/cli/main.ts",
-    "smoke": "tsx src/cli/smoke.ts"
+    "smoke": "tsx src/cli/smoke.ts",
+    "trial:docs": "node benchmarks/docs-trial/run.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

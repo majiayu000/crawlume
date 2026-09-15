@@ -1,4 +1,4 @@
-# RFC：Diaoyan 下一代爬虫技术选型与目标架构
+# RFC：Crawlume 下一代爬虫技术选型与目标架构
 
 状态：Approved and implemented for the local modular Profile；集群、远程 Provider 与新语言扩展仍由量化门槛触发
 日期：2026-08-28
@@ -105,7 +105,7 @@ Metrics 和合规边界。具体实现与验证状态见 [architecture-completio
 方案：用 Crawlee RequestQueue、AutoscaledPool、BrowserPool 和 crawler 类替代大部分 runtime。
 
 - 优点：最快获得成熟调度、浏览器池和请求持久化；TypeScript 技术栈一致。
-- 缺点：Diaoyan 仍需另建 policy、attempt、artifact truth、授权和成本合同；Adaptive crawler 实验性；
+- 缺点：Crawlume 仍需另建 policy、attempt、artifact truth、授权和成本合同；Adaptive crawler 实验性；
   容易形成两套 scheduler/result 状态。
 - 适用条件：如果原型证明自有 Frontier/BrowserPool 没有差异化，且状态可一一映射，可重新评估。
 - 当前决定：可用来做对照 prototype，不作为权威内核。
@@ -148,7 +148,7 @@ Browserbase、Firecrawl、Tavily 等服务。
 ```mermaid
 flowchart LR
     U[User / Agent] --> E[CLI / MCP / HTTP API]
-    E --> D[Diaoyan Retrieval Runtime]
+    E --> D[Crawlume Retrieval Runtime]
     D --> W[Public Web / Authorized Origins]
     D -. optional .-> P[Managed Fetch / Browser Providers]
     D --> L[(Local or Private Metadata)]

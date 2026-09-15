@@ -16,7 +16,7 @@ import type {
 } from "../types.js";
 import { planAccess } from "./planner.js";
 
-export type ReadOperation = Extract<ReadIntent["operation"], "read" | "map" | "crawl">;
+export type ReadOperation = Extract<ReadIntent["operation"], "read" | "map" | "crawl" | "extract">;
 
 export type NormalizedReadRequest = {
   requestId: string;
@@ -76,12 +76,22 @@ export function normalizeReadRequest(
   if (requestId.trim().length === 0) {
     throw new ReadError("INVALID_ARGUMENT", "requestId must be non-empty when provided.");
   }
+  const schemaId = options.schemaId?.trim();
+  if (options.schemaId !== undefined && (schemaId === undefined || schemaId.length === 0)) {
+    throw new ReadError("INVALID_ARGUMENT", "schemaId must be non-empty when provided.");
+  }
+  if (schemaId !== undefined && operation !== "extract") {
+    throw new ReadError("INVALID_ARGUMENT", "schemaId is only valid for extract.");
+  }
   const authProfile = options.authProfile ?? null;
   const budget = options.budget ?? defaultExecutionBudget(config, browserAllowed);
   const intent: ReadIntent = {
     url: url.toString(),
     operation,
-    output: { format: "markdown" },
+    output: {
+      format: operation === "extract" ? "json" : "markdown",
+      ...(schemaId === undefined ? {} : { schemaId }),
+    },
     freshness: {
       maxAgeSeconds,
       allowStaleWhileRevalidate: staleWhileRevalidateSeconds > 0,

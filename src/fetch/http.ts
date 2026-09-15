@@ -11,6 +11,7 @@ import type { RobotsPolicy } from "../security/robots.js";
 import { ProxyPool, type ProxyEndpoint } from "../proxy.js";
 import { PolicyEgressProxy } from "../security/policy-egress-proxy.js";
 import type { RslPolicy } from "../rsl.js";
+import { addTransferBytes, runWithTransferMeter } from "../transfer-meter.js";
 
 export type TransportResponse = {
   url: URL;
@@ -210,6 +211,8 @@ export class HttpTransport {
 
       if (response.status !== 304 && response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
+        const declaredLength = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+        addTransferBytes(Number.isFinite(declaredLength) ? declaredLength : 0);
         await response.body?.cancel();
         if (location === null) {
           throw new ReadError("UPSTREAM_ERROR", "The site returned a redirect without a location.", {
@@ -244,6 +247,7 @@ export class HttpTransport {
       } catch (error) {
         throw transportFetchError(error, current, access === undefined);
       }
+      addTransferBytes(body.bytes);
       return {
         url: current,
         status: response.status,
@@ -313,6 +317,7 @@ export class HttpTransport {
       throw new ReadError("RESPONSE_TOO_LARGE", "The authenticated response was too large.");
     }
     const body = await readLimitedBody(response.body, maxBytes);
+    addTransferBytes(body.bytes);
     return {
       status: response.status,
       contentType: response.headers.get("content-type") ?? "",
@@ -370,6 +375,11 @@ export class HttpPageFetcher implements PageFetcher {
   ) {}
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
+    const { result, bytes } = await runWithTransferMeter(() => this.fetchWithPolicy(url, options));
+    return { ...result, networkBytesIn: bytes };
+  }
+
+  private async fetchWithPolicy(url: URL, options: PageFetchOptions): Promise<RawPage> {
     let robotsRsl = this.rsl.emptyEvidence();
     let challenge: {
       url: string;

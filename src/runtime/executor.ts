@@ -540,6 +540,7 @@ export class StageExecutor {
         httpStatus: page.httpStatus,
         contentType: page.contentType,
         responseBytes: page.responseBytes,
+        ...(page.networkBytesIn === undefined ? {} : { networkBytesIn: page.networkBytesIn }),
         contentCharacters: extracted.contentCharacters,
         extractionMethod: extracted.extractionMethod,
         extractorVersion,

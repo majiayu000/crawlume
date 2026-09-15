@@ -43,6 +43,30 @@ describe("shared ReadIntent boundary", () => {
     ).plan.id).toBe(normalized.plan.id);
   });
 
+  it("normalizes extract to JSON output and optional schema identity", () => {
+    const normalized = normalizeReadRequest(
+      testConfig(),
+      new URL("https://example.com/article"),
+      { url: "https://example.com/article", requestId: "extract-request", schemaId: "article-v1" },
+      "extract",
+    );
+
+    expect(normalized.intent).toMatchObject({
+      operation: "extract",
+      output: { format: "json", schemaId: "article-v1" },
+      completion: { type: "content" },
+    });
+  });
+
+  it("rejects schemaId outside extract", () => {
+    expect(() => normalizeReadRequest(
+      testConfig(),
+      new URL("https://example.com/article"),
+      { url: "https://example.com/article", schemaId: "article-v1" },
+      "read",
+    )).toThrow("schemaId is only valid for extract");
+  });
+
   it("rejects semantic authorization conflicts at the shared boundary", () => {
     expect(() => normalizeReadRequest(
       testConfig(),

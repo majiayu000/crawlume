@@ -19,7 +19,7 @@ Crawler、网页归档器、浏览器执行基础设施、托管解封/提取 AP
 | 动态/受保护页面 | Chrome 成本、会话隔离、代理质量 | 独立浏览器池，严格并发上限和队列 |
 | Agent 网页上下文 | 错误成功、延迟、单位有效结果成本 | HTTP-first 路由、验证、按需升级、结构化产物 |
 
-对 Diaoyan 最重要的结论有六条：
+对 Crawlume 最重要的结论有六条：
 
 1. **不要 browser-first。** Crawlee 官方材料把纯 HTTP 路径描述为约比 Playwright 快一个数量级；
    Browserless 也明确建议通过横向扩容控制 Chrome 的 CPU/内存争用。浏览器应是验证驱动的升级路径。
@@ -84,7 +84,7 @@ subject to policy + authorization + freshness + resource budgets
 
 ### 4.1 总表
 
-| 系统 | 主要技术 | Frontier/并发 | 浏览器 | 状态与恢复 | 为何这样选 | 对 Diaoyan 的启示 |
+| 系统 | 主要技术 | Frontier/并发 | 浏览器 | 状态与恢复 | 为何这样选 | 对 Crawlume 的启示 |
 | --- | --- | --- | --- | --- | --- | --- |
 | Scrapy | Python、Twisted | Engine + Scheduler，非阻塞 Downloader，按 slot/域限流 | 非原生 | 内存或磁盘队列，可持久 Job | 事件驱动适合 I/O；middleware/pipeline 支撑抓取生态 | 借鉴分层与中间件边界，不照搬 Python 运行时和历史扩展面 |
 | Crawlee | TypeScript/Node，另有 Python | RequestQueue + AutoscaledPool，根据 CPU/内存调并发 | Playwright/Puppeteer + BrowserPool | 本地/云存储、Request 状态 | 与 JS 页面和 Playwright 生态同栈；资源感知调度保护主机 | 最接近本项目，但 Adaptive crawler 仍标实验性，验证合同需自有 |
@@ -145,7 +145,7 @@ spout/bolt 持续流转，抓取、解析和状态更新形成反馈环，Fronti
 
 - Nutch 适合周期性全站索引。
 - StormCrawler 适合持续增量和多 Worker 背压。
-- Diaoyan 的单 URL/小 crawl 需要低延迟，但未来 monitor 需要持续调度；因此应该共享状态模型，
+- Crawlume 的单 URL/小 crawl 需要低延迟，但未来 monitor 需要持续调度；因此应该共享状态模型，
   而不是直接采用批处理或 Storm 平台。
 
 来源：[Nutch tutorial](https://cwiki.apache.org/confluence/spaces/NUTCH/pages/115512208/NutchTutorial)、
@@ -177,7 +177,7 @@ Cheerio/Playwright/Puppeteer Worker 组合。
 
 - 优点：用户只看见 scrape/crawl/extract/job，执行层可独立扩缩。
 - 代价：本地部署的服务数、故障面和资源常驻成本明显上升；多套状态设施会增加一致性工作。
-- 结论：Diaoyan 应借 API/Worker 分离，但只在规模证明后增加通知中间件。
+- 结论：Crawlume 应借 API/Worker 分离，但只在规模证明后增加通知中间件。
 
 来源：[Firecrawl self-host](https://github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md)、
 [Firecrawl Compose](https://github.com/firecrawl/firecrawl/blob/main/docker-compose.yaml)、
@@ -291,7 +291,7 @@ Agent 检索接口来源：[Tavily Crawl](https://docs.tavily.com/documentation/
 
 | 项目/产品族 | 主语言/运行时 | 实际抓取执行面 | 架构类型 |
 | --- | --- | --- | --- |
-| Diaoyan（当前与推荐 P0） | TypeScript / Node.js | Undici；Playwright 控制 Chrome | HTTP-first Agent retrieval |
+| Crawlume（当前与推荐 P0） | TypeScript / Node.js | Undici；Playwright 控制 Chrome | HTTP-first Agent retrieval |
 | Scrapy | Python，Twisted | 异步 HTTP Downloader | 事件引擎框架 |
 | Crawlee for JavaScript | TypeScript / Node.js | raw HTTP/Cheerio、Playwright 或 Puppeteer | 多执行器框架 |
 | Crawlee for Python | Python | HTTP 与 Playwright 等 Python Adapter | 多执行器框架的独立实现 |

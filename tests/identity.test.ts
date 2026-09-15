@@ -14,7 +14,7 @@ import { testConfig } from "./helpers.js";
 const temporaryDirectories: string[] = [];
 
 function privateJwkFile(mode = 0o600): { path: string; publicJwk: JsonWebKey } {
-  const directory = mkdtempSync(join(tmpdir(), "diaoyan-identity-test-"));
+  const directory = mkdtempSync(join(tmpdir(), "crawlume-identity-test-"));
   temporaryDirectories.push(directory);
   const pair = generateKeyPairSync("ed25519");
   const privateJwk = pair.privateKey.export({ format: "jwk" });
@@ -33,11 +33,11 @@ afterEach(() => {
 describe("AgentIdentity", () => {
   it("leaves headers unchanged when signing is disabled", () => {
     const identity = new AgentIdentity(testConfig());
-    const base = { "user-agent": "DiaoyanWebReaderTest/0.1" };
+    const base = { "user-agent": "CrawlumeTest/0.1" };
 
     expect(identity.headers(new URL("https://example.com/article"), base)).toBe(base);
     expect(identity.evidence()).toEqual({
-      userAgent: "DiaoyanWebReaderTest/0.1",
+      userAgent: "CrawlumeTest/0.1",
       identityUrl: null,
       signed: false,
       profile: null,
@@ -124,7 +124,7 @@ describe("AgentIdentity", () => {
 
 describe("Agent identity configuration", () => {
   it("requires an HTTPS identity without credentials, query, or fragment", () => {
-    vi.stubEnv("DIAOYAN_AGENT_IDENTITY_URL", "http://crawler.example/?token=secret");
+    vi.stubEnv("CRAWLUME_AGENT_IDENTITY_URL", "http://crawler.example/?token=secret");
 
     expect(() => loadConfig()).toThrow(
       "must be HTTPS and must not contain credentials, query, or fragment",
@@ -132,17 +132,17 @@ describe("Agent identity configuration", () => {
   });
 
   it("requires an identity URL when a private key path is configured", () => {
-    vi.stubEnv("DIAOYAN_AGENT_IDENTITY_URL", "");
-    vi.stubEnv("DIAOYAN_WEB_BOT_AUTH_JWK_PATH", "/tmp/private.jwk.json");
+    vi.stubEnv("CRAWLUME_AGENT_IDENTITY_URL", "");
+    vi.stubEnv("CRAWLUME_WEB_BOT_AUTH_JWK_PATH", "/tmp/private.jwk.json");
 
-    expect(() => loadConfig()).toThrow("DIAOYAN_AGENT_IDENTITY_URL is required");
+    expect(() => loadConfig()).toThrow("CRAWLUME_AGENT_IDENTITY_URL is required");
   });
 
   it("rejects unsupported compatibility profiles", () => {
-    vi.stubEnv("DIAOYAN_WEB_BOT_AUTH_PROFILE", "ietf-draft-2026");
+    vi.stubEnv("CRAWLUME_WEB_BOT_AUTH_PROFILE", "ietf-draft-2026");
 
     expect(() => loadConfig()).toThrow(
-      "DIAOYAN_WEB_BOT_AUTH_PROFILE must be cloudflare-legacy",
+      "CRAWLUME_WEB_BOT_AUTH_PROFILE must be cloudflare-legacy",
     );
   });
 });

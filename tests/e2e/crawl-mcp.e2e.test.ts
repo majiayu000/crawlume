@@ -23,19 +23,19 @@ const execFileAsync = promisify(execFile);
 
 function processEnvironment(proxyUrl: string): Record<string, string> {
   return {
-    DIAOYAN_ALLOW_DNS_FAKE_IP: "1",
-    DIAOYAN_CRAWL_MAX_ATTEMPTS: "1",
-    DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS: "0",
-    DIAOYAN_CRAWL_RETRY_BASE_MS: "0",
-    DIAOYAN_LOCAL_INDEX_ENABLED: "0",
-    DIAOYAN_PROXY_URLS: proxyUrl,
-    DIAOYAN_REQUEST_TIMEOUT_MS: "5000",
+    CRAWLUME_ALLOW_DNS_FAKE_IP: "1",
+    CRAWLUME_CRAWL_MAX_ATTEMPTS: "1",
+    CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
+    CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
+    CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+    CRAWLUME_PROXY_URLS: proxyUrl,
+    CRAWLUME_REQUEST_TIMEOUT_MS: "5000",
   };
 }
 
 describe("durable crawl MCP process", () => {
   it("drives the built stdio server through a real proxy and file-backed SQLite", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-mcp-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-mcp-e2e-"));
     const site = await createDurableCrawlSite({ pages: 3 });
     let process: BuiltMcpProcess | null = null;
     try {
@@ -71,7 +71,7 @@ describe("durable crawl MCP process", () => {
   }, 30_000);
 
   it("advertises durable controls and preserves the new start contract over real MCP stdio", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-contract-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-contract-e2e-"));
     const site = await createDurableCrawlSite({ pages: 2 });
     let process: BuiltMcpProcess | null = null;
     try {
@@ -113,7 +113,7 @@ describe("durable crawl MCP process", () => {
   }, 30_000);
 
   it("waits for the next publication and resumes from the SQLite cursor after disconnect", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-wait-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-wait-e2e-"));
     const site = await createDurableCrawlSite({ pages: 2, holdPageResponses: true });
     const environment = processEnvironment(site.proxyUrl);
     let first: BuiltMcpProcess | null = null;
@@ -187,7 +187,7 @@ describe("durable crawl MCP process", () => {
   }, 60_000);
 
   it("returns the same privacy-preserving runtime projection through MCP and CLI", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-metrics-parity-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-metrics-parity-e2e-"));
     const site = await createDurableCrawlSite({ pages: 1 });
     const environment = processEnvironment(site.proxyUrl);
     let process: BuiltMcpProcess | null = null;
@@ -207,7 +207,7 @@ describe("durable crawl MCP process", () => {
         [join(globalThis.process.cwd(), "dist/cli/main.js"), "stats", "--days", "1"],
         {
           cwd: globalThis.process.cwd(),
-          env: { ...globalThis.process.env, DIAOYAN_DATA_DIR: dataDirectory, ...environment },
+          env: { ...globalThis.process.env, CRAWLUME_DATA_DIR: dataDirectory, ...environment },
         },
       );
       const cliStats = JSON.parse(stdout) as Record<string, unknown>;
@@ -218,7 +218,7 @@ describe("durable crawl MCP process", () => {
         finalStates: { completed: 1 },
         versions: {
           planners: [{ version: "access-planner-v1", count: 1 }],
-          validators: [{ version: "generic-content-v1", count: 1 }],
+          validators: [{ version: "generic-content-v2", count: 1 }],
         },
         cache: { live: 1 },
       });
@@ -231,7 +231,7 @@ describe("durable crawl MCP process", () => {
   }, 30_000);
 
   it("crawls a JavaScript-rendered graph through a real Chrome process", async () => {
-    const dataDirectory = await mkdtemp(join(tmpdir(), "diaoyan-crawl-chrome-e2e-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "crawlume-crawl-chrome-e2e-"));
     const site = await createDurableCrawlSite({
       pages: 3,
       dynamicPages: true,
@@ -243,9 +243,9 @@ describe("durable crawl MCP process", () => {
         dataDirectory,
         environment: {
           ...processEnvironment(site.proxyUrl),
-          DIAOYAN_BROWSER_POOL_SIZE: "1",
-          DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE: "2",
-          DIAOYAN_BROWSER_TIMEOUT_MS: "10000",
+          CRAWLUME_BROWSER_POOL_SIZE: "1",
+          CRAWLUME_BROWSER_CONTEXTS_PER_INSTANCE: "2",
+          CRAWLUME_BROWSER_TIMEOUT_MS: "10000",
         },
       });
       const started = await startCrawl(process, {

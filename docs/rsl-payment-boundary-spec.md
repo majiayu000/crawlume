@@ -11,7 +11,7 @@
 - RSL OLP `/token` 成功响应只有 Token 类型和有效期，没有实际费用、交易 ID 或结算收据。
 - RSL 明确把注册、billing 和 reporting 等运营能力排除在规范范围外。
 
-因此 Diaoyan 不得仅凭静态 XML 声称费用已经扣除、预算已经消耗或交易已经结算。
+因此 Crawlume 不得仅凭静态 XML 声称费用已经扣除、预算已经消耗或交易已经结算。
 
 ## 严格付款 quote
 
@@ -47,7 +47,7 @@
 
 成功的非付费读取写空值；付费阻断写 quote。字段不包含钱包、签名、支付 payload、Token、client ID、付款地址或服务端错误正文。旧数据库自动增加新列，历史记录的 payment 整体为空；只有新的付费阻断记录带有 `disabled` 和 `not-attempted`。
 
-现有 `diaoyan rsl-audit` 和 `get_rsl_audit` 返回这些字段，不增加付款写接口。
+现有 `crawlume rsl-audit` 和 `get_rsl_audit` 返回这些字段，不增加付款写接口。
 
 ## 当前预算与结算策略
 

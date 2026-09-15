@@ -91,7 +91,7 @@ describe("SearchServingMetrics", () => {
   });
 
   it("persists only bounded structured fields and excludes private search data", () => {
-    const directory = mkdtempSync(join(tmpdir(), "diaoyan-search-metrics-test-"));
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-search-metrics-test-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "crawler.sqlite");
     const now = Date.parse("2026-08-31T12:00:00.000Z");

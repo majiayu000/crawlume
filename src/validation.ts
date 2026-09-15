@@ -81,7 +81,12 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
   const document = html ? new JSDOM(page.body, { url: page.finalUrl }).window.document : null;
   const title = document?.title.trim() ?? candidate.title;
   const bodyText = (document?.body?.textContent ?? candidate.markdown).replace(/\s+/gu, " ").trim();
-  const combined = `${title}\n${bodyText}`.toLowerCase();
+  // Scripts and code samples can describe access gates without presenting one.
+  // Keep the original DOM for real password-form and paywall checks below.
+  const gateBody = document?.body?.cloneNode(true) as HTMLElement | undefined;
+  gateBody?.querySelectorAll("script, style, template, pre, code").forEach((node) => node.remove());
+  const gateText = (gateBody?.textContent ?? candidate.markdown).replace(/\s+/gu, " ").trim();
+  const combined = `${title}\n${gateText}`.toLowerCase();
   const failed: FailedCheck[] = [];
   const checks: ValidationResult["checks"] = [];
   const required = (
@@ -202,7 +207,7 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
   if (terminal !== undefined) {
     return {
       outcome: "invalid",
-      validatorVersion: "generic-content-v1",
+      validatorVersion: "generic-content-v2",
       checks,
       terminalError: { code: terminal.errorCode, message: terminal.message },
     };
@@ -210,7 +215,7 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
   const uncertain = checks.some((check) => check.passed === false);
   return {
     outcome: uncertain ? "uncertain" : "valid",
-    validatorVersion: "generic-content-v1",
+    validatorVersion: "generic-content-v2",
     checks,
     terminalError: null,
   };
@@ -218,7 +223,7 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
 
 export const genericContentValidator: CandidateValidator = {
   id: "generic-content",
-  version: "generic-content-v1",
+  version: "generic-content-v2",
   supports: () => true,
   validate: genericContentValidation,
 };

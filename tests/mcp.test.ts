@@ -1,7 +1,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DiaoyanApp } from "../src/app.js";
+import type { CrawlumeApp } from "../src/app.js";
 import { ReadError } from "../src/errors.js";
 import { createMcpServer } from "../src/mcp.js";
 import type { ReadPageResult } from "../src/types.js";
@@ -98,9 +98,9 @@ function monitorResult(status: "scheduled" | "running" | "cancelled" = "schedule
   };
 }
 
-async function connect(app: DiaoyanApp): Promise<Client> {
+async function connect(app: CrawlumeApp): Promise<Client> {
   const server = createMcpServer(app);
-  const client = new Client({ name: "diaoyan-test", version: "1.0.0" });
+  const client = new Client({ name: "crawlume-test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   openClients.push(client);
   openServers.push(server);
@@ -115,6 +115,20 @@ describe("MCP server", () => {
       const { contentMarkdown: _contentMarkdown, ...inspection } = result();
       return inspection;
     });
+    const extractPage = vi.fn(async () => {
+      const { contentMarkdown, ...inspection } = result();
+      return {
+        ...inspection,
+        schemaId: null,
+        data: {
+          title: result().title,
+          byline: result().byline,
+          publishedTime: result().publishedTime,
+          markdown: contentMarkdown,
+          links: [],
+        },
+      };
+    });
     const waitForPages = vi.fn(async () => ({
       jobId: "00000000-0000-4000-8000-000000000001",
       pages: [],
@@ -122,7 +136,7 @@ describe("MCP server", () => {
       done: false,
     }));
     const app = {
-      reader: { readPage, inspectPage },
+      reader: { readPage, inspectPage, extractPage },
       site: {
         mapSite: vi.fn(async () => ({
           ...siteResult(),
@@ -246,11 +260,12 @@ describe("MCP server", () => {
         cancel: vi.fn(() => ({ ...monitorResult("cancelled"), nextRunAt: null })),
       },
       close: async () => undefined,
-    } as unknown as DiaoyanApp;
+    } as unknown as CrawlumeApp;
     const client = await connect(app);
 
     const listed = await client.listTools();
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      "extract_page",
       "inspect_page",
       "list_auth_profiles",
       "map_site",
@@ -308,6 +323,18 @@ describe("MCP server", () => {
       url: "https://example.com/article",
       browserAllowed: false,
     });
+
+    const extracted = await client.callTool({
+      name: "extract_page",
+      arguments: { url: "https://example.com/article", browserAllowed: false },
+    });
+    expect(extracted.isError).not.toBe(true);
+    expect(extracted.structuredContent).toMatchObject({
+      status: "ok",
+      schemaId: null,
+      data: { title: "Example article" },
+    });
+    expect(extractPage).toHaveBeenCalledOnce();
 
     const targetedRead = await client.callTool({
       name: "read_page",
@@ -522,7 +549,7 @@ describe("MCP server", () => {
         },
       },
       close: async () => undefined,
-    } as unknown as DiaoyanApp;
+    } as unknown as CrawlumeApp;
     const client = await connect(app);
     const response = await client.callTool({
       name: "read_page",

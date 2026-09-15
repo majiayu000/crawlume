@@ -1,4 +1,4 @@
-# Diaoyan v0.10.2 RSL 批准与访问审计规范
+# Crawlume v0.10.2 RSL 批准与访问审计规范
 
 ## 目标
 
@@ -11,8 +11,8 @@
 
 ## 管理员批准文件
 
-默认路径为 `<DIAOYAN_DATA_DIR>/rsl-approvals.json`，可用
-`DIAOYAN_RSL_APPROVALS_PATH` 指向另一个绝对路径。文件不存在表示没有批准；存在时必须是普通
+默认路径为 `<CRAWLUME_DATA_DIR>/rsl-approvals.json`，可用
+`CRAWLUME_RSL_APPROVALS_PATH` 指向另一个绝对路径。文件不存在表示没有批准；存在时必须是普通
 文件，并在 POSIX 系统上拒绝任何 group/other 权限。
 
 格式：
@@ -47,7 +47,7 @@
 - 尚未到期的 RFC 3339 UTC 时间。
 
 许可 XML、资源、运行上下文或义务任一变化都会使批准失效。Hash 使用解析后 `<license>` 元素的
-稳定 XML 序列化结果，只作为 Diaoyan 本地审批标识，不声称是 RSL 标准定义的 canonicalization。
+稳定 XML 序列化结果，只作为 Crawlume 本地审批标识，不声称是 RSL 标准定义的 canonicalization。
 
 ## 可批准与不可批准义务
 
@@ -66,7 +66,7 @@
 - reporting，因为确认本身不能完成报告协议。
 - user class 或 geo 条件存在但管理员未配置对应上下文。
 
-批准文件只由管理员在 MCP 服务之外管理。MCP 和普通 `diaoyan` CLI 不提供 create/update/delete
+批准文件只由管理员在 MCP 服务之外管理。MCP 和普通 `crawlume` CLI 不提供 create/update/delete
 批准接口，避免远程 Agent 把“读取失败”自行变成“已接受条款”。
 
 ## 决策证据

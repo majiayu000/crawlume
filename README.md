@@ -1,7 +1,8 @@
-# Diaoyan Crawler
+# Crawlume
 
-Diaoyan is a self-hosted, fail-visible crawling gateway for long-running Agents. It discovers and
-crawls bounded sites, persists asynchronous jobs, reads public pages with honest HTTP requests,
+Crawlume provides resumable web crawling and retrieval for AI agents. It is self-hosted and returns
+explicit failures alongside source evidence. It discovers and crawls bounded sites, persists
+asynchronous jobs, reads public pages with honest HTTP requests,
 renders JavaScript pages with a real local Chrome browser when necessary, and can reuse a dedicated
 user-authorized browser profile.
 
@@ -30,31 +31,32 @@ pnpm smoke
 Runtime data is stored outside this repository. On macOS the default location is:
 
 ```text
-~/Library/Application Support/diaoyan/
+~/Library/Application Support/crawlume/
 ```
 
-Set `DIAOYAN_DATA_DIR` to choose another location.
+Set `CRAWLUME_DATA_DIR` to choose another location.
 
 ## MCP configuration
 
 Build the project, then add the server to an MCP client:
 
 ```toml
-[mcp_servers.diaoyan]
+[mcp_servers.crawlume]
 command = "node"
-args = ["/absolute/path/to/diaoyan/dist/server.js"]
-env = { DIAOYAN_ALLOW_DNS_FAKE_IP = "1" }
+args = ["/absolute/path/to/crawlume/dist/server.js"]
+disabled_tools = ["search_web", "get_search_status", "get_search_stats"]
+env = { CRAWLUME_ALLOW_DNS_FAKE_IP = "1", CRAWLUME_LOCAL_INDEX_ENABLED = "0" }
 ```
 
-The `env` line is needed on this machine because its Clash/TUN DNS uses Fake-IP mode. Omit it
-on systems whose DNS returns ordinary public addresses.
+The Fake-IP setting is needed on this machine because its Clash/TUN DNS uses Fake-IP mode. Omit
+`CRAWLUME_ALLOW_DNS_FAKE_IP` on systems whose DNS returns ordinary public addresses. This Codex
+configuration focuses on reading supplied URLs and crawling sites; search tools are disabled.
+Use an external search tool to find URLs. Local indexing remains off by default.
 
 Available tools:
 
-- `search_web`: search the local page index, a configured SearXNG provider, or both.
-- `get_search_status`: report configured local/web query backends without running a query.
-- `get_search_stats`: report privacy-preserving observed query outcomes and latency percentiles.
 - `read_page`: return complete Markdown plus source evidence.
+- `extract_page`: return structured JSON fields plus source evidence.
 - `inspect_page`: run the same checks without returning the body.
 - `map_site`: discover a bounded set of same-site links.
 - `crawl_site`: read a bounded set of same-site pages with per-page evidence and failures.
@@ -70,6 +72,12 @@ Available tools:
 - `list_monitors`: list recent scheduled, running, and cancelled monitors.
 - `cancel_monitor`: permanently stop a monitor and cooperatively cancel its current read.
 - `list_auth_profiles`: list dedicated browser profile names.
+
+Optional search tools (disabled in the configuration above):
+
+- `search_web`: search the local page index, a configured SearXNG provider, or both.
+- `get_search_status`: report configured local/web query backends without running a query.
+- `get_search_stats`: report privacy-preserving observed query outcomes and latency percentiles.
 
 Every blocked, authenticated, paid, challenged, unsupported, or incomplete response is returned as MCP `isError: true` with a stable error code.
 
@@ -125,24 +133,25 @@ from the previous completion time. The first success establishes a baseline; lat
 Use the same reader directly without an MCP client:
 
 ```bash
+pnpm cli extract https://httpbin.org/html
 pnpm cli read https://httpbin.org/html
 pnpm cli read https://httpbin.org/html --markdown
 pnpm cli read https://example.com/app --cache-mode live
 pnpm cli read https://example.com/static --no-browser
 pnpm cli map https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 20 --max-depth 2
 pnpm cli crawl https://developer.mozilla.org/en-US/docs/Web/HTTP --max-pages 5 --max-depth 1
-DIAOYAN_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli search MiniMax H3 推理优化 --language zh-CN
+CRAWLUME_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli search MiniMax H3 推理优化 --language zh-CN
 pnpm cli crawl https://example.com/docs --max-pages 20
 pnpm cli search inference optimization --source local
 pnpm cli stats --days 7
 ```
 
-After installing or linking the package, use `diaoyan search`, `diaoyan read`, `diaoyan map`,
-`diaoyan crawl`, or `diaoyan stats`.
+After installing or linking the package, use `crawlume search`, `crawlume read`, `crawlume extract`,
+`crawlume map`, `crawlume crawl`, or `crawlume stats`.
 JSON is the default output so scripts and Agents can inspect evidence and stable error codes;
-`--markdown` prints only the extracted page body. Run `diaoyan --help` for all options.
+`--markdown` prints only the extracted page body. Run `crawlume --help` for all options.
 
-The crawler does not build a memory index by default. Set `DIAOYAN_LOCAL_INDEX_ENABLED=1` only when
+The crawler does not build a memory index by default. Set `CRAWLUME_LOCAL_INDEX_ENABLED=1` only when
 you explicitly want successful public `read` and `crawl` results added to SQLite FTS5. With that
 optional feature enabled, `--source auto` returns local matches first and asks SearXNG to fill the
 remaining slots; `--source local` stays offline. Pages read with `--auth-profile` are never indexed.
@@ -209,7 +218,7 @@ Release comparison requires a baseline with the exact same versioned case set an
 
 ```bash
 pnpm bench -- --mode pr
-DIAOYAN_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly
+CRAWLUME_ALLOW_DNS_FAKE_IP=1 pnpm bench -- --mode nightly
 pnpm bench:optimize
 ```
 
@@ -221,49 +230,49 @@ production-rollout, or competitor superiority evidence.
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `DIAOYAN_DATA_DIR` | platform user data directory | Cache and profiles |
-| `DIAOYAN_USER_AGENT` | `DiaoyanWebReader/0.10` | Honest crawler product name and operator contact |
-| `DIAOYAN_AGENT_IDENTITY_URL` | unset | Public HTTPS identity used by Web Bot Auth |
-| `DIAOYAN_WEB_BOT_AUTH_JWK_PATH` | unset | Absolute path to a mode-0600 Ed25519 private JWK; enables HTTP signing |
-| `DIAOYAN_WEB_BOT_AUTH_PROFILE` | `cloudflare-legacy` | Wire compatibility profile; currently only this value is supported |
-| `DIAOYAN_WEB_BOT_AUTH_TTL_SECONDS` | `60` | Signature lifetime from 10 to 300 seconds |
-| `DIAOYAN_RSL_USAGE` | `ai-input` | Intended use: `ai-train`, `ai-input`, `ai-index`, or `search` |
-| `DIAOYAN_RSL_USER_CLASS` | unset | Optional operator class used for RSL decisions |
-| `DIAOYAN_RSL_GEO` | unset | Optional two-letter uppercase region used for RSL decisions |
-| `DIAOYAN_RSL_APPROVALS_PATH` | `<data-dir>/rsl-approvals.json` | Absolute path to the administrator-managed approval file |
-| `DIAOYAN_RSL_CLIENTS_PATH` | `<data-dir>/rsl-clients.json` | Absolute path to mode-0600 OLP client credentials |
-| `DIAOYAN_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
-| `DIAOYAN_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
-| `DIAOYAN_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
-| `DIAOYAN_DEFAULT_CACHE_SECONDS` | `900` | Default successful-content TTL |
-| `DIAOYAN_CRAWL_MAX_ATTEMPTS` | `3` | Maximum attempts per page; set 1 to disable retry |
-| `DIAOYAN_CRAWL_RETRY_BASE_MS` | `500` | Exponential retry delay base |
-| `DIAOYAN_CRAWL_MAX_RETRY_DELAY_MS` | `30000` | Maximum permitted retry or Retry-After wait |
-| `DIAOYAN_CRAWL_MIN_HOST_INTERVAL_MS` | `250` | Minimum interval between attempts to one hostname |
-| `DIAOYAN_CRAWL_WORKER_CONCURRENCY` | `8` | Global page-worker capacity across durable Crawl jobs |
-| `DIAOYAN_CRAWL_LEASE_MS` | `5000` | Durable page lease duration; active workers heartbeat before expiry |
-| `DIAOYAN_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
-| `DIAOYAN_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
-| `DIAOYAN_BROWSER_POOL_SIZE` | `2` | Maximum anonymous browser instances per process |
-| `DIAOYAN_BROWSER_CONTEXTS_PER_INSTANCE` | `4` | Concurrent isolated contexts per pooled browser |
-| `DIAOYAN_BROWSER_POOL_WAIT_MS` | `30000` | Maximum wait when browser capacity is full |
-| `DIAOYAN_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |
-| `DIAOYAN_LOCAL_INDEX_ENABLED` | `false` | Optionally index successful public pages in SQLite FTS5 |
-| `DIAOYAN_PROXY_URLS` | unset | Comma-separated administrator-controlled HTTP(S) proxy URLs |
-| `DIAOYAN_SEARXNG_URL` | unset | Trusted SearXNG instance base URL used by `search_web` |
+| `CRAWLUME_DATA_DIR` | platform user data directory | Cache and profiles |
+| `CRAWLUME_USER_AGENT` | `Crawlume/0.10` | Honest crawler product name and operator contact |
+| `CRAWLUME_AGENT_IDENTITY_URL` | unset | Public HTTPS identity used by Web Bot Auth |
+| `CRAWLUME_WEB_BOT_AUTH_JWK_PATH` | unset | Absolute path to a mode-0600 Ed25519 private JWK; enables HTTP signing |
+| `CRAWLUME_WEB_BOT_AUTH_PROFILE` | `cloudflare-legacy` | Wire compatibility profile; currently only this value is supported |
+| `CRAWLUME_WEB_BOT_AUTH_TTL_SECONDS` | `60` | Signature lifetime from 10 to 300 seconds |
+| `CRAWLUME_RSL_USAGE` | `ai-input` | Intended use: `ai-train`, `ai-input`, `ai-index`, or `search` |
+| `CRAWLUME_RSL_USER_CLASS` | unset | Optional operator class used for RSL decisions |
+| `CRAWLUME_RSL_GEO` | unset | Optional two-letter uppercase region used for RSL decisions |
+| `CRAWLUME_RSL_APPROVALS_PATH` | `<data-dir>/rsl-approvals.json` | Absolute path to the administrator-managed approval file |
+| `CRAWLUME_RSL_CLIENTS_PATH` | `<data-dir>/rsl-clients.json` | Absolute path to mode-0600 OLP client credentials |
+| `CRAWLUME_REQUEST_TIMEOUT_MS` | `20000` | HTTP timeout |
+| `CRAWLUME_BROWSER_TIMEOUT_MS` | `30000` | Browser navigation timeout |
+| `CRAWLUME_MAX_RESPONSE_BYTES` | `5000000` | Maximum response size |
+| `CRAWLUME_DEFAULT_CACHE_SECONDS` | `900` | Default successful-content TTL |
+| `CRAWLUME_CRAWL_MAX_ATTEMPTS` | `3` | Maximum attempts per page; set 1 to disable retry |
+| `CRAWLUME_CRAWL_RETRY_BASE_MS` | `500` | Exponential retry delay base |
+| `CRAWLUME_CRAWL_MAX_RETRY_DELAY_MS` | `30000` | Maximum permitted retry or Retry-After wait |
+| `CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS` | `250` | Minimum interval between attempts to one hostname |
+| `CRAWLUME_CRAWL_WORKER_CONCURRENCY` | `8` | Global page-worker capacity across durable Crawl jobs |
+| `CRAWLUME_CRAWL_LEASE_MS` | `5000` | Durable page lease duration; active workers heartbeat before expiry |
+| `CRAWLUME_BROWSER_CHANNEL` | `chrome` | Playwright browser channel |
+| `CRAWLUME_BROWSER_EXECUTABLE` | unset | Explicit browser executable path |
+| `CRAWLUME_BROWSER_POOL_SIZE` | `2` | Maximum anonymous browser instances per process |
+| `CRAWLUME_BROWSER_CONTEXTS_PER_INSTANCE` | `4` | Concurrent isolated contexts per pooled browser |
+| `CRAWLUME_BROWSER_POOL_WAIT_MS` | `30000` | Maximum wait when browser capacity is full |
+| `CRAWLUME_ALLOW_DNS_FAKE_IP` | `false` | Allow Clash/TUN DNS Fake-IP results for hostnames |
+| `CRAWLUME_LOCAL_INDEX_ENABLED` | `false` | Optionally index successful public pages in SQLite FTS5 |
+| `CRAWLUME_PROXY_URLS` | unset | Comma-separated administrator-controlled HTTP(S) proxy URLs |
+| `CRAWLUME_SEARXNG_URL` | unset | Trusted SearXNG instance base URL used by `search_web` |
 
 If Clash or another TUN resolver maps public domains into `198.18.0.0/15`, start the reader with
-`DIAOYAN_ALLOW_DNS_FAKE_IP=1`. This applies only to DNS answers; a URL containing a literal
+`CRAWLUME_ALLOW_DNS_FAKE_IP=1`. This applies only to DNS answers; a URL containing a literal
 `198.18.x.x` address remains blocked by the SSRF policy.
 
 Proxy example using operator-owned infrastructure:
 
 ```bash
-export DIAOYAN_PROXY_URLS=http://proxy-a.internal:8080,https://user:password@proxy-b.internal:8443
+export CRAWLUME_PROXY_URLS=http://proxy-a.internal:8080,https://user:password@proxy-b.internal:8443
 ```
 
 Ordinary page attempts rotate through the pool. Authorization Profiles use a stable proxy selected
-from their Profile name, including during `diaoyan-auth`. Proxy routing does not bypass URL policy,
+from their Profile name, including during `crawlume-auth`. Proxy routing does not bypass URL policy,
 robots, authentication, payment, or access-denial checks.
 
 ### Self-owned Agent identity
@@ -273,10 +282,10 @@ and an Ed25519 private JWK file. Use an identity you own; do not copy another cr
 or identity URL.
 
 ```bash
-export DIAOYAN_USER_AGENT='DiaoyanCrawler/0.10 (+https://crawler.example)'
-export DIAOYAN_AGENT_IDENTITY_URL=https://crawler.example/identity
-export DIAOYAN_WEB_BOT_AUTH_JWK_PATH=/absolute/private/path/diaoyan-ed25519.jwk.json
-chmod 600 "$DIAOYAN_WEB_BOT_AUTH_JWK_PATH"
+export CRAWLUME_USER_AGENT='Crawlume/0.10 (+https://crawler.example)'
+export CRAWLUME_AGENT_IDENTITY_URL=https://crawler.example/identity
+export CRAWLUME_WEB_BOT_AUTH_JWK_PATH=/absolute/private/path/crawlume-ed25519.jwk.json
+chmod 600 "$CRAWLUME_WEB_BOT_AUTH_JWK_PATH"
 pnpm start
 ```
 
@@ -289,15 +298,15 @@ requirements.
 
 ### RSL license policy
 
-Diaoyan checks RSL 1.0 declarations in applicable `robots.txt` groups, HTTP Link headers, HTML links,
+Crawlume checks RSL 1.0 declarations in applicable `robots.txt` groups, HTTP Link headers, HTML links,
 and inline RSL scripts before extracted content is cached or returned to an Agent. The default
 purpose is `ai-input`, matching grounding and RAG use. Configure user class or region only when the
 operator can state those facts accurately:
 
 ```bash
-export DIAOYAN_RSL_USAGE=ai-input
-export DIAOYAN_RSL_USER_CLASS=personal
-export DIAOYAN_RSL_GEO=CN
+export CRAWLUME_RSL_USAGE=ai-input
+export CRAWLUME_RSL_USER_CLASS=personal
+export CRAWLUME_RSL_GEO=CN
 ```
 
 Clearly free and permitted content continues. A free License Server declaration can use OLP/CAP only
@@ -310,7 +319,7 @@ association was found; it is not a legal clearance. See the
 Paid declarations return `RSL_PAYMENT_REQUIRED` with a bounded quote: payment type, static amount
 and currency when declared, accepted protocol media types, and whether pricing is declared or
 runtime-authoritative. The access audit records the same quote with `budgetStatus: disabled` and
-`settlementStatus: not-attempted`. Diaoyan does not call a wallet, x402 facilitator, payment
+`settlementStatus: not-attempted`. Crawlume does not call a wallet, x402 facilitator, payment
 provider, or custom licensing endpoint. See the
 [RSL payment boundary specification](docs/rsl-payment-boundary-spec.md).
 
@@ -336,7 +345,7 @@ match. The file is administrator-managed and is never written through MCP or the
 
 Set the file to mode `0600` on POSIX systems and restart the service after editing it. Approvals do
 not bypass prohibitions, payment, reporting, or License Token requirements. Inspect the latest safe
-access records with `diaoyan rsl-audit --limit 100` or the read-only `get_rsl_audit` MCP tool.
+access records with `crawlume rsl-audit --limit 100` or the read-only `get_rsl_audit` MCP tool.
 
 For a free license that declares `<content server="https://licenses.example">`, configure the OLP
 client issued by that server in a separate administrator-only file:
@@ -346,13 +355,13 @@ client issued by that server in a separate administrator-only file:
   "version": 1,
   "clients": [{
     "server": "https://licenses.example",
-    "clientId": "diaoyan-client",
+    "clientId": "crawlume-client",
     "clientSecret": "replace-with-secret"
   }]
 }
 ```
 
-Save it at `DIAOYAN_RSL_CLIENTS_PATH`, set mode `0600`, and restart. Diaoyan requests `/token`
+Save it at `CRAWLUME_RSL_CLIENTS_PATH`, set mode `0600`, and restart. Crawlume requests `/token`
 directly over HTTPS, keeps the opaque Token in process memory only, and sends it only as a CAP
 header for a matching main-document request. Token requests do not use the page proxy and never
 follow redirects. Paid, reporting, registration, introspection, and EMS flows remain blocked or out
