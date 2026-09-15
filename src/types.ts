@@ -764,6 +764,7 @@ export type PageFetchOptions = {
   browserReadiness?: BrowserReadinessPolicy;
   maxResponseBytes?: number;
   timeoutMs?: number;
+  onNetworkRequestStart?: () => void;
   revalidate?: {
     url: string;
     etag?: string;

@@ -75,7 +75,9 @@ describe("PolicyEgressProxy", () => {
 
   it("protects the real HTTP transport when an administrator proxy is configured", async () => {
     const targets: string[] = [];
+    const events: string[] = [];
     const upstream = createServer((request, response) => {
+      events.push("target-request");
       targets.push(request.url ?? "");
       response.writeHead(200, { "content-type": "text/plain" });
       response.end("transport-pinned");
@@ -89,10 +91,45 @@ describe("PolicyEgressProxy", () => {
     );
 
     try {
-      const response = await transport.fetch(new URL("http://rebind.example/article"));
+      const response = await transport.fetch(new URL("http://rebind.example/article"), {
+        beforeRequest: async () => {
+          events.push("policy-complete");
+        },
+        onNetworkRequestStart: () => {
+          events.push("network-start");
+        },
+      });
       expect(response.body).toBe("transport-pinned");
       expect(response.proxyUsed).toBe(true);
       expect(targets).toEqual(["http://93.184.216.34/article"]);
+      expect(events).toEqual(["policy-complete", "network-start", "target-request"]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("does not dispatch when the network-start boundary rejects the request", async () => {
+    const targets: string[] = [];
+    const upstream = createServer((request, response) => {
+      targets.push(request.url ?? "");
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("must-not-arrive");
+    });
+    const port = await listen(upstream);
+    servers.push(upstream);
+    const endpoints = parseProxyEndpoints(`http://127.0.0.1:${port}`);
+    const transport = new HttpTransport(
+      { ...testConfig(), proxyEndpoints: endpoints },
+      new UrlPolicy(async () => [{ address: "93.184.216.34", family: 4 }]),
+    );
+
+    try {
+      await expect(transport.fetch(new URL("http://rebind.example/article"), {
+        onNetworkRequestStart: () => {
+          throw new Error("stale crawl lease");
+        },
+      })).rejects.toMatchObject({ code: "INTERNAL_ERROR", retryable: false });
+      expect(targets).toEqual([]);
     } finally {
       await transport.close();
     }

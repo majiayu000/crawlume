@@ -133,6 +133,19 @@ function normalizedInput(config: AppConfig, value: DurableCrawlOptions): Durable
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
     throw new ReadError("INVALID_ARGUMENT", "concurrency must be between 1 and 32.");
   }
+  const staleWhileRevalidateSeconds = value.staleWhileRevalidateSeconds ?? 0;
+  if (!Number.isSafeInteger(staleWhileRevalidateSeconds) || staleWhileRevalidateSeconds < 0) {
+    throw new ReadError(
+      "INVALID_ARGUMENT",
+      "staleWhileRevalidateSeconds must be a non-negative integer.",
+    );
+  }
+  if (staleWhileRevalidateSeconds > 0) {
+    throw new ReadError(
+      "INVALID_ARGUMENT",
+      "Durable crawls do not support stale-while-revalidate background requests.",
+    );
+  }
   const requestedBudget: ExecutionBudget = value.budget ?? {
     deadlineMs: config.requestTimeoutMs + (browserAllowed ? config.browserTimeoutMs : 0),
     maxAttempts: config.crawlMaxAttempts,
@@ -501,8 +514,8 @@ export class DurableCrawlService {
     signal: AbortSignal,
   ): Promise<void> {
     try {
-      if (this.config.crawlMinHostIntervalMs > 0 &&
-          !this.store.markOriginStarted(lease, this.config.crawlMinHostIntervalMs)) return;
+      if (!this.store.markOriginStarted(lease, 0)) return;
+      let originStartRecorded = false;
       const artifact = await this.reader.crawlPageArtifact({
         url: lease.page.normalizedUrl,
         requestId: `${lease.page.id}:${lease.generation}`,
@@ -513,6 +526,26 @@ export class DurableCrawlService {
         ...(input.browserReadiness === undefined ? {} : { browserReadiness: input.browserReadiness }),
         budget: lease.budgetSlice,
         signal,
+        onNetworkRequestStart: () => {
+          const intervalMs = originStartRecorded ? 0 : this.config.crawlMinHostIntervalMs;
+          let active: boolean;
+          try {
+            active = this.store.markOriginStarted(lease, intervalMs);
+          } catch (cause) {
+            throw new ReadError(
+              "INTERNAL_ERROR",
+              "The crawl origin start could not be persisted.",
+              { cause },
+            );
+          }
+          if (!active) {
+            throw new ReadError(
+              "CRAWL_CANCELLED",
+              "The crawl lease is no longer active at the network request boundary.",
+            );
+          }
+          originStartRecorded = true;
+        },
       });
       const root = this.urlPolicy.parse(input.url);
       const scope = createSiteScope(root, input);

@@ -15,6 +15,10 @@
 
 ## 技术选型与架构边界
 
+方案 C 的 C/B 端混合交付目标、云端控制面、公共/私有 Worker、租户隔离、API、数据、部署和分阶段
+实施计划见 [hybrid-platform-architecture-plan.md](./hybrid-platform-architecture-plan.md)。该文档是
+目标架构，不改变 `spec.md` 所记录的当前本地实现合同。
+
 以下三份文档分别覆盖独立目标，不能互相冒充实现状态：
 
 1. [search-engine-architecture-landscape.md](./search-engine-architecture-landscape.md)
@@ -42,8 +46,9 @@
    比较四套候选架构，给出语言、Frontier、存储、队列、Browser、提取和验证的推荐选型、架构图、
    量化门槛、风险及实施顺序；其中本地单机 Profile 已批准并实现，集群/托管扩展仍由门槛触发。
 
-实现事实以 `spec.md`、代码、测试和完成账本为准。RFC 中未触发的 PostgreSQL、多主机 Worker、远程
-Browser、托管 Provider 和新语言执行器仍只是条件式扩展；目标 C 搜索引擎也需要独立批准。
+实现事实以 `spec.md`、代码、测试和完成账本为准。RFC 中未触发的本地 Retrieval Runtime 数据面
+PostgreSQL 化、多主机 Worker、远程 Browser、托管 Provider 和新语言执行器仍只是条件式扩展；
+方案 C 控制面 PostgreSQL 不属于这里的条件式扩展。目标 C 搜索引擎也需要独立批准。
 
 ## Reliability 核心计划
 
@@ -99,3 +104,7 @@ Browser、托管 Provider 和新语言执行器仍只是条件式扩展；目标
 - [2026-08-28 Apple 接管说明](./handoffs/2026-08-28-apple-handoff.md)
 - [2026-08-28 Apple 迁移验证报告](./handoffs/2026-08-28-apple-transfer-report.md)
 - [2026-08-28 Reliability 产品讨论记录](./handoffs/2026-08-28-reliability-product-conversation.md)
+
+## 实现核对
+
+- [2026-09-02 Codex 实现对照问题清单](./audits/2026-09-02-implementation-bugs.md)：对照 `spec.md` 与源码的实现错误，不含架构评价。

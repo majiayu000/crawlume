@@ -225,6 +225,19 @@ export class BrowserPageFetcher implements PageFetcher {
 
   private async fetchUnmetered(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
     const { authProfile, signal, browserReadiness } = options;
+    const notifyNetworkRequestStart = (): void => {
+      try {
+        options.onNetworkRequestStart?.();
+      } catch (cause) {
+        throw cause instanceof ReadError
+          ? cause
+          : new ReadError(
+              "INTERNAL_ERROR",
+              "The network request start callback failed.",
+              { cause },
+            );
+      }
+    };
     const allowedOrigins = authProfile === undefined
       ? null
       : new Set(options.allowedOrigins ?? [url.origin]);
@@ -359,6 +372,7 @@ export class BrowserPageFetcher implements PageFetcher {
             }
           }
           if (allowedOrigins !== null && isMainNavigation) {
+            notifyNetworkRequestStart();
             let intercepted;
             try {
               intercepted = await route.fetch({
@@ -399,6 +413,7 @@ export class BrowserPageFetcher implements PageFetcher {
             return;
           }
           if (isMainNavigation) {
+            notifyNetworkRequestStart();
             await route.continue({
               headers: this.identity.headers(parsed, {
                 ...request.headers(),

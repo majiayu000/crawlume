@@ -168,6 +168,7 @@ export class HttpTransport {
       maxBytes?: number;
       signal?: AbortSignal;
       beforeRequest?: BeforeRequest;
+      onNetworkRequestStart?: () => void;
       revalidate?: PageFetchOptions["revalidate"];
     } = {},
   ): Promise<TransportResponse> {
@@ -197,6 +198,17 @@ export class HttpTransport {
           "user-agent": this.config.userAgent,
         });
         const timeoutSignal = AbortSignal.timeout(this.config.requestTimeoutMs);
+        try {
+          options.onNetworkRequestStart?.();
+        } catch (cause) {
+          throw cause instanceof ReadError
+            ? cause
+            : new ReadError(
+                "INTERNAL_ERROR",
+                "The network request start callback failed.",
+                { cause },
+              );
+        }
         response = await fetch(current, {
           dispatcher,
           redirect: "manual",
@@ -395,6 +407,9 @@ export class HttpPageFetcher implements PageFetcher {
           : { maxBytes: options.maxResponseBytes }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.revalidate === undefined ? {} : { revalidate: options.revalidate }),
+        ...(options.onNetworkRequestStart === undefined
+          ? {}
+          : { onNetworkRequestStart: options.onNetworkRequestStart }),
         beforeRequest: async (nextUrl) => {
           await this.robots.assertAllowed(nextUrl);
           const decision = await this.rsl.authorizeRobots(

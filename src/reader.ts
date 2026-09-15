@@ -79,7 +79,10 @@ function failureTerminalState(error: ReadError):
   return "failed";
 }
 
-type ReadExecutionOptions = ReadPageOptions & { signal?: AbortSignal };
+type ReadExecutionOptions = ReadPageOptions & {
+  signal?: AbortSignal;
+  onNetworkRequestStart?: () => void;
+};
 
 type PreparedPageArtifact = {
   result: PageReadArtifact;
@@ -277,6 +280,9 @@ export class ReaderService {
         plan,
         budget,
         ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.onNetworkRequestStart === undefined
+          ? {}
+          : { onNetworkRequestStart: options.onNetworkRequestStart }),
       });
     }
     const {
@@ -389,6 +395,7 @@ export class ReaderService {
     const {
       signal: _signal,
       requestId: _requestId,
+      onNetworkRequestStart: _onNetworkRequestStart,
       staleWhileRevalidateSeconds: _staleWhileRevalidateSeconds,
       ...refreshOptions
     } = options;
