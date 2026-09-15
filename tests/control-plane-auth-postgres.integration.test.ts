@@ -20,6 +20,8 @@ import {
 import { runControlPlaneMigrations } from "../src/control-plane/migrations.js";
 import {
   OidcSessionService,
+  AccessTokenAuthenticationError,
+  RefreshTokenAuthenticationError,
   OidcLoginRateLimitedError,
   RefreshTokenRotationConflictError,
   RefreshTokenReuseError,
@@ -822,6 +824,106 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
     });
     await expect(oidcService(fixtureDatabase).verifyAccessToken(firstTokens.accessToken))
       .resolves.toEqual({ userId });
+  });
+
+  it("revokes the successor when logout waits for an in-flight refresh", async () => {
+    const rawToken = refreshToken("L");
+    const familyId = randomUUID();
+    await insertRefresh({ rawToken, familyId });
+    const rotatingDatabase = observedDatabase();
+    const logoutDatabase = observedDatabase();
+    const backend = await logoutDatabase.query<{ pid: number }>("SELECT pg_backend_pid() AS pid", []);
+    const gate = rotatingDatabase.holdAfterQuery((statement) =>
+      statement.includes("FROM refresh_tokens") && statement.includes("FOR UPDATE"));
+    const rotating = outcome(oidcService(rotatingDatabase).rotateRefreshToken(rawToken));
+    await gate.entered.promise;
+    const logout = outcome(oidcService(logoutDatabase).revokeAllUserSessions(userId));
+    try {
+      await expect(waitForLock(backend.rows[0]!.pid)).resolves.toBe("Lock");
+    } finally {
+      gate.release.resolve();
+    }
+    const rotated = await rotating;
+    expect(rotated.status).toBe("fulfilled");
+    expect(await logout).toEqual({ status: "fulfilled", value: 2 });
+    if (rotated.status !== "fulfilled") throw rotated.reason;
+    await expect(oidcService(fixtureDatabase).verifyAccessToken(rotated.value.accessToken))
+      .rejects.toEqual(new AccessTokenAuthenticationError());
+    await expect(oidcService(fixtureDatabase).rotateRefreshToken(rotated.value.refreshToken))
+      .rejects.toEqual(new RefreshTokenAuthenticationError());
+    const active = await fixtureDatabase.query<{ count: string }>(`
+      SELECT count(*)::text AS count FROM refresh_tokens
+      WHERE user_id = $1 AND revoked_at IS NULL
+    `, [userId]);
+    expect(active.rows[0]?.count).toBe("0");
+  });
+
+  it("rejects a refresh that waits behind logout without creating a successor", async () => {
+    const rawToken = refreshToken("M");
+    await insertRefresh({ rawToken, familyId: randomUUID() });
+    const logoutDatabase = observedDatabase();
+    const rotatingDatabase = observedDatabase();
+    const gate = logoutDatabase.holdAfterQuery((statement) =>
+      statement.includes("UPDATE refresh_tokens"));
+    const logout = outcome(oidcService(logoutDatabase).revokeAllUserSessions(userId));
+    await gate.entered.promise;
+    const rotating = outcome(oidcService(rotatingDatabase).rotateRefreshToken(rawToken));
+    try {
+      const pid = await rotatingDatabase.transactionStarted.promise;
+      await expect(waitForLock(pid)).resolves.toBe("Lock");
+    } finally {
+      gate.release.resolve();
+    }
+    expect(await logout).toEqual({ status: "fulfilled", value: 1 });
+    expect(await rotating).toEqual({
+      status: "rejected", reason: new RefreshTokenAuthenticationError(),
+    });
+    const tokens = await fixtureDatabase.query<{ count: string; revoked: string }>(`
+      SELECT count(*)::text AS count, count(revoked_at)::text AS revoked
+      FROM refresh_tokens WHERE user_id = $1
+    `, [userId]);
+    expect(tokens.rows[0]).toEqual({ count: "1", revoked: "1" });
+  });
+
+  it("revokes the in-flight successor when an older family token is replayed", async () => {
+    const familyId = randomUUID();
+    const replayedToken = refreshToken("N");
+    const oldId = await insertRefresh({
+      rawToken: replayedToken, familyId, usedAt: new Date(now.getTime() - 5_001),
+    });
+    const currentToken = refreshToken("P");
+    await insertRefresh({ rawToken: currentToken, familyId, previousTokenId: oldId });
+    const otherFamilyId = randomUUID();
+    await insertRefresh({ rawToken: refreshToken("Q"), familyId: otherFamilyId });
+    const rotatingDatabase = observedDatabase();
+    const replayDatabase = observedDatabase();
+    const gate = rotatingDatabase.holdAfterQuery((statement) =>
+      statement.includes("SELECT id, family_id") && statement.includes("FOR UPDATE"));
+    const rotating = outcome(oidcService(rotatingDatabase).rotateRefreshToken(currentToken));
+    await gate.entered.promise;
+    const replay = outcome(oidcService(replayDatabase).rotateRefreshToken(replayedToken));
+    try {
+      const pid = await replayDatabase.transactionStarted.promise;
+      await expect(waitForLock(pid)).resolves.toBe("Lock");
+    } finally {
+      gate.release.resolve();
+    }
+    const rotated = await rotating;
+    expect(rotated.status).toBe("fulfilled");
+    expect(await replay).toEqual({ status: "rejected", reason: new RefreshTokenReuseError() });
+    if (rotated.status !== "fulfilled") throw rotated.reason;
+    await expect(oidcService(fixtureDatabase).verifyAccessToken(rotated.value.accessToken))
+      .rejects.toEqual(new AccessTokenAuthenticationError());
+    await expect(oidcService(fixtureDatabase).rotateRefreshToken(rotated.value.refreshToken))
+      .rejects.toEqual(new RefreshTokenAuthenticationError());
+    const state = await fixtureDatabase.query<{ family_id: string; total: string; revoked: string }>(`
+      SELECT family_id::text, count(*)::text AS total, count(revoked_at)::text AS revoked
+      FROM refresh_tokens GROUP BY family_id
+    `, []);
+    expect(state.rows.find((row) => row.family_id === familyId))
+      .toEqual({ family_id: familyId, total: "3", revoked: "3" });
+    expect(state.rows.find((row) => row.family_id === otherFamilyId))
+      .toEqual({ family_id: otherFamilyId, total: "1", revoked: "0" });
   });
 
   it("atomically revokes only a replayed refresh family outside the grace window", async () => {

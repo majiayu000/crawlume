@@ -415,6 +415,14 @@ export class OidcSessionService {
   async rotateRefreshToken(rawToken: string): Promise<SessionTokens> {
     requireRefreshTokenFormat(rawToken);
     const outcome = await this.database.transaction<RotationOutcome>(async (transaction) => {
+      // Serialize rotation, replay revocation, and logout on the same user row.
+      // Read token state in the next statement so it includes changes committed
+      // while this transaction waited for the user lock.
+      await transaction.query<IdRow>(`
+        SELECT id FROM users
+        WHERE id = (SELECT user_id FROM refresh_tokens WHERE token_hash = $1)
+        FOR UPDATE
+      `, [hashSecret(rawToken)]);
       const selected = await transaction.query<RefreshTokenRow>(`
         SELECT id, family_id, user_id, expires_at, used_at, revoked_at
         FROM refresh_tokens
@@ -530,13 +538,18 @@ export class OidcSessionService {
 
   async revokeAllUserSessions(userId: string): Promise<number> {
     requireIdentityValue(userId, "userId");
-    const revoked = await this.database.query<IdRow>(`
-      UPDATE refresh_tokens
-      SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
-      WHERE user_id = $1 AND revoked_at IS NULL
-      RETURNING id
-    `, [userId]);
-    return revoked.rows.length;
+    return this.database.transaction(async (transaction) => {
+      await transaction.query<IdRow>(`
+        SELECT id FROM users WHERE id = $1 FOR UPDATE
+      `, [userId]);
+      const revoked = await transaction.query<IdRow>(`
+        UPDATE refresh_tokens
+        SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+        WHERE user_id = $1 AND revoked_at IS NULL
+        RETURNING id
+      `, [userId]);
+      return revoked.rows.length;
+    });
   }
 
   private async exchangeAuthorizationCode(code: string, codeVerifier: string): Promise<string> {

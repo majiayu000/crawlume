@@ -352,6 +352,7 @@ describe("OIDC Authorization Code + PKCE", () => {
 describe("Refresh Token Rotation", () => {
   it("samples the decision time after selecting the refresh token for update", async () => {
     const database = new IdentityDatabase([
+      { rows: [{ id: "user-a" }] },
       { rows: [{
         id: "refresh-a",
         family_id: "family-a",
@@ -364,7 +365,7 @@ describe("Refresh Token Rotation", () => {
       { rows: [{ id: "refresh-b" }] },
     ]);
     const clock = vi.fn(() => {
-      expect(database.calls[0]?.statement).toContain("FOR UPDATE");
+      expect(database.calls[1]?.statement).toContain("FOR UPDATE");
       return new Date(now);
     });
     const { service } = await harness(database, undefined, clock);
@@ -375,6 +376,7 @@ describe("Refresh Token Rotation", () => {
 
   it("uses a refresh token once and preserves the family expiration", async () => {
     const database = new IdentityDatabase([
+      { rows: [{ id: "user-a" }] },
       { rows: [{
         id: "refresh-a",
         family_id: "family-a",
@@ -394,17 +396,18 @@ describe("Refresh Token Rotation", () => {
     expect(rotated.refreshToken).toMatch(/^dya_rt_[A-Za-z0-9_-]{43}$/u);
     expect(rotated.refreshToken).not.toBe(oldToken);
     expect(rotated.refreshTokenExpiresAt).toEqual(new Date("2026-09-30T12:00:00.000Z"));
-    expect(database.calls[0]?.statement).toContain("FOR UPDATE");
-    expect(database.calls[0]?.parameters[0]).toEqual(createHash("sha256").update(oldToken).digest());
-    expect(database.calls[2]?.parameters[1]).toBe("family-a");
-    expect(database.calls[2]?.parameters[4]).toBe("refresh-a");
-    expect(database.calls[2]?.parameters[3]).toEqual(
+    expect(database.calls[1]?.statement).toContain("FOR UPDATE");
+    expect(database.calls[1]?.parameters[0]).toEqual(createHash("sha256").update(oldToken).digest());
+    expect(database.calls[3]?.parameters[1]).toBe("family-a");
+    expect(database.calls[3]?.parameters[4]).toBe("refresh-a");
+    expect(database.calls[3]?.parameters[3]).toEqual(
       createHash("sha256").update(rotated.refreshToken).digest(),
     );
   });
 
   it("reports a locked token used within five seconds as a rotation conflict", async () => {
     const database = new IdentityDatabase([
+      { rows: [{ id: "user-a" }] },
       { rows: [{
         id: "refresh-used",
         family_id: "family-a",
@@ -419,11 +422,12 @@ describe("Refresh Token Rotation", () => {
     await expect(service.rotateRefreshToken(validRefreshToken("B")))
       .rejects.toEqual(new RefreshTokenRotationConflictError());
     expect(database.transactions).toBe(1);
-    expect(database.calls).toHaveLength(1);
+    expect(database.calls).toHaveLength(2);
   });
 
   it("revokes only the reused refresh family before reporting token reuse", async () => {
     const database = new IdentityDatabase([
+      { rows: [{ id: "user-a" }] },
       { rows: [{
         id: "refresh-used",
         family_id: "family-a",
@@ -439,12 +443,12 @@ describe("Refresh Token Rotation", () => {
     await expect(service.rotateRefreshToken(validRefreshToken("B")))
       .rejects.toEqual(new RefreshTokenReuseError());
     expect(database.transactions).toBe(1);
-    expect(database.calls[1]?.statement).toContain("WHERE user_id = $1 AND family_id = $2");
-    expect(database.calls[1]?.parameters).toEqual(["user-a", "family-a"]);
+    expect(database.calls[2]?.statement).toContain("WHERE user_id = $1 AND family_id = $2");
+    expect(database.calls[2]?.parameters).toEqual(["user-a", "family-a"]);
   });
 
   it("treats expired or revoked refresh tokens as invalid even after prior use", async () => {
-    const expiredDatabase = new IdentityDatabase([{ rows: [{
+    const expiredDatabase = new IdentityDatabase([{ rows: [{ id: "user-a" }] }, { rows: [{
       id: "refresh-expired",
       family_id: "family-a",
       user_id: "user-a",
@@ -455,9 +459,9 @@ describe("Refresh Token Rotation", () => {
     const expired = await harness(expiredDatabase);
     await expect(expired.service.rotateRefreshToken(validRefreshToken("C")))
       .rejects.toEqual(new RefreshTokenAuthenticationError());
-    expect(expiredDatabase.calls).toHaveLength(1);
+    expect(expiredDatabase.calls).toHaveLength(2);
 
-    const revokedDatabase = new IdentityDatabase([{ rows: [{
+    const revokedDatabase = new IdentityDatabase([{ rows: [{ id: "user-a" }] }, { rows: [{
       id: "refresh-revoked",
       family_id: "family-a",
       user_id: "user-a",
@@ -468,7 +472,7 @@ describe("Refresh Token Rotation", () => {
     const revoked = await harness(revokedDatabase);
     await expect(revoked.service.rotateRefreshToken(validRefreshToken("D")))
       .rejects.toEqual(new RefreshTokenAuthenticationError());
-    expect(revokedDatabase.calls).toHaveLength(1);
+    expect(revokedDatabase.calls).toHaveLength(2);
   });
 
   it("uses one failure for malformed, unknown, expired, and revoked refresh tokens", async () => {
@@ -478,7 +482,7 @@ describe("Refresh Token Rotation", () => {
       .rejects.toEqual(new RefreshTokenAuthenticationError());
     expect(malformedDatabase.calls).toHaveLength(0);
 
-    const unknownDatabase = new IdentityDatabase([{ rows: [] }]);
+    const unknownDatabase = new IdentityDatabase([{ rows: [] }, { rows: [] }]);
     const unknown = await harness(unknownDatabase);
     await expect(unknown.service.rotateRefreshToken(validRefreshToken("C")))
       .rejects.toEqual(new RefreshTokenAuthenticationError());
@@ -505,16 +509,23 @@ describe("access-token revocation", () => {
   });
 
   it("revokes every active refresh token for logout or security events", async () => {
-    const database = new IdentityDatabase([{ rows: [{ id: "one" }, { id: "two" }] }]);
+    const database = new IdentityDatabase([
+      { rows: [{ id: "user-a" }] },
+      { rows: [{ id: "one" }, { id: "two" }] },
+    ]);
     const { service } = await harness(database);
 
     await expect(service.revokeAllUserSessions("user-a")).resolves.toBe(2);
+    expect(database.transactions).toBe(1);
+    expect(database.calls[0]?.statement).toContain("SELECT id FROM users WHERE id = $1 FOR UPDATE");
+    expect(database.calls[1]?.parameters).toEqual(["user-a"]);
     expect(database.calls[0]?.parameters).toEqual(["user-a"]);
-    expect(database.calls[0]?.statement).toContain("revoked_at = COALESCE");
+    expect(database.calls[1]?.statement).toContain("revoked_at = COALESCE");
   });
 
   it("issues access tokens with fixed issuer, audience, algorithm, jti, and ten-minute expiry", async () => {
     const database = new IdentityDatabase([
+      { rows: [{ id: "user-a" }] },
       { rows: [{
         id: "refresh-a",
         family_id: "family-a",
