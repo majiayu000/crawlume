@@ -26,7 +26,8 @@ pnpm bench:soak --duration-minutes 10080 --pages-per-job 10000
 pnpm bench:soak --duration-minutes 1440 --total-pages 300000 --pages-per-job 10000
 ```
 
-GitHub Actions 的 `Soak` workflow 可手动触发最长 6 小时的运行并上传报告；7 天试验需要自有长期运行主机。
+GitHub Actions 的 `Soak` workflow 限制试验时长为 1–300 分钟，在整 job 的 360 分钟上限内
+为 checkout、安装、build 和报告上传预留 60 分钟；更长运行和 7 天试验需要自有长期运行主机。
 
 ## 通过条件
 
