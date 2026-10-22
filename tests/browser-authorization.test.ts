@@ -166,16 +166,20 @@ async function authorizationHarness(
 }
 
 describe("BrowserPageFetcher authorization boundary", () => {
-  it("waits for an in-flight authorized Chrome launch to close before releasing its profile", async () => {
+  it("waits for an in-flight authorized context launch to close before releasing its profile", async () => {
     const { fetcher, observedRequests } = await authorizationHarness((_host, _path, response) => response.end("unused"));
-    const launch = chromium.launchPersistentContext.bind(chromium);
     let launched!: () => void;
     let release!: () => void;
     const ready = new Promise<void>((resolve) => { launched = resolve; });
     const released = new Promise<void>((resolve) => { release = resolve; });
-    let context!: BrowserContext;
-    const launchSpy = vi.spyOn(chromium, "launchPersistentContext").mockImplementation(async (...args) => {
-      context = await launch(...args);
+    let connected = true;
+    const context = {
+      close: vi.fn(async () => { connected = false; }),
+      browser: () => ({ isConnected: () => connected }),
+      newPage: vi.fn(),
+      pages: vi.fn(() => []),
+    } as unknown as BrowserContext;
+    const launchSpy = vi.spyOn(chromium, "launchPersistentContext").mockImplementation(async () => {
       launched();
       await released;
       return context;
@@ -194,6 +198,8 @@ describe("BrowserPageFetcher authorization boundary", () => {
       await closing;
       expect(context.browser()?.isConnected()).toBe(false);
       expect(await fetching).toMatchObject({ code: "BROWSER_UNAVAILABLE" });
+      expect(context.newPage).not.toHaveBeenCalled();
+      expect(context.pages).not.toHaveBeenCalled();
       expect(observedRequests).not.toContain("allowed.example/article");
       await expect(fetcher.fetch(new URL("http://allowed.example/article"), {
         authProfile: "research",
