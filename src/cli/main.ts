@@ -504,6 +504,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const published: string[] = [];
       let metadata: SqliteBackupMetadata;
       try {
+        const probe = join(staging, "hardlink-probe");
+        writeFileSync(probe, "", { flag: "wx", mode: 0o600 });
+        try {
+          linkSync(probe, `${probe}.link`);
+        } catch (error) {
+          throw new ReadError("INVALID_ARGUMENT", "Backup destination must allow hard links.", {
+            details: { path: dirname(action.backupPath) }, cause: error,
+          });
+        }
         metadata = await createSqliteBackup(loadConfig().cachePath, stagedBackup);
         writeFileSync(stagedMetadata, `${JSON.stringify(metadata, null, 2)}\n`, { flag: "wx", mode: 0o600 });
         // No final output is visible during the asynchronous backup. Commit only complete files,
@@ -520,7 +529,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         if (errors.length > 1) throw new AggregateError(errors, "Backup and rollback both failed.");
         throw error;
       } finally {
-        rmSync(staging, { recursive: true });
+        try {
+          rmSync(staging, { recursive: true });
+        } catch (error) {
+          process.stderr.write(`Warning: backup staging cleanup failed; inspect leftover files at ${staging}: ${String(error)}\n`);
+        }
       }
       process.stdout.write(`${JSON.stringify({ backupPath: action.backupPath, metadata }, null, 2)}\n`);
       return 0;
