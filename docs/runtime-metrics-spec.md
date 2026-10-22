@@ -50,7 +50,17 @@
 ## 当前边界
 
 - 不估算代理、带宽、CPU、浏览器或第三方服务的货币费用。
-- 不做 Prometheus 导出、单 URL 追踪、租户计量或账单。
+- 不做单 URL 追踪、租户计量或账单。
+
+## Prometheus 导出
+
+- 设置 `CRAWLUME_METRICS_PORT` 后，MCP 进程在 `CRAWLUME_METRICS_HOST`（默认 `127.0.0.1`）上提供
+  `GET /metrics`；未设置时不监听任何端口，非法端口启动失败。
+- 计数器来自同一张聚合表的全量累计：`crawlume_reads_total`、`crawlume_read_response_bytes_total`、
+  `crawlume_read_attempts_total`、`crawlume_read_retry_delay_milliseconds_total`、
+  `crawlume_read_duration_milliseconds_total`，标签只有 `outcome`、`final_state`、`fetch_method`、
+  `cache_status`、`error_code`，不含 URL 或 hostname。
+- 读取聚合失败返回 HTTP 500，不输出部分或伪造的指标。
 - 不做内容质量 Judge、Embedding 或语义去重。
 - 变化检测和定时监控属于 v0.9 的后续独立阶段。
 

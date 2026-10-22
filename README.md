@@ -36,6 +36,12 @@ Runtime data is stored outside this repository. On macOS the default location is
 
 Set `CRAWLUME_DATA_DIR` to choose another location.
 
+## Observability
+
+Set `CRAWLUME_METRICS_PORT` to serve Prometheus counters at `GET /metrics` (bound to
+`CRAWLUME_METRICS_HOST`, default `127.0.0.1`). Process logs are JSON lines on stderr; stdout stays
+reserved for MCP.
+
 ## Docker
 
 The image bundles Chromium and stores runtime data in the `/data` volume:

@@ -114,6 +114,31 @@ describe("CrawlerMetrics", () => {
     });
   });
 
+  it("exports all-time read counters in Prometheus text format", () => {
+    let now = Date.parse("2026-08-20T12:00:00.000Z");
+    const metrics = new CrawlerMetrics(":memory:", () => now);
+    stores.push(metrics);
+    metrics.recordSuccess(result(), 100);
+    now = Date.parse("2026-08-25T12:00:00.000Z");
+    metrics.recordSuccess(result(), 50);
+    metrics.recordFailure(new ReadError("ACCESS_DENIED", "denied", {
+      details: { attempts: 1, totalRetryDelayMs: 0 },
+    }), 30, "policy_stop");
+
+    const text = metrics.prometheusText();
+    expect(text).toContain("# TYPE crawlume_reads_total counter");
+    expect(text).toContain(
+      'crawlume_reads_total{outcome="success",final_state="completed",fetch_method="http",cache_status="live",error_code=""} 2',
+    );
+    expect(text).toContain(
+      'crawlume_reads_total{outcome="failure",final_state="policy_stop",fetch_method="",cache_status="",error_code="ACCESS_DENIED"} 1',
+    );
+    expect(text).toContain(
+      'crawlume_read_duration_milliseconds_total{outcome="success",final_state="completed",fetch_method="http",cache_status="live",error_code=""} 150',
+    );
+    expect(text.endsWith("\n")).toBe(true);
+  });
+
   it("returns null rates for an empty window and excludes older and future buckets", () => {
     let now = Date.parse("2026-08-20T12:00:00.000Z");
     const metrics = new CrawlerMetrics(":memory:", () => now);

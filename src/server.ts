@@ -67,7 +67,13 @@ import {
   ControlPlaneJobLeaseSweepRunner,
 } from "./control-plane/job-lease-recovery.js";
 import { WorkerBootstrapHttpApi } from "./control-plane/worker-bootstrap-http-api.js";
+import { logEvent } from "./log.js";
 import { createMcpServer } from "./mcp.js";
+import {
+  metricsListenerFromEnvironment,
+  startMetricsListener,
+  type MetricsListener,
+} from "./metrics-server.js";
 
 const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
@@ -348,7 +354,7 @@ export async function startWorkerControlServer(
 export class PostgresControlPlaneDatabase implements ControlPlaneDatabase {
   constructor(private readonly pool: Pool) {
     pool.on("error", () => {
-      process.stderr.write("Control-plane PostgreSQL discarded a failed idle connection.\n");
+      logEvent("warn", "control_plane.postgres.idle_connection_discarded");
     });
   }
 
@@ -730,7 +736,7 @@ export async function startControlPlaneRuntime(
 
 export async function controlPlaneMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   const runtime = await startControlPlaneRuntime(await loadControlPlaneRuntimeConfig(environment));
-  process.stderr.write(`Diaoyan Worker control server listening on ${runtime.origin}\n`);
+  logEvent("info", "control_plane.listening", { origin: runtime.origin });
   let closing = false;
   const close = async (): Promise<void> => {
     if (closing) return;
@@ -766,8 +772,19 @@ export async function controlPlaneMain(environment: NodeJS.ProcessEnv = process.
   if (hasRuntimeError) throw runtimeError;
 }
 
-export async function main(): Promise<void> {
+export async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const metricsConfig = metricsListenerFromEnvironment(environment);
   const app = createApp(loadConfig(), { runCrawlWorker: true });
+  let metricsListener: MetricsListener | null = null;
+  if (metricsConfig !== null) {
+    try {
+      metricsListener = await startMetricsListener(app.metrics, metricsConfig);
+    } catch (error) {
+      await app.close();
+      throw error;
+    }
+    logEvent("info", "metrics.listening", { origin: metricsListener.origin });
+  }
   const server = createMcpServer(app);
   const transport = new StdioServerTransport();
   let closing = false;
@@ -777,6 +794,7 @@ export async function main(): Promise<void> {
       return;
     }
     closing = true;
+    await metricsListener?.close();
     await server.close();
     await app.close();
   };
@@ -792,7 +810,7 @@ if (entry !== "" && realpathSync(entry) === realpathSync(fileURLToPath(import.me
   operation().catch((error: unknown) => {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     const processName = operation === controlPlaneMain ? "crawlume-control-plane" : "crawlume-mcp";
-    process.stderr.write(`${processName} failed: ${message}\n`);
+    logEvent("error", "process.failed", { process: processName, error: message });
     process.exitCode = 1;
   });
 }
