@@ -787,21 +787,44 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   }
   const server = createMcpServer(app);
   const transport = new StdioServerTransport();
-  let closing = false;
-
-  const close = async (): Promise<void> => {
-    if (closing) {
-      return;
-    }
-    closing = true;
-    await metricsListener?.close();
-    await server.close();
-    await app.close();
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    if (closePromise !== undefined) return closePromise;
+    process.off("SIGINT", closeInBackground);
+    process.off("SIGTERM", closeInBackground);
+    process.stdin.off("end", closeInBackground);
+    closePromise = (async () => {
+      const errors: unknown[] = [];
+      for (const operation of [
+        () => metricsListener?.close(),
+        () => server.close(),
+        () => app.close(),
+      ]) {
+        try { await operation(); } catch (error) { errors.push(error); }
+      }
+      if (errors.length > 0) throw new AggregateError(errors, "MCP shutdown failed.");
+    })();
+    return closePromise;
   };
-
-  process.once("SIGINT", () => void close());
-  process.once("SIGTERM", () => void close());
-  await server.connect(transport);
+  const closeInBackground = (): void => {
+    void close().catch((error: unknown) => {
+      logEvent("error", "process.shutdown_failed", { error: String(error) });
+      process.exitCode = 1;
+    });
+  };
+  server.server.onclose = closeInBackground;
+  process.once("SIGINT", closeInBackground);
+  process.once("SIGTERM", closeInBackground);
+  // StdioServerTransport does not forward stdin EOF to its onclose callback.
+  process.stdin.once("end", closeInBackground);
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    try { await close(); } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "MCP connection and cleanup both failed.");
+    }
+    throw error;
+  }
 }
 
 const entry = process.argv[1] === undefined ? "" : resolve(process.argv[1]);

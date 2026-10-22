@@ -18,10 +18,10 @@ export function metricsListenerFromEnvironment(
   const rawPort = environment.CRAWLUME_METRICS_PORT;
   if (rawPort === undefined || rawPort === "") return null;
   const port = Number(rawPort);
-  if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) {
+  if (!/^(0|[1-9][0-9]{0,4})$/u.test(rawPort) || port > 65_535) {
     throw new Error("CRAWLUME_METRICS_PORT must be an integer between 0 and 65535.");
   }
-  return { host: environment.CRAWLUME_METRICS_HOST ?? "127.0.0.1", port };
+  return { host: environment.CRAWLUME_METRICS_HOST?.trim() || "127.0.0.1", port };
 }
 
 export async function startMetricsListener(
