@@ -8,6 +8,7 @@ user-authorized browser profile.
 
 It does not impersonate AI crawlers, solve CAPTCHAs, or bypass login, payment, robots, or site access controls.
 
+Deployment, configuration, backup and upgrade steps are in [`docs/operations.md`](docs/operations.md).
 Architecture, reliability, benchmark, product, and implementation documents are indexed in
 [`docs/README.md`](docs/README.md). The approved local modular Retrieval Runtime is implemented; its
 public contract is [`docs/spec.md`](docs/spec.md), while conditional cluster, managed-provider, and
