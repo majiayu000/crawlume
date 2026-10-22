@@ -15,7 +15,7 @@ search-engine extensions remain separate future decisions.
 
 ## Requirements
 
-- Node.js 24 LTS (24.14 or newer) or Node.js 26
+- Node.js 24 LTS (24.15 or newer) or Node.js 26
 - pnpm (version pinned by `packageManager` in `package.json`)
 - Google Chrome for browser mode
 
@@ -46,8 +46,50 @@ docker run --rm -i --volume crawlume-data:/data crawlume
 ```
 
 The default entrypoint serves MCP over stdio, so MCP clients can use `docker` as the command with
-`run --rm -i --volume crawlume-data:/data crawlume` as arguments. Append `--control-plane` to run the
-control-plane HTTP API instead.
+`run --rm -i --volume crawlume-data:/data crawlume` as arguments.
+
+The control-plane HTTP API additionally needs PostgreSQL, an OIDC provider, two distinct Ed25519
+signing key pairs, and a TLS certificate. Prepare `control-plane.env` with deployment-specific
+values (the database hostname must be reachable from the container):
+
+```dotenv
+DIAOYAN_CONTROL_DATABASE_URL=postgresql://crawlume:password@db.example.com/crawlume
+DIAOYAN_CONTROL_DATABASE_CA_PATH=/run/secrets/database-ca.pem
+DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH=/run/secrets/worker-private.pem
+DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH=/run/secrets/worker-public.pem
+DIAOYAN_WORKER_SESSION_ISSUER=https://crawlume.example.com
+DIAOYAN_WORKER_SESSION_AUDIENCE=crawlume-workers
+DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH=/run/secrets/human-private.pem
+DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH=/run/secrets/human-public.pem
+DIAOYAN_HUMAN_ACCESS_TOKEN_ISSUER=https://crawlume.example.com
+DIAOYAN_HUMAN_ACCESS_TOKEN_AUDIENCE=crawlume-api
+DIAOYAN_OIDC_ISSUER=https://id.example.com
+DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT=https://id.example.com/authorize
+DIAOYAN_OIDC_TOKEN_ENDPOINT=https://id.example.com/token
+DIAOYAN_OIDC_CLIENT_ID=crawlume
+DIAOYAN_OIDC_REDIRECT_URI=https://crawlume.example.com/v1/auth/oidc/callback
+DIAOYAN_OIDC_ID_TOKEN_ALGORITHM=RS256
+DIAOYAN_OIDC_JWKS_URI=https://id.example.com/.well-known/jwks.json
+DIAOYAN_CONTROL_TLS_KEY_PATH=/run/secrets/tls-private.pem
+DIAOYAN_CONTROL_TLS_CERT_PATH=/run/secrets/tls-cert.pem
+```
+
+Store the corresponding PEM files in `./secrets`. Private keys must be regular, non-symlink files
+with owner-only permissions (`0600`), readable by the image's `node` user (UID 1000). Protect the
+env file too. Use a certificate valid for the API hostname and register the exact redirect URI
+with the OIDC provider. Then run:
+
+```bash
+docker run --rm --publish 127.0.0.1:8787:8787 \
+  --env-file ./control-plane.env \
+  --env DIAOYAN_CONTROL_HOST=0.0.0.0 --env DIAOYAN_CONTROL_PORT=8787 \
+  --mount type=bind,src="$(pwd)/secrets",dst=/run/secrets,readonly \
+  --volume crawlume-data:/data crawlume --control-plane
+```
+
+This binds TLS inside the container and publishes it only on the host loopback interface. Point
+a host reverse proxy at `https://127.0.0.1:8787`, configure certificate verification for the API
+hostname, and forward the public hostname's HTTPS traffic. Migrations run at startup.
 
 ## MCP configuration
 

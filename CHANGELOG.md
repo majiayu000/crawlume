@@ -15,7 +15,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Minimum Node.js version lowered from 25.7 to 24.14 (LTS).
+- Minimum Node.js version lowered from 25.7 to 24.15 (LTS).
 
 ### Fixed
 
