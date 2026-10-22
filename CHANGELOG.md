@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows
 - Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line stderr logs for the MCP and control-plane server entrypoints.
 - `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
 - Operations manual (`docs/operations.md`).
+- `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
 
 ### Changed
 
