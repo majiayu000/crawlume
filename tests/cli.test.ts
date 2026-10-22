@@ -1,15 +1,25 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const failures = vi.hoisted(() => ({ metadataWrite: false }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+    if (failures.metadataWrite && typeof args[0] === "number") throw new Error("disk full");
+    return actual.writeFileSync(...args);
+  } };
+});
+
 import { main, parseCli } from "../src/cli/main.js";
 
 const directories: string[] = [];
 
 afterEach(() => {
+  failures.metadataWrite = false;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   while (directories.length > 0) {
@@ -189,6 +199,25 @@ describe("crawlume CLI", () => {
       backupPath: resolve("out/cache.sqlite"),
       targetPath: resolve("restored.sqlite"),
     });
+  });
+
+  it("leaves no orphan database or partial sidecar after metadata failure", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-backup-fail-"));
+    directories.push(directory);
+    vi.stubEnv("CRAWLUME_DATA_DIR", directory);
+    const source = new DatabaseSync(join(directory, "cache.sqlite"));
+    source.exec("CREATE TABLE pages(id INTEGER PRIMARY KEY) STRICT;");
+    source.close();
+    const backupPath = join(directory, "backup.sqlite");
+    failures.metadataWrite = true;
+    expect(await main(["backup", backupPath])).toBe(1);
+    expect(existsSync(backupPath)).toBe(false);
+    expect(existsSync(`${backupPath}.json`)).toBe(false);
+    failures.metadataWrite = false;
+    writeFileSync(`${backupPath}.json`, "old metadata");
+    expect(await main(["backup", backupPath])).toBe(1);
+    expect(existsSync(backupPath)).toBe(false);
+    expect(readFileSync(`${backupPath}.json`, "utf8")).toBe("old metadata");
   });
 
   it("backs up the runtime database with metadata and restores it to a new path", async () => {

@@ -75,7 +75,8 @@
 - `DIAOYAN_WORKER_SESSION_ISSUER`、`DIAOYAN_WORKER_SESSION_AUDIENCE`、
   `DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH`、`DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH`。
 
-两组签名密钥都是 Ed25519 PEM，启动时会做签名自检，不匹配直接失败。可选：
+两组签名密钥都是 Ed25519 PEM，私钥必须是非符号链接的普通文件，且只允许所有者访问（例如 `0600`）；
+常见的 `0644` Secret 挂载会被拒绝。启动时会做签名自检，不匹配直接失败。可选：
 `DIAOYAN_CONTROL_HOST`（默认 `127.0.0.1`）、`DIAOYAN_CONTROL_PORT`（默认 8787）、
 `DIAOYAN_CONTROL_TLS_KEY_PATH` 与 `DIAOYAN_CONTROL_TLS_CERT_PATH`（必须成对）。
 
@@ -83,10 +84,10 @@
 
 ## 5. 可观测性
 
-- 日志：进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。
+- 日志：MCP 和 Control Plane 服务端入口的进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。
 - 指标：设置 `CRAWLUME_METRICS_PORT` 后抓取 `GET /metrics`，计数器定义见
   [`runtime-metrics-spec.md`](./runtime-metrics-spec.md)。建议告警：
-  - `rate(crawlume_reads_total{outcome="failure"}[15m]) / rate(crawlume_reads_total[15m])` 持续升高。
+  - `sum(rate(crawlume_reads_total{outcome="failure"}[15m])) / sum(rate(crawlume_reads_total[15m]))` 持续升高。
   - 某个 `error_code`（如 `SSRF_BLOCKED`、`RATE_LIMITED`）突增。
   - `/metrics` 返回 500：聚合表不可读，按存储故障处理。
 - 明细：`crawlume stats --days <1-90>` 和 MCP `get_crawler_stats` 给出窗口内成功率、失败原因和成本。
@@ -102,9 +103,12 @@ crawlume restore /backups/crawlume-2026-10-22.sqlite /srv/crawlume-restored/cach
 
 - `backup` 使用 SQLite online backup，可在 MCP 运行时执行；写出备份文件和同名 `.json` 校验元数据
   （integrity check、页数、字节数、SHA-256），已存在的目标拒绝覆盖。
-- `restore` 先校验元数据，再恢复到一个不存在的新路径，不会覆盖运行中的数据库。切换方式：停止进程，
+- `restore` 先校验元数据，再恢复到一个不存在的新路径；目标及其 `-wal`、`-shm`、`-journal` 必须均不存在。
+  恢复期间保持目标离线，不会覆盖运行中的数据库。切换方式：停止进程，
   把恢复出的文件放到新的 `CRAWLUME_DATA_DIR` 下命名为 `cache.sqlite`，再启动。
-- `profiles/` 不在 SQLite 中，需要时单独加密备份。
+- `profiles/`、`rsl-approvals.json` 和 `rsl-clients.json` 不在 SQLite 中，需要单独加密备份。
+  切换数据目录时，在进程停止期间把两个 RSL 文件安全恢复到新 `CRAWLUME_DATA_DIR`（或相应的自定义路径），
+  保留 owner-only 权限，并按需恢复 `profiles/`。仅恢复 `cache.sqlite` 不会恢复审批或 OLP 客户端凭据。
 
 Control Plane 的 PostgreSQL 使用数据库自身的备份方案（`pg_dump` 或托管快照），应用不提供替代。
 

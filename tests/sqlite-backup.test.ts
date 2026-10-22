@@ -141,9 +141,24 @@ describe("SQLite backup and recovery", () => {
       restoreSqliteBackup(safeBackupPath, restoredPath, metadata),
     ).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
-      message: "SQLite restore target already exists.",
+      message: "SQLite restore target or journal already exists.",
     });
     expect(readFileSync(restoredPath, "utf8")).toBe("existing restore target");
+  });
+
+  it.each(["-wal", "-shm", "-journal"])("rejects a stale %s beside an absent restore target", async (suffix) => {
+    const directory = temporaryDirectory();
+    const sourcePath = join(directory, "source.sqlite");
+    const backupPath = join(directory, "backup.sqlite");
+    const targetPath = join(directory, "restored.sqlite");
+    const source = new DatabaseSync(sourcePath);
+    databases.push(source);
+    source.exec("CREATE TABLE pages(id INTEGER PRIMARY KEY) STRICT;");
+    const metadata = await createSqliteBackup(sourcePath, backupPath);
+    writeFileSync(`${targetPath}${suffix}`, "stale journal");
+    await expect(restoreSqliteBackup(backupPath, targetPath, metadata)).rejects.toThrow("journal already exists");
+    expect(existsSync(targetPath)).toBe(false);
+    expect(readFileSync(`${targetPath}${suffix}`, "utf8")).toBe("stale journal");
   });
 
   it("cleans its temporary file when a backup attempt fails", async () => {

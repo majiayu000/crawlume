@@ -6,6 +6,7 @@ import {
   createReadStream,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   statSync,
   unlinkSync,
@@ -153,7 +154,16 @@ export async function restoreSqliteBackup(
   if (resolve(backupPath) === resolve(targetPath)) {
     throw invalidBackup("SQLite restore target must differ from the backup.", targetPath);
   }
-  requireAbsentTarget(targetPath, "restore");
+  // A restore target must be offline; stale journals can overwrite the verified snapshot.
+  for (const path of [targetPath, `${targetPath}-wal`, `${targetPath}-shm`, `${targetPath}-journal`]) {
+    try {
+      lstatSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    throw invalidBackup("SQLite restore target or journal already exists.", path);
+  }
   await verifySqliteBackup(backupPath, metadata);
   mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
   const pendingPath = temporaryPath(targetPath);
