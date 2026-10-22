@@ -775,6 +775,72 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     expect((await database!.query<{ count: string }>("SELECT count(*)::text AS count FROM jobs")).rows[0]?.count).toBe("1");
   });
 
+  it("replays a scheduled Job after waiting past notBefore under the Project lock", async () => {
+    const jobs = new ControlPlaneJobService(new PostgresControlPlaneDatabase(database!), {
+      quotas: { ...unlimitedProjectQuotas, activeJobs: 1 },
+    });
+    const input = { ...jobInput("https://example.com/scheduled-replay"),
+      notBefore: new Date((await databaseClock(database!)).getTime() + 1_500) };
+    const first = await jobs.createJob(fixtureProjectKey, "scheduled-replay", input, { correlationId: "scheduled-first" });
+    const blocker = await database!.connect();
+    let replay: Promise<unknown> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
+        [fixtureProjectKey.projectId]);
+      replay = jobs.createJob(fixtureProjectKey, "scheduled-replay", input,
+        { correlationId: "scheduled-repeat" }).catch((error: unknown) => error);
+      await vi.waitFor(async () => {
+        const waiting = await blocker.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted");
+        expect(waiting.rows).toHaveLength(1);
+      }, { timeout: 1_000, interval: 20 });
+      await blocker.query("SELECT pg_sleep(GREATEST(0, extract(epoch FROM ($1::timestamptz - clock_timestamp()))) + 0.05)",
+        [input.notBefore]);
+      await blocker.query("COMMIT");
+      expect(await replay).toMatchObject({ id: first.id, notBefore: first.notBefore });
+      await expect(jobs.createJob(fixtureProjectKey, "scheduled-replay", {
+        ...jobInput("https://example.com/different"), notBefore: input.notBefore,
+      }, { correlationId: "scheduled-conflict" })).rejects.toMatchObject({ code: "JOB_IDEMPOTENCY_CONFLICT" });
+      await expect(jobs.createJob(fixtureProjectKey, "new-past-schedule", input,
+        { correlationId: "scheduled-new" })).rejects.toThrow("at or after creation");
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await replay;
+    }
+  });
+
+  it("plans no disabled usage scans when only activeJobs is enabled", async () => {
+    await new ControlPlaneJobService(new PostgresControlPlaneDatabase(database!)).createJob(
+      fixtureProjectKey, "usage-plan", jobInput("https://example.com/usage-plan"), { correlationId: "usage-plan" });
+    type UsagePlan = { "Node Type": string; "Relation Name"?: string; Output?: string[]; Plans?: UsagePlan[] };
+    let plan: UsagePlan | undefined;
+    let usage: unknown;
+    await enforceJobCreationQuotas({
+      query: async <Row>(sql: string, parameters: readonly unknown[]) => {
+        const explanation = await database!.query(`EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON) ${sql}`, [...parameters]);
+        plan = explanation.rows[0]?.["QUERY PLAN"][0].Plan as UsagePlan;
+        const result = await database!.query(sql, [...parameters]);
+        usage = result.rows[0];
+        return { rows: result.rows as Row[] };
+      },
+    }, fixtureProjectKey.projectId, { maxProviderAttempts: 1, maxBrowserMs: 1 },
+    { ...unlimitedProjectQuotas, activeJobs: 10 }, await databaseClock(database!));
+    expect(usage).toEqual({ active_jobs: "1", reserved_provider_attempts: "0", reserved_browser_ms: "0", artifact_bytes: "0" });
+    const nodes = [plan!];
+    const relations: string[] = [];
+    const aggregates: string[][] = [];
+    while (nodes.length > 0) {
+      const node = nodes.pop()!;
+      if (node["Relation Name"] !== undefined) relations.push(node["Relation Name"]);
+      if (node["Node Type"] === "Aggregate") aggregates.push(node.Output ?? []);
+      nodes.push(...(node.Plans ?? []));
+    }
+    expect(relations).toEqual(["jobs"]);
+    expect(aggregates).toEqual([["count(*)"]]);
+    expect(plan?.Output?.slice(1)).toEqual(["'0'::text", "'0'::text", "'0'::text"]);
+  });
+
   it.each([-1, 1])("uses the locked database month when the app clock is %s month away", async (offset) => {
     const clock = await databaseClock(database!);
     const skewed = new Date(Date.UTC(clock.getUTCFullYear(), clock.getUTCMonth() + offset, 15));
