@@ -72,8 +72,14 @@ import {
   unlimitedProjectQuotas,
   type ProjectQuotaLimits,
 } from "./control-plane/quotas.js";
+import {
+  WebhookDispatcher,
+  WebhookSecretCipher,
+  WebhookService,
+} from "./control-plane/webhooks.js";
 import { WorkerBootstrapHttpApi } from "./control-plane/worker-bootstrap-http-api.js";
 import { logEvent } from "./log.js";
+import { UrlPolicy } from "./security/url-policy.js";
 import { createMcpServer } from "./mcp.js";
 import {
   metricsListenerFromEnvironment,
@@ -85,6 +91,7 @@ const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
 const jobLeaseSweepIntervalMs = 30_000;
+const webhookDeliveryIntervalMs = 1_000;
 const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events))$/u;
 
 type WorkerTlsConfig = Readonly<{
@@ -435,6 +442,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   identity: WorkerIdentityConfig;
   listener: WorkerControlServerConfig;
   quotas?: ProjectQuotaLimits;
+  webhookCipher?: WebhookSecretCipher | null;
 }>;
 
 export type ControlPlaneRuntime = Readonly<{
@@ -594,6 +602,9 @@ export async function loadControlPlaneRuntimeConfig(
       tls,
     },
     quotas: projectQuotasFromEnvironment(environment),
+    webhookCipher: environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH === undefined
+      ? null
+      : await WebhookSecretCipher.fromFile(environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH),
   });
 }
 
@@ -602,6 +613,7 @@ export async function startControlPlaneRuntime(
 ): Promise<ControlPlaneRuntime> {
   const database = new PostgresControlPlaneDatabase(new Pool(config.database));
   let sweepRunner: ControlPlaneJobLeaseSweepRunner | undefined;
+  let webhookRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let listener: WorkerControlListener | undefined;
   let resolveFinished!: () => void;
   let rejectFinished!: (error: unknown) => void;
@@ -631,6 +643,26 @@ export async function startControlPlaneRuntime(
     );
     await sweepRunner.start();
     if (hasPendingFatalError) throw pendingFatalError;
+    const webhookCipher = config.webhookCipher ?? null;
+    const webhookUrlPolicy = new UrlPolicy();
+    if (webhookCipher !== null) {
+      webhookRunner = new ControlPlaneJobLeaseSweepRunner(
+        new WebhookDispatcher(database, webhookCipher, webhookUrlPolicy),
+        {
+          intervalMs: webhookDeliveryIntervalMs,
+          onFatalError: (error) => {
+            if (runtimeReady) rejectFinished(error);
+            else {
+              pendingFatalError = error;
+              hasPendingFatalError = true;
+            }
+          },
+        },
+      );
+      await webhookRunner.start();
+      if (hasPendingFatalError) throw pendingFatalError;
+    }
+    const webhooks = new WebhookService(database, webhookCipher, webhookUrlPolicy);
     const identity = new WorkerIdentityService(database, config.identity);
     const humanIdentity = new OidcSessionService(database, config.humanIdentity);
     const quotas = config.quotas ?? unlimitedProjectQuotas;
@@ -676,6 +708,7 @@ export async function startControlPlaneRuntime(
       cancelJob: jobs.cancel.bind(jobs),
       listPublications: results.listPublications.bind(results),
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
+      webhooks,
     }, quotas.apiRequestsPerMinute === null
       ? {}
       : { rateLimiter: new ApiRequestRateLimiter(quotas.apiRequestsPerMinute) });
@@ -693,6 +726,7 @@ export async function startControlPlaneRuntime(
       const errors: unknown[] = [];
       for (const close of [
         () => activeListener.close(),
+        () => webhookRunner?.close(),
         () => sweepRunner?.close(),
         () => database.close(),
       ]) {
@@ -724,6 +758,11 @@ export async function startControlPlaneRuntime(
       await listener?.close();
     } catch (listenerCloseError) {
       cleanupErrors.push(listenerCloseError);
+    }
+    try {
+      await webhookRunner?.close();
+    } catch (webhookCloseError) {
+      cleanupErrors.push(webhookCloseError);
     }
     try {
       await sweepRunner?.close();

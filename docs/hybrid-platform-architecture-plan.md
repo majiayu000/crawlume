@@ -1398,7 +1398,7 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [ ] Private Worker 数据边界。
 - [ ] Artifact Store。
 - [ ] REST/MCP/TypeScript SDK。REST（OpenAPI v1）与 TypeScript SDK（`src/sdk/client.ts`，`docs/sdk.md`）已完成；云 MCP 适配器未实现。
-- [ ] Webhook。
+- [x] Webhook。迁移 0010、`control-plane/webhooks.ts`；事件目前只有 `job.*`，`monitor.*`、`worker.offline`、`budget.threshold_reached` 待对应功能上线后接入。签名采用 Standard Webhooks（覆盖完整 body）。
 - [ ] C 端 Web/Extension/Companion。
 - [ ] Usage/Quota/Audit。Audit 已完成（迁移 0007、`/projects/{id}/audit-events`）；Quota 已完成（`control-plane/quotas.ts`，五项均按 §23.2，429 `QUOTA_EXCEEDED`）；Usage 目前只有 `job_events.usage`，独立的 terminal Usage Ledger 未实现。
 - [ ] CI/CD 和受保护发布。CI 已完成（`.github/workflows/ci.yml`）；受保护发布未实现。

@@ -57,6 +57,46 @@ export const projectJobRouterOperations = projectJobRouteDefinitions.map(
   ({ method, operationId, path }) => ({ method, operationId, path }),
 );
 
+export const webhookRouteDefinitions = [
+  {
+    kind: "create-endpoint", method: "POST", path: "/projects/{project_id}/webhook-endpoints",
+    operationId: "createWebhookEndpoint",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/webhook-endpoints$`, "u"),
+  },
+  {
+    kind: "list-endpoints", method: "GET", path: "/projects/{project_id}/webhook-endpoints",
+    operationId: "listWebhookEndpoints",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/webhook-endpoints$`, "u"),
+  },
+  {
+    kind: "disable-endpoint", method: "DELETE",
+    path: "/projects/{project_id}/webhook-endpoints/{endpoint_id}",
+    operationId: "disableWebhookEndpoint",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/webhook-endpoints/${uuidPath}$`, "u"),
+  },
+  {
+    kind: "rotate-secret", method: "POST",
+    path: "/projects/{project_id}/webhook-endpoints/{endpoint_id}/rotate-secret",
+    operationId: "rotateWebhookEndpointSecret",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/webhook-endpoints/${uuidPath}/rotate-secret$`, "u"),
+  },
+  {
+    kind: "redeliver-event", method: "POST",
+    path: "/projects/{project_id}/webhook-events/{event_id}/redeliver",
+    operationId: "redeliverWebhookEvent",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/webhook-events/${uuidPath}/redeliver$`, "u"),
+  },
+  {
+    kind: "list-deliveries", method: "GET", path: "/projects/{project_id}/webhook-deliveries",
+    operationId: "listWebhookDeliveries",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/webhook-deliveries$`, "u"),
+  },
+] as const;
+
+export const webhookRouterOperations = webhookRouteDefinitions.map(
+  ({ method, operationId, path }) => ({ method, operationId, path }),
+);
+
 export const humanAuthRouteDefinitions = [
   {
     kind: "begin", method: "GET", path: "/auth/oidc/begin",
@@ -217,5 +257,6 @@ export const controlPlaneRouterOperations = Object.freeze([
   ...projectAdminRouterOperations,
   ...workerBootstrapRouterOperations,
   ...projectJobRouterOperations,
+  ...webhookRouterOperations,
   ...workerRouterOperations,
 ]);

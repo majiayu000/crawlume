@@ -111,13 +111,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
-function retryAfterMs(response: Response): number | null {
-  const header = response.headers.get("retry-after");
+/** Parses a Retry-After header (delta-seconds or HTTP date) into milliseconds from nowMs. */
+export function parseRetryAfterMs(header: string | null, nowMs = Date.now()): number | null {
   if (header === null) return null;
   const seconds = Number(header);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
   const date = Date.parse(header);
-  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+  return Number.isNaN(date) ? null : Math.max(0, date - nowMs);
 }
 
 export class CrawlumeClient {
@@ -247,7 +247,7 @@ export class CrawlumeClient {
       // Every SDK request is idempotent: GETs, Idempotency-Key creates, and pause/resume/cancel.
       if (!error.retryable || attempt >= this.maxRetries) throw error;
       const backoff = Math.min(maxRetryDelayMs, this.retryBaseMs * 2 ** attempt);
-      await delay(Math.min(maxRetryDelayMs, retryAfterMs(response) ?? backoff));
+      await delay(Math.min(maxRetryDelayMs, parseRetryAfterMs(response.headers.get("retry-after")) ?? backoff));
     }
   }
 }

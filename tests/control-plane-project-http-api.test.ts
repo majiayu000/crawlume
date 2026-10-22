@@ -626,7 +626,7 @@ describe("Project Job HTTP API", () => {
 });
 
 describe("control-plane HTTP routing", () => {
-  it("dispatches all 27 mounted operations to exactly one target handler", async () => {
+  it("dispatches all 33 mounted operations to exactly one target handler", async () => {
     const handlers = {
       humanAuth: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       projectAdmin: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
@@ -650,11 +650,11 @@ describe("control-plane HTTP routing", () => {
       }
       if (["createWorkerEnrollment", "enrollWorker", "createWorkerSessionChallenge",
         "createWorkerSession", "disableProjectWorker"].includes(operationId)) return "workerBootstrap";
-      if (operationId.includes("Project")) return "projects";
+      if (operationId.includes("Project") || operationId.includes("Webhook")) return "projects";
       return "workers";
     };
 
-    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(27);
+    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(33);
     for (const operation of ControlPlaneHttpApi.routerOperations) {
       const before = Object.values(handlers).reduce((sum, handler) =>
         sum + handler.handle.mock.calls.length, 0);
@@ -664,7 +664,9 @@ describe("control-plane HTTP routing", () => {
         .replaceAll("{job_id}", jobId)
         .replaceAll("{key_id}", jobId)
         .replaceAll("{worker_id}", jobId)
-        .replaceAll("{lease_id}", jobId);
+        .replaceAll("{lease_id}", jobId)
+        .replaceAll("{endpoint_id}", jobId)
+        .replaceAll("{event_id}", jobId);
 
       await api.handle(request({ method: operation.method, path }));
 

@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format follows
 - `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
 - TypeScript SDK for the Project Control API (`crawlume/sdk`).
 - Control-plane Project quotas (`DIAOYAN_QUOTA_*`) returning HTTP 429 `QUOTA_EXCEEDED`.
+- Signed webhooks for terminal Job events with retries, dead letters, secret rotation and redelivery; `verifyWebhook` in `crawlume/sdk/webhooks`.
 
 ### Changed
 
