@@ -8,6 +8,7 @@
 
 - [spec.md](./spec.md)：已经实现并应保持兼容的完整产品合同。
 - [operations.md](./operations.md)：部署、配置、可观测性、备份恢复与升级手册。
+- [sdk.md](./sdk.md)：Project Control API 的 TypeScript SDK。
 - [soak-capacity-spec.md](./soak-capacity-spec.md)：7 天稳定性试验与 300,000 页容量基准的运行方式和通过条件。
 - [roadmap.md](./roadmap.md)：已完成阶段、条件式能力与后续决策门。
 - [architecture-completion-ledger.md](./architecture-completion-ledger.md)：本地模块化 Retrieval Runtime

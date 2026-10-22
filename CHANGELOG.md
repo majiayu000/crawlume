@@ -16,6 +16,7 @@ All notable changes to this project are documented here. The format follows
 - `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
 - Operations manual (`docs/operations.md`).
 - `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
+- TypeScript SDK for the Project Control API (`crawlume/sdk`).
 
 ### Changed
 

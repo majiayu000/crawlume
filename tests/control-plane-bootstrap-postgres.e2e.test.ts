@@ -13,6 +13,7 @@ import {
   startControlPlaneRuntime,
   type ControlPlaneRuntime,
 } from "../src/server.js";
+import { CrawlumeClient, type CreateJobRequest } from "../src/sdk/client.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
 const describeWithPostgres = configuredDatabaseUrl === undefined ? describe.skip : describe;
@@ -438,6 +439,49 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       expect(claimResponse.status).toBe(204);
       expect(claimResponse.headers.get("cache-control")).toBe("no-store");
       expect(await claimResponse.text()).toBe("");
+
+      const sdkKeyResponse = await originalFetch(
+        `${runtime.origin}/v1/projects/${project.project.id}/api-keys`,
+        {
+          method: "POST",
+          headers: { ...humanHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ scopes: ["tasks:write", "results:read"], expires_at: null }),
+        },
+      );
+      expect(sdkKeyResponse.status).toBe(201);
+      const sdkKey = await jsonBody<ApiKeyResponse>(sdkKeyResponse);
+      const sdk = new CrawlumeClient({
+        baseUrl: `${runtime.origin}/v1`,
+        apiKey: sdkKey.secret,
+        projectId: project.project.id,
+        fetch: originalFetch,
+        maxRetries: 0,
+      });
+      const sdkRequest: CreateJobRequest = {
+        type: "read",
+        input: { url: "https://example.com/" },
+        data_class: "public",
+        placement: { class: "public", pinned_worker_id: null },
+        required_capabilities: { http: true },
+        budget: {
+          deadline_ms: 300_000,
+          max_provider_attempts: 2,
+          max_document_bytes: 1_000_000,
+          max_browser_ms: 0,
+          max_browser_contexts: 0,
+        },
+        policy_version: "2026-09-02",
+        upload_private_artifact: false,
+      };
+      const createdJob = await sdk.createJob(sdkRequest, { idempotencyKey: "bootstrap-sdk" });
+      expect(createdJob).toMatchObject({ type: "read", status: "queued" });
+      await expect(sdk.createJob(sdkRequest, { idempotencyKey: "bootstrap-sdk" }))
+        .resolves.toMatchObject({ id: createdJob.id });
+      await expect(sdk.getJob(createdJob.id)).resolves.toMatchObject({ id: createdJob.id });
+      const sdkPublications = [];
+      for await (const publication of sdk.publications(createdJob.id)) sdkPublications.push(publication);
+      expect(sdkPublications).toEqual([]);
+      await expect(sdk.cancelJob(createdJob.id)).resolves.toMatchObject({ status: "cancelled" });
 
       const migrations = await inspectionPool.query<{ count: number; version: number }>(`
         SELECT count(*)::integer AS count, max(version)::integer AS version

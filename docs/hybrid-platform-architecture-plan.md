@@ -1397,7 +1397,7 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [ ] Public cloud Worker。
 - [ ] Private Worker 数据边界。
 - [ ] Artifact Store。
-- [ ] REST/MCP/TypeScript SDK。
+- [ ] REST/MCP/TypeScript SDK。REST（OpenAPI v1）与 TypeScript SDK（`src/sdk/client.ts`，`docs/sdk.md`）已完成；云 MCP 适配器未实现。
 - [ ] Webhook。
 - [ ] C 端 Web/Extension/Companion。
 - [ ] Usage/Quota/Audit。Audit 已完成（迁移 0007、`/projects/{id}/audit-events`）；Usage/Quota 未实现。
