@@ -1,5 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -12,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const failures = vi.hoisted(() => ({ unlinkTemporary: false, unlinkAttempts: 0, tamperCopy: false }));
+const failures = vi.hoisted(() => ({ unlinkTemporary: false, unlinkAttempts: 0, tamperCopy: false, copies: 0,
+  verificationCleanup: false, verificationDirectories: [] as string[] }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual,
@@ -24,8 +27,16 @@ vi.mock("node:fs", async (importOriginal) => {
       return actual.unlinkSync(...args);
     },
     copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
+      failures.copies += 1;
       actual.copyFileSync(...args);
       if (failures.tamperCopy) actual.writeFileSync(args[1], "not a sqlite database");
+    },
+    rmSync: (...args: Parameters<typeof actual.rmSync>) => {
+      if (failures.verificationCleanup && String(args[0]).includes("crawlume-verify-")) {
+        failures.verificationDirectories.push(String(args[0]));
+        throw Object.assign(new Error("verification cleanup denied"), { code: "EACCES" });
+      }
+      return actual.rmSync(...args);
     },
   };
 });
@@ -45,8 +56,11 @@ afterEach(() => {
   failures.unlinkTemporary = false;
   failures.unlinkAttempts = 0;
   failures.tamperCopy = false;
+  failures.copies = 0;
+  failures.verificationCleanup = false;
   vi.restoreAllMocks();
   while (databases.length > 0) databases.pop()?.close();
+  for (const directory of failures.verificationDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
   while (temporaryDirectories.length > 0) {
     const directory = temporaryDirectories.pop();
     if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
@@ -60,6 +74,58 @@ function temporaryDirectory(): string {
 }
 
 describe("SQLite backup and recovery", () => {
+  it("restores a read-only WAL archive with one copy and one complete staged inspection", async () => {
+    const directory = temporaryDirectory();
+    const archive = temporaryDirectory();
+    const sourcePath = join(directory, "source.sqlite");
+    const source = new DatabaseSync(sourcePath); databases.push(source);
+    source.exec("PRAGMA journal_mode=WAL; CREATE TABLE pages(id INTEGER PRIMARY KEY); INSERT INTO pages VALUES(1);");
+    const snapshot = join(directory, "snapshot.sqlite");
+    const metadata = await createSqliteBackup(sourcePath, snapshot);
+    const archivedBackup = join(archive, "backup.sqlite");
+    copyFileSync(snapshot, archivedBackup);
+    chmodSync(archivedBackup, 0o400);
+    chmodSync(archive, 0o500);
+    try {
+      failures.copies = 0;
+      const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+      const target = join(directory, "restored.sqlite");
+      await expect(restoreSqliteBackup(archivedBackup, target, metadata)).resolves.toEqual(metadata);
+      expect(failures.copies).toBe(1);
+      expect(prepare.mock.calls.filter(([sql]) => sql === "PRAGMA integrity_check")).toHaveLength(1);
+      expect(prepare.mock.calls.filter(([sql]) => sql === "PRAGMA page_count")).toHaveLength(1);
+      expect(readdirSync(directory).filter((name) => name.startsWith(".") && name.includes(".tmp"))).toEqual([]);
+      expect(readdirSync(archive)).toEqual(["backup.sqlite"]);
+      await expect(verifySqliteBackup(archivedBackup, metadata)).resolves.toEqual(metadata);
+      expect(readdirSync(archive)).toEqual(["backup.sqlite"]);
+      const rejected = join(directory, "rejected.sqlite");
+      await expect(restoreSqliteBackup(archivedBackup, rejected, { ...metadata, sha256: `sha256:${"0".repeat(64)}` })).rejects.toThrow("does not match");
+      expect(existsSync(rejected)).toBe(false);
+      expect(readdirSync(directory).filter((name) => name.startsWith(".") && name.includes(".tmp"))).toEqual([]);
+      expect(readdirSync(archive)).toEqual(["backup.sqlite"]);
+    } finally {
+      chmodSync(archive, 0o700);
+    }
+  });
+
+  it.each([false, true])("preserves verification result when private staging cleanup fails (damaged=%s)", async (damaged) => {
+    const directory = temporaryDirectory();
+    const sourcePath = join(directory, "source.sqlite");
+    const source = new DatabaseSync(sourcePath); databases.push(source);
+    source.exec("CREATE TABLE pages(id INTEGER PRIMARY KEY) STRICT;");
+    const backupPath = join(directory, "backup.sqlite");
+    const metadata = await createSqliteBackup(sourcePath, backupPath);
+    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    failures.verificationCleanup = true;
+    if (damaged) writeFileSync(backupPath, "not a sqlite database");
+    const result = verifySqliteBackup(backupPath, metadata);
+    if (damaged) await expect(result).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "SQLite backup failed integrity verification." });
+    else await expect(result).resolves.toEqual(metadata);
+    expect(errors.mock.calls.some(([text]) => JSON.parse(String(text)).event === "sqlite.backup.verification_cleanup_failed")).toBe(true);
+    expect(failures.verificationDirectories).toHaveLength(1);
+    expect(existsSync(failures.verificationDirectories[0]!)).toBe(true);
+  });
+
   it("keeps a verified restore successful when pending unlink fails", async () => {
     const directory = temporaryDirectory();
     const sourcePath = join(directory, "source.sqlite");

@@ -8,10 +8,13 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
+  rmSync,
   statSync,
   unlinkSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 
 import { ReadError } from "./errors.js";
@@ -90,12 +93,14 @@ function temporaryPath(targetPath: string): string {
   return `${dirname(targetPath)}/.${basename(targetPath)}.${randomUUID()}.tmp`;
 }
 
-function removeIfPresent(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      logEvent("warn", "sqlite.temporary_file.cleanup_failed", { path, error: String(error) });
+function removePendingSqliteFiles(pendingPath: string): void {
+  for (const path of [pendingPath, `${pendingPath}-wal`, `${pendingPath}-shm`, `${pendingPath}-journal`]) {
+    try {
+      unlinkSync(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        logEvent("warn", "sqlite.temporary_file.cleanup_failed", { path, error: String(error) });
+      }
     }
   }
 }
@@ -137,11 +142,10 @@ function requireMetadata(metadata: SqliteBackupMetadata, path: string): void {
   }
 }
 
-export async function verifySqliteBackup(
+async function verifyStagedSqliteBackup(
   backupPath: string,
   metadata: SqliteBackupMetadata,
 ): Promise<SqliteBackupMetadata> {
-  requireMetadata(metadata, backupPath);
   const actual = await inspectSqliteBackup(backupPath);
   if (
     actual.integrityCheck !== metadata.integrityCheck ||
@@ -152,6 +156,28 @@ export async function verifySqliteBackup(
     throw invalidBackup("SQLite backup does not match its verification metadata.", backupPath);
   }
   return metadata;
+}
+
+export async function verifySqliteBackup(
+  backupPath: string,
+  metadata: SqliteBackupMetadata,
+): Promise<SqliteBackupMetadata> {
+  requireMetadata(metadata, backupPath);
+  requireRegularFile(backupPath, "SQLite backup");
+  // WAL-mode snapshots can create sidecars even when opened read-only.
+  const staging = mkdtempSync(join(tmpdir(), "crawlume-verify-"));
+  const stagedBackup = join(staging, "backup.sqlite");
+  try {
+    copyFileSync(backupPath, stagedBackup, fsConstants.COPYFILE_EXCL);
+    chmodSync(stagedBackup, 0o600);
+    return await verifyStagedSqliteBackup(stagedBackup, metadata);
+  } finally {
+    try {
+      rmSync(staging, { recursive: true });
+    } catch (error) {
+      logEvent("warn", "sqlite.backup.verification_cleanup_failed", { path: staging, error: String(error) });
+    }
+  }
 }
 
 export async function restoreSqliteBackup(
@@ -172,17 +198,18 @@ export async function restoreSqliteBackup(
     }
     throw invalidBackup("SQLite restore target or journal already exists.", path);
   }
-  await verifySqliteBackup(backupPath, metadata);
+  requireMetadata(metadata, backupPath);
+  requireRegularFile(backupPath, "SQLite backup");
   mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
   const pendingPath = temporaryPath(targetPath);
   try {
     copyFileSync(backupPath, pendingPath, fsConstants.COPYFILE_EXCL);
     chmodSync(pendingPath, 0o600);
-    await verifySqliteBackup(pendingPath, metadata);
+    await verifyStagedSqliteBackup(pendingPath, metadata);
     publishWithoutOverwrite(pendingPath, targetPath, "restore");
     return metadata;
   } finally {
-    removeIfPresent(pendingPath);
+    removePendingSqliteFiles(pendingPath);
   }
 }
 
@@ -217,6 +244,6 @@ export async function createSqliteBackup(
     } catch (error) {
       logEvent("warn", "sqlite.backup.source_close_failed", { path: sourcePath, error: String(error) });
     }
-    removeIfPresent(pendingPath);
+    removePendingSqliteFiles(pendingPath);
   }
 }
