@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { ControlPlaneError, CrawlumeClient, type CreateJobRequest, type Job } from "../src/sdk/client.js";
 
@@ -84,7 +84,80 @@ function client(fetchImpl: typeof fetch, maxRetries = 3): CrawlumeClient {
   });
 }
 
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
 describe("CrawlumeClient", () => {
+  it("keeps Job type and input correlated", () => {
+    const narrow = (value: Job): void => {
+      if (value.type === "search") expectTypeOf(value.input.query).toBeString();
+      if (value.type === "read") expectTypeOf(value.input.url).toBeString();
+    };
+    narrow(job("accepted"));
+    // @ts-expect-error A search job cannot contain a read input.
+    const invalid: Job = { ...job("accepted"), type: "search", input: { url: "https://example.com" } };
+    expect(invalid.type).toBe("search");
+  });
+
+  it("times out and aborts a fetch that never settles", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const fetchImpl = (async (_url: unknown, init: RequestInit) => {
+      signal = init.signal ?? undefined;
+      return new Promise<Response>(() => {});
+    }) as typeof fetch;
+    const result = client(fetchImpl).waitForJob(jobId, { timeoutMs: 1_000 });
+    const rejected = expect(result).rejects.toThrow("after 1000ms");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejected;
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("caps Retry-After sleeps by the overall wait deadline", async () => {
+    vi.useFakeTimers();
+    const fake = fakeFetch([json(429, problem(429, "QUOTA_EXCEEDED", true), { "retry-after": "30" })]);
+    const result = client(fake.fetch).waitForJob(jobId, { timeoutMs: 1_000 });
+    const rejected = expect(result).rejects.toThrow("after 1000ms");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejected;
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it("rejects terminal responses that arrive after the deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const fake = fakeFetch([() => {
+      vi.setSystemTime(1_001);
+      return new Response(JSON.stringify({ job: job("completed") }), { status: 200 });
+    }]);
+    await expect(client(fake.fetch).waitForJob(jobId, { timeoutMs: 1_000 })).rejects.toThrow("after 1000ms");
+  });
+
+  it("keeps exponential backoff when Retry-After is zero", async () => {
+    vi.useFakeTimers();
+    const fake = fakeFetch([
+      json(503, problem(503, "UNAVAILABLE", true), { "retry-after": "0" }),
+      json(503, problem(503, "UNAVAILABLE", true), { "retry-after": "0" }),
+      json(200, { job: job("completed") }),
+    ]);
+    const sdk = new CrawlumeClient({ baseUrl: "https://control.example/v1", apiKey: "key", projectId,
+      fetch: fake.fetch, retryBaseMs: 100 });
+    const result = sdk.getJob(jobId);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(fake.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(199);
+    expect(fake.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("stops instead of shortening a Retry-After longer than the delay bound", async () => {
+    const fake = fakeFetch([json(503, problem(503, "UNAVAILABLE", true), { "retry-after": "31" })]);
+    await expect(client(fake.fetch).getJob(jobId)).rejects.toMatchObject({ code: "UNAVAILABLE" });
+    expect(fake.calls).toHaveLength(1);
+  });
+
   it("creates a Job with bearer auth and a generated Idempotency-Key", async () => {
     const fake = fakeFetch([json(201, { request_id: "r", job: job("accepted") })]);
     await expect(client(fake.fetch).createJob(request)).resolves.toMatchObject({ id: jobId });

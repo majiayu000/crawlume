@@ -27,7 +27,7 @@ export type CreateJobRequest = ControlPlaneJobRequest & {
   not_before?: string;
 };
 
-export type Job = Omit<CreateJobRequest, "priority" | "not_before"> & {
+type JobResponse<Request> = Request extends CreateJobRequest ? Omit<Request, "priority" | "not_before"> & {
   id: string;
   priority: number;
   not_before: string;
@@ -35,7 +35,9 @@ export type Job = Omit<CreateJobRequest, "priority" | "not_before"> & {
   status: JobStatus;
   result_completeness: "complete" | "partial" | null;
   error_code: string | null;
-};
+} : never;
+
+export type Job = JobResponse<CreateJobRequest>;
 
 export type Publication = {
   id: string;
@@ -107,8 +109,16 @@ export type CrawlumeClientOptions = {
 const terminalStatuses: ReadonlySet<JobStatus> = new Set(["completed", "failed", "cancelled"]);
 const maxRetryDelayMs = 30_000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolveDelay, reject) => {
+    signal?.throwIfAborted();
+    const abort = (): void => { clearTimeout(timer); reject(signal?.reason); };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolveDelay();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function retryAfterMs(response: Response): number | null {
@@ -198,14 +208,34 @@ export class CrawlumeClient {
     const timeoutMs = options.timeoutMs ?? 300_000;
     const intervalMs = options.intervalMs ?? 1_000;
     const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const job = await this.getJob(jobId);
-      if (terminalStatuses.has(job.status)) return job;
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        throw new Error(`Job ${jobId} was still ${job.status} after ${timeoutMs}ms.`);
-      }
-      await delay(Math.min(intervalMs, remaining));
+    const controller = new AbortController();
+    let lastStatus = "unknown";
+    const timeoutError = (): Error => new Error(`Job ${jobId} was still ${lastStatus} after ${timeoutMs}ms.`);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        (async () => {
+          for (;;) {
+            controller.signal.throwIfAborted();
+            if (Date.now() >= deadline) throw timeoutError();
+            const { job } = await this.request<{ job: Job }>("GET", this.jobPath(jobId), { signal: controller.signal });
+            controller.signal.throwIfAborted();
+            lastStatus = job.status;
+            if (Date.now() >= deadline) throw timeoutError();
+            if (terminalStatuses.has(job.status)) return job;
+            await delay(Math.min(intervalMs, deadline - Date.now()), controller.signal);
+          }
+        })(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            const error = timeoutError();
+            controller.abort(error);
+            reject(error);
+          }, Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -216,7 +246,7 @@ export class CrawlumeClient {
   private async request<T>(
     method: "GET" | "POST",
     path: string,
-    options: { body?: unknown; idempotencyKey?: string } = {},
+    options: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal } = {},
   ): Promise<T> {
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -226,13 +256,21 @@ export class CrawlumeClient {
     if (options.idempotencyKey !== undefined) headers["idempotency-key"] = options.idempotencyKey;
     const body = options.body === undefined ? undefined : JSON.stringify(options.body);
     for (let attempt = 0; ; attempt += 1) {
+      options.signal?.throwIfAborted();
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
         headers,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(body === undefined ? {} : { body }),
       });
-      if (response.ok) return await response.json() as T;
+      options.signal?.throwIfAborted();
+      if (response.ok) {
+        const result = await response.json() as T;
+        options.signal?.throwIfAborted();
+        return result;
+      }
       const text = await response.text();
+      options.signal?.throwIfAborted();
       let problem: ProblemDetails | null = null;
       try {
         problem = JSON.parse(text) as ProblemDetails;
@@ -247,7 +285,9 @@ export class CrawlumeClient {
       // Every SDK request is idempotent: GETs, Idempotency-Key creates, and pause/resume/cancel.
       if (!error.retryable || attempt >= this.maxRetries) throw error;
       const backoff = Math.min(maxRetryDelayMs, this.retryBaseMs * 2 ** attempt);
-      await delay(Math.min(maxRetryDelayMs, retryAfterMs(response) ?? backoff));
+      const requiredDelay = Math.max(backoff, retryAfterMs(response) ?? 0);
+      if (requiredDelay > maxRetryDelayMs) throw error;
+      await delay(requiredDelay, options.signal);
     }
   }
 }
