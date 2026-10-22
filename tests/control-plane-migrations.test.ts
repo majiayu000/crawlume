@@ -117,6 +117,7 @@ describe("control-plane migration runner", () => {
       { version: 9, name: "0009_project_creation_idempotency.sql" },
       { version: 10, name: "0010_webhooks.sql" },
       { version: 11, name: "0011_artifact_uploads.sql" },
+      { version: 12, name: "0012_artifact_retention.sql" },
     ]);
   });
 

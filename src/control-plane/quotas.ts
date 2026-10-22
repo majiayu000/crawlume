@@ -98,7 +98,7 @@ export async function enforceJobCreationQuotas(
       ${limits.monthlyBrowserMs === null ? "0" : `(SELECT coalesce(sum(budget_max_browser_ms), 0) FROM jobs
         WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)`}::text AS reserved_browser_ms,
       ${limits.artifactBytes === null ? "0" : `(SELECT coalesce(sum(byte_count), 0) FROM artifact_metadata
-        WHERE project_id = $1)`}::text AS artifact_bytes
+        WHERE project_id = $1 AND storage_kind = 'cloud_object' AND tombstoned_at IS NULL)`}::text AS artifact_bytes
   `, limits.monthlyProviderAttempts !== null || limits.monthlyBrowserMs !== null
     ? [projectId, utcMonthStart(now), new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))]
     : [projectId]);

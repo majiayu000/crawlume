@@ -146,7 +146,10 @@ Crawlume 专用凭证变量。Control Plane 需要该 Bucket 的 `s3:PutObject`�
 每次签发都写 `artifact.downloaded` 审计事件。对象键为
 `organization/{org}/project/{project}/artifact/{artifact}/{version}`，不同 Project 不按内容去重。
 
-Retention 由 Bucket 生命周期规则执行（计划默认 30 天）；数据库侧的 tombstone 与对账清理尚未实现。
+Retention 需要显式开启：设置 `DIAOYAN_ARTIFACT_RETENTION_DAYS`（1–3650）后，Control Plane 每小时先把超过保留期的
+云端 Artifact 标记 tombstone（立即不可下载、不再计入存储配额），再删除对象并记录 `object_deleted_at`；删除失败的
+对象在下一轮继续重试。元数据行保留以维持 publication 历史。需要额外的 `s3:DeleteObject` 权限。未设置时不删除任何
+对象，可改用 Bucket 生命周期规则。
 
 ### Webhook
 

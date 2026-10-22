@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import {
   ArtifactNotFoundError,
+  ArtifactRetentionSweeper,
   ArtifactStorageService,
   ArtifactUploadVerificationError,
   type ArtifactObjectStore,
@@ -46,6 +47,15 @@ class FakeObjectStore implements ArtifactObjectStore {
 
   async presignGet(key: string) {
     return `https://objects.example/${key}?signature=get`;
+  }
+
+  readonly deleted: string[] = [];
+  failDeletes = false;
+
+  async delete(key: string) {
+    if (this.failDeletes) throw new Error("object storage unavailable");
+    this.deleted.push(key);
+    this.objects.delete(key);
   }
 }
 
@@ -273,5 +283,60 @@ describeWithPostgres("cloud Artifact storage on PostgreSQL", () => {
     await expect(artifacts.requestUpload(...lease, published.artifact.id)).rejects.toMatchObject({
       name: "JobResultLeaseFencedError",
     });
+  });
+
+  it("tombstones expired cloud Artifacts, deletes their objects and retries failed deletions", async () => {
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const now = await databaseClock(database!);
+    const jobs = new ControlPlaneJobService(storage, { now: () => now });
+    await jobs.createJob(fixtureProjectKey, "artifact-retention", jobInput("https://example.com/r"), {
+      correlationId: "artifact-retention",
+    });
+    const claim = await jobs.claimNext(fixtureWorker);
+    if (claim === null) throw new Error("The retention Job was not claimed.");
+    const bytes = Buffer.from("expiring artifact");
+    const contentHash = createHash("sha256").update(bytes).digest();
+    const results = new JobResultService(storage);
+    const publish = (localSequence: number) => results.publishResult(fixtureWorker, claim.lease.id, claim.lease.generation, {
+      ...publicationInput(localSequence),
+      contentHash: contentHash.toString("base64url"),
+      byteCount: bytes.byteLength,
+      storage: "cloud_object",
+    });
+    const expired = await publish(1);
+    const fresh = await publish(2);
+    const local = await results.publishResult(fixtureWorker, claim.lease.id, claim.lease.generation, publicationInput(3));
+    await database!.query(
+      "UPDATE artifact_metadata SET created_at = created_at - interval '31 days' WHERE id = ANY($1::uuid[])",
+      [[expired.artifact.id, local.artifact.id]],
+    );
+    const store = new FakeObjectStore();
+    const artifacts = new ArtifactStorageService(storage, store);
+    for (const artifact of [expired.artifact, fresh.artifact]) {
+      store.objects.set(artifact.objectKey!, { byteCount: bytes.byteLength, sha256Base64: contentHash.toString("base64") });
+      await artifacts.confirmUpload(fixtureWorker, claim.lease.id, claim.lease.generation, artifact.id);
+    }
+
+    const sweeper = new ArtifactRetentionSweeper(storage, store, 30);
+    store.failDeletes = true;
+    await expect(sweeper.sweep()).rejects.toThrow("object storage unavailable");
+    await expect(artifacts.downloadUrl(fixtureProjectKey, expired.artifact.id, { correlationId: "d" }))
+      .rejects.toBeInstanceOf(ArtifactNotFoundError);
+
+    store.failDeletes = false;
+    await expect(sweeper.sweep()).resolves.toBe(1);
+    expect(store.deleted).toEqual([expired.artifact.objectKey]);
+    await expect(sweeper.sweep()).resolves.toBe(0);
+    await expect(artifacts.downloadUrl(fixtureProjectKey, fresh.artifact.id, { correlationId: "d" }))
+      .resolves.toMatchObject({ url: expect.stringContaining(fresh.artifact.objectKey!) });
+    const states = await database!.query<{ id: string; tombstoned: boolean; deleted: boolean }>(`
+      SELECT id, tombstoned_at IS NOT NULL AS tombstoned, object_deleted_at IS NOT NULL AS deleted
+      FROM artifact_metadata ORDER BY created_at
+    `);
+    expect(states.rows).toEqual(expect.arrayContaining([
+      { id: expired.artifact.id, tombstoned: true, deleted: true },
+      { id: fresh.artifact.id, tombstoned: false, deleted: false },
+      { id: local.artifact.id, tombstoned: false, deleted: false },
+    ]));
   });
 });
