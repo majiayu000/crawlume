@@ -387,9 +387,7 @@ export class WebhookDispatcher {
     }
     const backoff = Math.min(maxRetryDelayMs, this.retryBaseMs * 2 ** (attempt - 1));
     const delayMs = Math.min(maxRetryDelayMs, parseRetryAfterMs(retryAfter, startedAt.getTime()) ?? backoff);
-    await this.finish(
-      delivery, attempt, startedAt, "pending", statusCode, error, new Date(startedAt.getTime() + delayMs),
-    );
+    await this.finish(delivery, attempt, startedAt, "pending", statusCode, error, delayMs);
   }
 
   private async finish(
@@ -399,7 +397,7 @@ export class WebhookDispatcher {
     status: "pending" | "succeeded" | "dead_letter",
     statusCode: number | null,
     error: string | null,
-    nextAttemptAt: Date | null,
+    retryDelayMs: number | null,
   ): Promise<void> {
     const durationMs = Math.max(0, this.now().getTime() - startedAt.getTime());
     await this.database.transaction(async (transaction) => {
@@ -409,10 +407,12 @@ export class WebhookDispatcher {
       `, [delivery.id, attempt, statusCode, error === null ? null : truncate(error), startedAt, durationMs]);
       await transaction.query(`
         UPDATE webhook_deliveries SET status = $2, attempt_count = $3, last_status_code = $4,
-          last_error = $5, next_attempt_at = COALESCE($6, next_attempt_at), locked_until = NULL,
+          last_error = $5, locked_until = NULL,
+          next_attempt_at = CASE WHEN $6::bigint IS NULL THEN next_attempt_at
+            ELSE clock_timestamp() + ($6::bigint * interval '1 millisecond') END,
           updated_at = clock_timestamp()
         WHERE id = $1
-      `, [delivery.id, status, attempt, statusCode, error === null ? null : truncate(error), nextAttemptAt]);
+      `, [delivery.id, status, attempt, statusCode, error === null ? null : truncate(error), retryDelayMs]);
     });
   }
 }
