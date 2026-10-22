@@ -762,6 +762,39 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     });
   });
 
+  it("serializes concurrent idempotent replays before charging creation quotas", async () => {
+    const jobs = new ControlPlaneJobService(new PostgresControlPlaneDatabase(database!), {
+      quotas: { ...unlimitedProjectQuotas, activeJobs: 1, monthlyProviderAttempts: 2 },
+    });
+    const input = jobInput("https://example.com/concurrent-quota");
+    const results = await Promise.all([
+      jobs.createJob(fixtureProjectKey, "concurrent-quota", input, { correlationId: "quota-a" }),
+      jobs.createJob(fixtureProjectKey, "concurrent-quota", input, { correlationId: "quota-b" }),
+    ]);
+    expect(results[0]?.id).toBe(results[1]?.id);
+    expect((await database!.query<{ count: string }>("SELECT count(*)::text AS count FROM jobs")).rows[0]?.count).toBe("1");
+  });
+
+  it.each([-1, 1])("uses the locked database month when the app clock is %s month away", async (offset) => {
+    const clock = await databaseClock(database!);
+    const skewed = new Date(Date.UTC(clock.getUTCFullYear(), clock.getUTCMonth() + offset, 15));
+    const jobs = new ControlPlaneJobService(new PostgresControlPlaneDatabase(database!), {
+      now: () => skewed,
+      quotas: { ...unlimitedProjectQuotas, monthlyProviderAttempts: 3 },
+    });
+    const created = await jobs.createJob(fixtureProjectKey, "database-month-first", jobInput("https://example.com/month-first"),
+      { correlationId: "database-month" });
+    expect(Math.abs(created.createdAt.getTime() - clock.getTime())).toBeLessThan(10_000);
+    const failure = await jobs.createJob(fixtureProjectKey, "database-month-second", jobInput("https://example.com/month-second"),
+      { correlationId: "database-month" }).catch((error: unknown) => error);
+    const after = await databaseClock(database!);
+    const nextMonth = Date.UTC(after.getUTCFullYear(), after.getUTCMonth() + 1, 1);
+    expect(failure).toMatchObject({ code: "QUOTA_EXCEEDED", quota: "monthlyProviderAttempts" });
+    const resetSeconds = (failure as { retryAfterSeconds: number }).retryAfterSeconds;
+    expect(resetSeconds).toBeGreaterThanOrEqual(Math.ceil((nextMonth - after.getTime()) / 1_000));
+    expect(resetSeconds).toBeLessThanOrEqual(Math.ceil((nextMonth - clock.getTime()) / 1_000));
+  });
+
   it("enforces Project quotas at creation without charging idempotent replays", async () => {
     const storage = new PostgresControlPlaneDatabase(database!);
     const now = await databaseClock(database!);

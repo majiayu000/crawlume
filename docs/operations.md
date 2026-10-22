@@ -172,3 +172,8 @@ Human access-token 和 Worker session 各自匹配、且两组互异的 Ed25519 
 | 启动报 `... must be an integer between ...` | 环境变量越界 | 按第 3 节修正 |
 | stderr 出现 SQLite `ExperimentalWarning` | Node 24 中 `node:sqlite` 仍标为实验特性 | 无害；可加 `--disable-warning=ExperimentalWarning` |
 | `/metrics` 返回 500 | 聚合表读取失败 | 检查磁盘、权限和 SQLite 锁 |
+
+配额边界：`DIAOYAN_QUOTA_ARTIFACT_BYTES` 只在新建 Job 时检查当前已登记的 artifact 字节，
+不预留未来产物空间，也不在写入产物时强制存储硬上限。`DIAOYAN_QUOTA_API_REQUESTS_PER_MINUTE`
+按每个 Control Plane 进程内的 API key 计数，多实例部署不共享计数；不能据此宣称全局请求上限。
+月度预算以获取 Project 锁之后的 PostgreSQL 时钟和 UTC 月界计算。

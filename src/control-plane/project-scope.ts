@@ -461,37 +461,47 @@ export class ControlPlaneJobService {
       requireIdentifier(input.placement.pinnedWorkerId, "input.placement.pinnedWorkerId");
     }
 
-    const now = this.now();
-    const notBefore = input.notBefore ?? now;
-    if (!(notBefore instanceof Date) || !Number.isFinite(notBefore.getTime()) || notBefore < now) {
-      throw new TypeError("input.notBefore must be a valid date at or after creation.");
-    }
-    const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
-    if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
-      throw new TypeError("The Job deadline must be after notBefore.");
-    }
-
-    const request = {
-      type: parsedCreation.type,
-      input: jobInput.value,
-      dataClass: input.dataClass,
-      placement: input.placement,
-      requiredCapabilities: capabilities.value,
-      budget: input.budget,
-      policyVersion,
-      uploadPrivateArtifact: input.uploadPrivateArtifact,
-      priority,
-      notBefore: input.notBefore?.toISOString() ?? null,
-    };
-    const requestHash = jobHash(request);
-    const id = randomUUID();
-    const envelopeHash = jobHash({
-      id,
-      projectId: scope.projectId,
-      requestHash: requestHash.toString("base64url"),
-      createdAt: now.toISOString(),
-    });
     return this.database.transaction(async (transaction) => {
+      let now = this.now();
+      if (hasJobCreationQuotas(this.quotas)) {
+        await transaction.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
+          [scope.projectId],
+        );
+        const clock = await transaction.query<{ now: Date }>("SELECT clock_timestamp() AS now", []);
+        const databaseNow = clock.rows[0]?.now;
+        if (!(databaseNow instanceof Date)) throw new Error("Project quota clock query returned no timestamp.");
+        now = databaseNow;
+      }
+      const notBefore = input.notBefore ?? now;
+      if (!(notBefore instanceof Date) || !Number.isFinite(notBefore.getTime()) || notBefore < now) {
+        throw new TypeError("input.notBefore must be a valid date at or after creation.");
+      }
+      const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
+      if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
+        throw new TypeError("The Job deadline must be after notBefore.");
+      }
+
+      const request = {
+        type: parsedCreation.type,
+        input: jobInput.value,
+        dataClass: input.dataClass,
+        placement: input.placement,
+        requiredCapabilities: capabilities.value,
+        budget: input.budget,
+        policyVersion,
+        uploadPrivateArtifact: input.uploadPrivateArtifact,
+        priority,
+        notBefore: input.notBefore?.toISOString() ?? null,
+      };
+      const requestHash = jobHash(request);
+      const id = randomUUID();
+      const envelopeHash = jobHash({
+        id,
+        projectId: scope.projectId,
+        requestHash: requestHash.toString("base64url"),
+        createdAt: now.toISOString(),
+      });
       if (hasJobCreationQuotas(this.quotas)) {
         const replay = await transaction.query<{ id: string }>(
           "SELECT id FROM jobs WHERE project_id = $1 AND idempotency_key = $2",

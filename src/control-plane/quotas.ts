@@ -76,7 +76,8 @@ export function hasJobCreationQuotas(limits: ProjectQuotaLimits): boolean {
 /**
  * Checks a new Job against the Project quotas inside the creating transaction. Monthly quotas count
  * the budgets reserved by Jobs created this UTC month, so a Job can never exceed them at run time.
- * The per-Project advisory lock serializes concurrent creations for an exact count.
+ * Caller holds the per-Project advisory lock and supplies clock_timestamp() read after locking.
+ * Artifact bytes is a creation admission check, not a hard storage-write limit.
  */
 export async function enforceJobCreationQuotas(
   transaction: ControlPlaneQuery,
@@ -86,10 +87,6 @@ export async function enforceJobCreationQuotas(
   now: Date,
 ): Promise<void> {
   if (!hasJobCreationQuotas(limits)) return;
-  await transaction.query(
-    "SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
-    [projectId],
-  );
   const result = await transaction.query<QuotaUsageRow>(`
     SELECT
       (SELECT count(*) FROM jobs
