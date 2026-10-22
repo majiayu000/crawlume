@@ -28,6 +28,7 @@ import {
   PostgresControlPlaneDatabase,
   startControlPlaneRuntime,
 } from "../src/server.js";
+import { trackPoolErrors } from "./helpers.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
 const describeWithPostgres = configuredDatabaseUrl === undefined ? describe.skip : describe;
@@ -257,6 +258,11 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
   let administration: Pool;
   let database: Pool | undefined;
   let databaseName: string | undefined;
+  const unexpectedPoolErrors: unknown[] = [];
+
+  function testPool(connectionString: string, max: number): Pool {
+    return trackPoolErrors(new Pool({ connectionString, max }), unexpectedPoolErrors);
+  }
 
   beforeAll(async () => {
     administration = new Pool({ connectionString: requiredDatabaseUrl(), max: 1 });
@@ -266,7 +272,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
   beforeEach(async () => {
     databaseName = `diaoyan_test_${randomUUID().replaceAll("-", "")}`;
     await administration.query(`CREATE DATABASE ${quotedTestDatabase(databaseName)}`);
-    database = new Pool({ connectionString: databaseUrl(databaseName), max: 2 });
+    database = testPool(databaseUrl(databaseName), 2);
     await database.query("SELECT 1");
     const clock = await database.query<{ now: Date }>("SELECT clock_timestamp() AS now");
     const now = clock.rows[0]?.now;
@@ -297,6 +303,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     } catch (error) {
       cleanupErrors.push(error);
     }
+    cleanupErrors.push(...unexpectedPoolErrors.splice(0));
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "PostgreSQL integration test cleanup failed.");
     }
@@ -709,7 +716,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       await restartedRuntime.close();
     }
 
-    database = new Pool({ connectionString, max: 2 });
+    database = testPool(connectionString, 2);
     await database.query("SELECT 1");
     const restartedStorage = new PostgresControlPlaneDatabase(database);
     const restartedJobs = new ControlPlaneJobService(restartedStorage, { now: () => fixtureNow });
