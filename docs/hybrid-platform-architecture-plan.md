@@ -1404,8 +1404,8 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [ ] CI/CD 和受保护发布。CI 已完成（`.github/workflows/ci.yml`）；受保护发布未实现。
 - [x] Schema migration。`migrations/control-plane/`，启动时 `runControlPlaneMigrations`，`control-plane-migrations.test.ts`。
 - [ ] Backup/restore。本地 SQLite 已完成（`crawlume backup`/`restore`，见 `operations.md`）；PostgreSQL 依赖数据库自身方案，未做演练。
-- [ ] 7 天稳定性试验。
-- [ ] 300,000 页压力测试。
+- [ ] 7 天稳定性试验。运行器与通过条件见 `soak-capacity-spec.md`；尚无 7 天运行证据。
+- [ ] 300,000 页压力测试。运行器见 `soak-capacity-spec.md`；尚无完整运行证据。
 - [ ] 私有 Release Corpus。
 - [ ] 灰度和回滚。
 

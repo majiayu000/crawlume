@@ -30,6 +30,7 @@
     "bench:faults": "vitest run tests/controlled-fault-matrix.test.ts",
     "bench:http": "tsx benchmarks/harness/summary.ts",
     "bench:readiness": "tsx benchmarks/controlled-site/server.ts --runner readiness-tournament",
+    "bench:soak": "tsx benchmarks/soak/runner.ts",
     "cli": "tsx src/cli/main.ts",
     "smoke": "tsx src/cli/smoke.ts",
     "trial:docs": "node benchmarks/docs-trial/run.mjs"
