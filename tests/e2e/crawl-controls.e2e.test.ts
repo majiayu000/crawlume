@@ -328,6 +328,7 @@ describe("durable crawl controls through the built MCP process", () => {
     try {
       process = await startBuiltMcpProcess({
         dataDirectory,
+        controlledDns: true,
         environment: {
           ...processEnvironment(site.proxyUrl),
           CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "1000",

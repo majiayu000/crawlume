@@ -74,3 +74,14 @@ export class StubFetcher implements PageFetcher {
     return this.response;
   }
 }
+
+// DROP DATABASE ... WITH (FORCE) terminates idle test connections with 57P01; collect anything else.
+export function trackPoolErrors<T extends { on(event: "error", listener: (error: Error) => void): unknown }>(
+  pool: T,
+  unexpected: unknown[],
+): T {
+  pool.on("error", (error) => {
+    if ((error as { code?: string }).code !== "57P01") unexpected.push(error);
+  });
+  return pool;
+}

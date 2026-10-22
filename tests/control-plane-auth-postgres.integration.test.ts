@@ -34,6 +34,7 @@ import {
   type ProjectScope,
 } from "../src/control-plane/project-scope.js";
 import { PostgresControlPlaneDatabase } from "../src/server.js";
+import { trackPoolErrors } from "./helpers.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
 const describeWithPostgres = configuredDatabaseUrl === undefined ? describe.skip : describe;
@@ -174,6 +175,7 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
   let administration: Pool;
   let databaseName: string | undefined;
   let fixturePool: Pool | undefined;
+  const unexpectedPoolErrors: unknown[] = [];
   let fixtureDatabase: PostgresControlPlaneDatabase;
   let scope: ProjectScope;
   let workerTokenKeys: GenerateKeyPairResult;
@@ -215,7 +217,10 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
     now = new Date();
     databaseName = `diaoyan_auth_test_${randomUUID().replaceAll("-", "")}`;
     await administration.query(`CREATE DATABASE ${quotedTestDatabase(databaseName)}`);
-    fixturePool = new Pool({ connectionString: databaseUrl(databaseName), max: 2 });
+    fixturePool = trackPoolErrors(
+      new Pool({ connectionString: databaseUrl(databaseName), max: 2 }),
+      unexpectedPoolErrors,
+    );
     fixtureDatabase = new PostgresControlPlaneDatabase(fixturePool);
     await runControlPlaneMigrations(fixtureDatabase);
     await fixtureDatabase.query(`
@@ -257,6 +262,7 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
       }
       databaseName = undefined;
     }
+    cleanupErrors.push(...unexpectedPoolErrors.splice(0));
     if (cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, "PostgreSQL auth test cleanup failed.");
     }
@@ -268,7 +274,10 @@ describeWithPostgres("control-plane authentication on PostgreSQL", () => {
 
   function observedDatabase(): ObservedPostgresDatabase {
     if (databaseName === undefined) throw new Error("The test database has not been created.");
-    const pool = new Pool({ connectionString: databaseUrl(databaseName), max: 1 });
+    const pool = trackPoolErrors(
+      new Pool({ connectionString: databaseUrl(databaseName), max: 1 }),
+      unexpectedPoolErrors,
+    );
     auxiliaryPools.push(pool);
     return new ObservedPostgresDatabase(pool);
   }

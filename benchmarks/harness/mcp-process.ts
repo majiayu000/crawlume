@@ -9,7 +9,10 @@ export type McpProcessOptions = {
   dataDirectory: string;
   environment?: Record<string, string>;
   cwd?: string;
+  controlledDns?: boolean;
 };
+
+const controlledDnsModule = new URL("./controlled-dns.mjs", import.meta.url).href;
 
 export type BuiltMcpProcess = {
   client: Client;
@@ -75,7 +78,7 @@ export async function startBuiltMcpProcess(options: McpProcessOptions): Promise<
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [serverPath],
+    args: options.controlledDns === true ? ["--import", controlledDnsModule, serverPath] : [serverPath],
     cwd,
     env: {
       ...inheritedEnvironment(),
