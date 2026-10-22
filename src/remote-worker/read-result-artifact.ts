@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 import type { ReadPageResult } from "../types.js";
 
-const mediaType = "application/vnd.diaoyan.public-read-result+json;version=1";
+export const publicReadResultMediaType = "application/vnd.diaoyan.public-read-result+json;version=1";
+const mediaType = publicReadResultMediaType;
 
 export type PublicReadResultArtifact = Readonly<{
   bytes: Uint8Array;

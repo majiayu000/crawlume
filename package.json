@@ -22,7 +22,8 @@
   "bin": {
     "crawlume": "./dist/cli/main.js",
     "crawlume-mcp": "./dist/server.js",
-    "crawlume-auth": "./dist/cli/auth.js"
+    "crawlume-auth": "./dist/cli/auth.js",
+    "crawlume-worker": "./dist/cli/worker.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
