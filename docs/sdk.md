@@ -44,3 +44,6 @@ for await (const publication of client.publications(job.id)) {
 - `publications()` 按服务端 cursor 依次返回全部 publication；`waitForJob()` 轮询到终态，超时抛错。
 
 Webhook 验签 helper 随 Webhook 投递一起提供。
+
+`waitForJob` 的总超时包含 fetch、响应读取、重试等待与轮询等待，超时会中止在途请求。
+重试等待取指数退避与 `Retry-After` 的较大值；服务端要求超过 30 秒时直接返回该错误，不提前重试。
