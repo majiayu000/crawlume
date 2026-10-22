@@ -35,6 +35,7 @@ export type DurableCrawlSite = {
   proxyUrl: string;
   targetOrigin: string;
   seedUrl: string;
+  startBatch(pages: number): string;
   stats(): DurableCrawlStats;
   waitForPageRequests(minimum: number, timeoutMs?: number): Promise<DurableCrawlStats>;
   releasePage(page: number): void;
@@ -135,9 +136,9 @@ function pageHtml(
 export async function createDurableCrawlSite(
   options: DurableCrawlSiteOptions,
 ): Promise<DurableCrawlSite> {
-  const pages = positiveInteger(options.pages, "pages");
+  let pages = positiveInteger(options.pages, "pages");
   const bodyBytes = positiveInteger(options.bodyBytes ?? 2_048, "bodyBytes");
-  const runPath = `/__durable/${randomUUID()}`;
+  let runPath = `/__durable/${randomUUID()}`;
   const dynamicPages = options.dynamicPages ?? false;
   const alternateSubdomainPages = options.alternateSubdomainPages ?? false;
   const rateLimitPage = options.rateLimitPage;
@@ -337,6 +338,15 @@ export async function createDurableCrawlSite(
     proxyUrl: `http://127.0.0.1:${proxyPort}`,
     targetOrigin: publicTargetOrigin,
     seedUrl: `${publicTargetOrigin}${runPath}/page/0`,
+    startBatch(nextPages) {
+      if (stats.activePageRequests !== 0) throw new Error("cannot replace an active batch");
+      pages = positiveInteger(nextPages, "pages");
+      runPath = `/__durable/${randomUUID()}`;
+      stats.requestsByPage = {};
+      stats.pageStartTimesMs = {};
+      stats.pageStartTimesByOrigin = {};
+      return `${publicTargetOrigin}${runPath}/page/0`;
+    },
     stats: () => cloneStats(stats),
     waitForPageRequests(minimum, timeoutMs = 10_000) {
       positiveInteger(minimum, "minimum");

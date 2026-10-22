@@ -12,7 +12,7 @@
 |---|---|---|
 | `--duration-minutes` | 10 | 运行时长上限，最多 20,160（14 天） |
 | `--total-pages` | 0 | 达到页数即停止；0 表示跑满时长 |
-| `--pages-per-job` | 1000 | 每个 job 的页数，2–10,000 |
+| `--pages-per-job` | 1000 | 每个 job 的页数，1–10,000 |
 | `--concurrency` | 16 | job 并发与全局 Worker 并发 |
 | `--sample-seconds` | 30 | RSS 采样间隔 |
 | `--max-rss-growth-percent` | 50 | 内存增长门槛 |
@@ -36,6 +36,12 @@ GitHub Actions 的 `Soak` workflow 可手动触发最长 6 小时的运行并上
 2. 采样不少于 8 个时，后 1/4 采样的 RSS 中位数相对前 1/4 的增长不超过门槛。
 3. 设置 `--total-pages` 时，在时长上限内完成全部页数。
 4. 采样或调用本身失败按失败处理，不跳过。
+5. `--total-pages > 0` 开启本地索引，每个 job 使用独立 URL 批次；读回 distinct final URL、历史 URL 和
+   FTS `durable` 命中数，必须都等于目标页数。300,000 页时另验证已有 URL 仍可更新，新 URL 返回
+   `BUDGET_EXHAUSTED`。超过索引容量的目标会失败。
+
+时长限制贯穿 start、poll 和容量验证，超时结果不计为成功；吞吐计时在 teardown 之前结束。
+每次运行重置 `samples.jsonl`；受控站点每批清空请求历史，RSS 峰值迭代计算，内存只保留 RSS 数值序列。
 
 ## 边界
 
