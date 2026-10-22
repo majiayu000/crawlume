@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const failures = vi.hoisted(() => ({ metadataWrite: false, cleanup: false, hardLinks: false, backupCalls: 0 }));
+const failures = vi.hoisted(() => ({ metadataWrite: false, cleanup: false, hardLinks: false, backupCalls: 0, pendingUnlink: false }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
@@ -14,6 +14,9 @@ vi.mock("node:fs", async (importOriginal) => {
   }, rmSync: (...args: Parameters<typeof actual.rmSync>) => {
     if (failures.cleanup && String(args[0]).includes(".crawlume-backup-")) throw new Error("cleanup denied");
     return actual.rmSync(...args);
+  }, unlinkSync: (...args: Parameters<typeof actual.unlinkSync>) => {
+    if (failures.pendingUnlink && String(args[0]).endsWith(".tmp")) throw new Error("pending unlink denied");
+    return actual.unlinkSync(...args);
   }, linkSync: (...args: Parameters<typeof actual.linkSync>) => {
     if (failures.hardLinks) throw Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" });
     return actual.linkSync(...args);
@@ -37,6 +40,7 @@ afterEach(() => {
   failures.cleanup = false;
   failures.hardLinks = false;
   failures.backupCalls = 0;
+  failures.pendingUnlink = false;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   while (directories.length > 0) {
@@ -216,6 +220,26 @@ describe("crawlume CLI", () => {
       backupPath: resolve("out/cache.sqlite"),
       targetPath: resolve("restored.sqlite"),
     });
+  });
+
+  it("reports restore success when the shared helper cannot remove its pending link", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-restore-cleanup-"));
+    directories.push(directory);
+    vi.stubEnv("CRAWLUME_DATA_DIR", directory);
+    const source = new DatabaseSync(join(directory, "cache.sqlite"));
+    source.exec("CREATE TABLE pages(id INTEGER PRIMARY KEY) STRICT;");
+    source.close();
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const backupPath = join(directory, "backup.sqlite");
+    expect(await main(["backup", backupPath])).toBe(0);
+    failures.pendingUnlink = true;
+    const targetPath = join(directory, "restored.sqlite");
+    expect(await main(["restore", backupPath, targetPath])).toBe(0);
+    const restored = new DatabaseSync(targetPath, { readOnly: true });
+    try { expect(restored.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" }); }
+    finally { restored.close(); }
+    expect(errors.mock.calls.some(([text]) => String(text).includes('"event":"sqlite.temporary_file.cleanup_failed"'))).toBe(true);
   });
 
   it("retains a restorable success when staging cleanup fails", async () => {
