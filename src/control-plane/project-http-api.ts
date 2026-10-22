@@ -28,11 +28,6 @@ import {
   type CreateControlPlaneJobInput,
   type ControlPlaneJobService,
 } from "./project-scope.js";
-import {
-  ArtifactNotFoundError,
-  ArtifactStorageDisabledError,
-  type ArtifactStorageService,
-} from "./artifact-storage.js";
 import { QuotaExceededError, type ApiRequestRateLimiter } from "./quotas.js";
 import {
   WebhookQueryError,
@@ -63,7 +58,6 @@ type ProjectJobHttpServices = Readonly<{
     input: Readonly<{ limit: number; before: AuditCursor | null }>,
   ): Promise<readonly AuditEvent[]>;
   webhooks?: WebhookHttpServices;
-  artifacts?: Pick<ArtifactStorageService, "downloadUrl">;
 }>;
 
 type ProjectJobHttpDependencies = Readonly<{
@@ -122,7 +116,6 @@ type ProjectJobRoute =
   | Readonly<{ kind: "resume"; method: "POST"; projectId: string; jobId: string }>
   | Readonly<{ kind: "cancel"; method: "POST"; projectId: string; jobId: string }>
   | Readonly<{ kind: "publications"; method: "GET"; projectId: string; jobId: string }>
-  | Readonly<{ kind: "artifact-download"; method: "GET"; projectId: string; artifactId: string }>
   | Readonly<{ kind: "audit"; method: "GET"; projectId: string }>;
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 const safePositiveInteger = z.number().int().positive().safe();
@@ -167,9 +160,6 @@ function matchProjectJobRoute(path: string): ProjectJobRoute | null {
     }
     const jobId = matched?.[2];
     if (jobId === undefined) continue;
-    if (definition.kind === "artifact-download") {
-      return { kind: definition.kind, method: definition.method, projectId, artifactId: jobId };
-    }
     if (definition.kind === "get") {
       return { kind: definition.kind, method: definition.method, projectId, jobId };
     }
@@ -380,14 +370,6 @@ export class ProjectJobHttpApi {
           job: wireJob(found),
         });
       }
-      if (route.kind === "artifact-download") {
-        requireProjectApiKeyScope(identity, "results:read");
-        if (this.services.artifacts === undefined) throw new ArtifactStorageDisabledError();
-        const download = await this.services.artifacts.downloadUrl(identity, route.artifactId, context);
-        return projectResponse(200, requestId, {
-          request_id: requestId, url: download.url, expires_at: download.expiresAt.toISOString(),
-        }, { "cache-control": "no-store" });
-      }
       if (route.kind === "publications") {
         requireProjectApiKeyScope(identity, "results:read");
         const query = publicationQuery(request.query ?? "");
@@ -518,12 +500,6 @@ export class ProjectJobHttpApi {
     if (error instanceof JobTransitionError) {
       return projectProblem(request, requestId, 409, error.code, "Job Transition Invalid",
         error.message);
-    }
-    if (error instanceof ArtifactStorageDisabledError) {
-      return projectProblem(request, requestId, 503, error.code, "Artifact Storage Disabled", error.message);
-    }
-    if (error instanceof ArtifactNotFoundError) {
-      return projectProblem(request, requestId, 404, error.code, "Artifact Not Found", error.message);
     }
     if (error instanceof WebhooksDisabledError) {
       return projectProblem(request, requestId, 503, error.code, "Webhooks Disabled", error.message);

@@ -45,13 +45,6 @@ export const projectJobRouteDefinitions = [
     pattern: new RegExp(`^/v1/projects/${uuidPath}/jobs/${uuidPath}/publications$`, "u"),
   },
   {
-    kind: "artifact-download",
-    method: "GET",
-    path: "/projects/{project_id}/artifacts/{artifact_id}/download",
-    operationId: "getProjectArtifactDownload",
-    pattern: new RegExp(`^/v1/projects/${uuidPath}/artifacts/${uuidPath}/download$`, "u"),
-  },
-  {
     kind: "audit",
     method: "GET",
     path: "/projects/{project_id}/audit-events",
@@ -252,20 +245,6 @@ export const workerRouteDefinitions = [
     method: "POST",
     path: "/job-leases/{lease_id}/complete",
     operationId: "completeJobLease",
-  },
-  {
-    pattern: new RegExp(`^/v1/job-leases/${uuidPath}/artifact-uploads$`, "u"),
-    kind: "artifact-upload",
-    method: "POST",
-    path: "/job-leases/{lease_id}/artifact-uploads",
-    operationId: "requestArtifactUpload",
-  },
-  {
-    pattern: new RegExp(`^/v1/job-leases/${uuidPath}/artifact-uploads/confirm$`, "u"),
-    kind: "artifact-confirm",
-    method: "POST",
-    path: "/job-leases/{lease_id}/artifact-uploads/confirm",
-    operationId: "confirmArtifactUpload",
   },
 ] as const;
 

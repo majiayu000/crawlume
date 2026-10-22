@@ -37,11 +37,6 @@ import {
   PrivateArtifactUploadDeniedError,
   recordAuditEvent,
 } from "./organization-authorization.js";
-import {
-  ArtifactStorageDisabledError,
-  ArtifactUploadVerificationError,
-  type ArtifactStorageService,
-} from "./artifact-storage.js";
 import { workerRouteDefinitions } from "./router-contract.js";
 
 export { OrganizationAccessDeniedError } from "./organization-authorization.js";
@@ -347,7 +342,6 @@ type WorkerHttpServices = Readonly<{
   identity: Pick<WorkerIdentityService, "verifySession">;
   jobs: Pick<ControlPlaneJobService, "claimNext" | "heartbeat" | "complete">;
   results: Pick<JobResultService, "appendEvent" | "publishResult">;
-  artifacts?: Pick<ArtifactStorageService, "requestUpload" | "confirmUpload">;
 }>;
 
 type WorkerHttpDependencies = Readonly<{
@@ -361,8 +355,7 @@ type WorkerRoute =
   | Readonly<{ kind: "heartbeat"; identifier: string; method: "PATCH" }>
   | Readonly<{ kind: "event"; identifier: string; method: "POST" }>
   | Readonly<{ kind: "publication"; identifier: string; method: "POST" }>
-  | Readonly<{ kind: "complete"; identifier: string; method: "POST" }>
-  | Readonly<{ kind: "artifact-upload" | "artifact-confirm"; identifier: string; method: "POST" }>;
+  | Readonly<{ kind: "complete"; identifier: string; method: "POST" }>;
 
 type WorkerProblem = Readonly<{
   type: string;
@@ -413,7 +406,6 @@ const publicationBodySchema = z.object({
   completeness: z.enum(["complete", "partial"]),
   storage: z.enum(["worker_local", "cloud_object"]),
 }).strict();
-const artifactUploadBodySchema = z.object({ generation: generationSchema, artifact_id: z.uuid() }).strict();
 const completeBodySchema = z.discriminatedUnion("status", [
   z.object({
     generation: generationSchema,
@@ -701,22 +693,6 @@ export class WorkerHttpApi {
         publication: wirePublication(publication),
       });
     }
-    if (route.kind === "artifact-upload" || route.kind === "artifact-confirm") {
-      const body = artifactUploadBodySchema.parse(request.body);
-      if (this.services.artifacts === undefined) throw new ArtifactStorageDisabledError();
-      if (route.kind === "artifact-confirm") {
-        const uploadedAt = await this.services.artifacts.confirmUpload(
-          identity, route.identifier, body.generation, body.artifact_id,
-        );
-        return workerResponse(200, requestId, { request_id: requestId, uploaded_at: uploadedAt.toISOString() });
-      }
-      const upload = await this.services.artifacts.requestUpload(
-        identity, route.identifier, body.generation, body.artifact_id,
-      );
-      return workerResponse(201, requestId, { request_id: requestId, upload: {
-        url: upload.url, method: upload.method, headers: upload.headers, expires_at: upload.expiresAt.toISOString(),
-      } });
-    }
     const body = completeBodySchema.parse(request.body);
     const job = await this.services.jobs.complete(identity, route.identifier, body.generation, {
       status: body.status,
@@ -748,12 +724,6 @@ export class WorkerHttpApi {
     if (error instanceof LeaseFencedError || error instanceof JobResultLeaseFencedError) {
       return workerProblem(request, requestId, 409, "JOB_LEASE_FENCED", "Job Lease Fenced",
         "The Job Lease is inactive, expired, or superseded.", false);
-    }
-    if (error instanceof ArtifactStorageDisabledError) {
-      return workerProblem(request, requestId, 503, error.code, "Artifact Storage Disabled", error.message, false);
-    }
-    if (error instanceof ArtifactUploadVerificationError) {
-      return workerProblem(request, requestId, 409, error.code, "Artifact Upload Unverified", error.message, true);
     }
     if (error instanceof JobResultIdempotencyConflictError) {
       return workerProblem(request, requestId, 409, error.code, "Idempotency Conflict",

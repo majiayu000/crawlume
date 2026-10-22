@@ -125,7 +125,7 @@ export type JobPublicationPage = Readonly<{
   nextSequence: number | null;
 }>;
 
-export type SubmissionLease = {
+type SubmissionLeaseRow = {
   job_id: string;
   organization_id: string;
   data_class: JobDataClass;
@@ -373,8 +373,8 @@ export class JobResultService {
     const normalized = this.validateEvent(leaseId, leaseGeneration, input);
     const hash = payloadHash(normalized);
     return this.database.transaction(async (transaction) => {
-      await requireActiveResultWorkerSession(transaction, identity);
-      const lease = await lockResultSubmissionLease(
+      await this.requireActiveWorkerSession(transaction, identity);
+      const lease = await this.lockSubmissionLease(
         transaction, identity, leaseId, leaseGeneration,
       );
       const existing = await transaction.query<JobEventRow>(`
@@ -424,8 +424,8 @@ export class JobResultService {
     const normalized = this.validatePublication(leaseId, leaseGeneration, input);
     const hash = payloadHash(normalized);
     return this.database.transaction(async (transaction) => {
-      await requireActiveResultWorkerSession(transaction, identity);
-      const lease = await lockResultSubmissionLease(
+      await this.requireActiveWorkerSession(transaction, identity);
+      const lease = await this.lockSubmissionLease(
         transaction, identity, leaseId, leaseGeneration,
       );
       if (normalized.storage === "cloud_object" && lease.data_class !== "public" &&
@@ -606,64 +606,64 @@ export class JobResultService {
       storage: input.storage,
     };
   }
-}
 
-export async function requireActiveResultWorkerSession(
-  transaction: ControlPlaneQuery,
-  identity: AuthenticatedWorker,
-): Promise<void> {
-  const active = await transaction.query<{ id: string }>(`
-    SELECT worker_sessions.id
-    FROM worker_sessions
-    INNER JOIN workers ON workers.id = worker_sessions.worker_id
-      AND workers.project_id = worker_sessions.project_id
-    INNER JOIN worker_public_keys ON worker_public_keys.id = worker_sessions.public_key_id
-      AND worker_public_keys.worker_id = worker_sessions.worker_id
-      AND worker_public_keys.project_id = worker_sessions.project_id
-    WHERE worker_sessions.id = $1 AND worker_sessions.worker_id = $2
-      AND worker_sessions.project_id = $3 AND worker_sessions.capability_hash = $4
-      AND workers.capability_hash = $4 AND worker_sessions.revoked_at IS NULL
-      AND worker_sessions.expires_at > CURRENT_TIMESTAMP AND workers.status = 'active'
-      AND worker_public_keys.revoked_at IS NULL
-    FOR SHARE OF worker_sessions, workers, worker_public_keys
-  `, [
-    identity.sessionId,
-    identity.workerId,
-    identity.projectId,
-    Buffer.from(identity.capabilityHash, "base64url"),
-  ]);
-  if (active.rows[0] === undefined) throw new JobResultWorkerAccessDeniedError();
-}
+  private async requireActiveWorkerSession(
+    transaction: ControlPlaneQuery,
+    identity: AuthenticatedWorker,
+  ): Promise<void> {
+    const active = await transaction.query<{ id: string }>(`
+      SELECT worker_sessions.id
+      FROM worker_sessions
+      INNER JOIN workers ON workers.id = worker_sessions.worker_id
+        AND workers.project_id = worker_sessions.project_id
+      INNER JOIN worker_public_keys ON worker_public_keys.id = worker_sessions.public_key_id
+        AND worker_public_keys.worker_id = worker_sessions.worker_id
+        AND worker_public_keys.project_id = worker_sessions.project_id
+      WHERE worker_sessions.id = $1 AND worker_sessions.worker_id = $2
+        AND worker_sessions.project_id = $3 AND worker_sessions.capability_hash = $4
+        AND workers.capability_hash = $4 AND worker_sessions.revoked_at IS NULL
+        AND worker_sessions.expires_at > CURRENT_TIMESTAMP AND workers.status = 'active'
+        AND worker_public_keys.revoked_at IS NULL
+      FOR SHARE OF worker_sessions, workers, worker_public_keys
+    `, [
+      identity.sessionId,
+      identity.workerId,
+      identity.projectId,
+      Buffer.from(identity.capabilityHash, "base64url"),
+    ]);
+    if (active.rows[0] === undefined) throw new JobResultWorkerAccessDeniedError();
+  }
 
-export async function lockResultSubmissionLease(
-  transaction: ControlPlaneQuery,
-  identity: AuthenticatedWorker,
-  leaseId: string,
-  leaseGeneration: number,
-): Promise<SubmissionLease> {
-  const locked = await transaction.query<{ job_id: string }>(`
-    SELECT job_id FROM job_leases
-    WHERE id = $1 AND worker_id = $2 AND project_id = $3 AND generation = $4
-      AND status = 'active'
-    FOR UPDATE
-  `, [leaseId, identity.workerId, identity.projectId, leaseGeneration]);
-  const jobId = locked.rows[0]?.job_id;
-  if (jobId === undefined) throw new JobResultLeaseFencedError();
-  const result = await transaction.query<SubmissionLease>(`
-    SELECT jobs.id AS job_id, projects.organization_id, jobs.data_class,
-      jobs.upload_private_artifact
-    FROM job_leases
-    INNER JOIN jobs ON jobs.id = job_leases.job_id
-      AND jobs.project_id = job_leases.project_id
-    INNER JOIN projects ON projects.id = jobs.project_id
-    WHERE jobs.id = $1 AND jobs.project_id = $2 AND job_leases.id = $3
-      AND job_leases.heartbeat_deadline > clock_timestamp()
-      AND job_leases.lease_deadline > clock_timestamp() AND jobs.status = 'running'
-    FOR UPDATE OF jobs
-  `, [jobId, identity.projectId, leaseId]);
-  const lease = result.rows[0];
-  if (lease === undefined) throw new JobResultLeaseFencedError();
-  return lease;
+  private async lockSubmissionLease(
+    transaction: ControlPlaneQuery,
+    identity: AuthenticatedWorker,
+    leaseId: string,
+    leaseGeneration: number,
+  ): Promise<SubmissionLeaseRow> {
+    const locked = await transaction.query<{ job_id: string }>(`
+      SELECT job_id FROM job_leases
+      WHERE id = $1 AND worker_id = $2 AND project_id = $3 AND generation = $4
+        AND status = 'active'
+      FOR UPDATE
+    `, [leaseId, identity.workerId, identity.projectId, leaseGeneration]);
+    const jobId = locked.rows[0]?.job_id;
+    if (jobId === undefined) throw new JobResultLeaseFencedError();
+    const result = await transaction.query<SubmissionLeaseRow>(`
+      SELECT jobs.id AS job_id, projects.organization_id, jobs.data_class,
+        jobs.upload_private_artifact
+      FROM job_leases
+      INNER JOIN jobs ON jobs.id = job_leases.job_id
+        AND jobs.project_id = job_leases.project_id
+      INNER JOIN projects ON projects.id = jobs.project_id
+      WHERE jobs.id = $1 AND jobs.project_id = $2 AND job_leases.id = $3
+        AND job_leases.heartbeat_deadline > clock_timestamp()
+        AND job_leases.lease_deadline > clock_timestamp() AND jobs.status = 'running'
+      FOR UPDATE OF jobs
+    `, [jobId, identity.projectId, leaseId]);
+    const lease = result.rows[0];
+    if (lease === undefined) throw new JobResultLeaseFencedError();
+    return lease;
+  }
 }
 
 export type AuditActorType = "user" | "api_key" | "worker";
