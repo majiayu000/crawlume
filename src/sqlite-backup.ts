@@ -116,6 +116,7 @@ function publishWithoutOverwrite(
 
 function requireMetadata(metadata: SqliteBackupMetadata, path: string): void {
   if (
+    typeof metadata !== "object" || metadata === null || Array.isArray(metadata) ||
     metadata.format !== "crawlume-sqlite-backup-v1" ||
     metadata.integrityCheck !== "ok" ||
     !Number.isFinite(Date.parse(metadata.createdAt)) ||

@@ -9,7 +9,7 @@ const failures = vi.hoisted(() => ({ metadataWrite: false }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
-    if (failures.metadataWrite && typeof args[0] === "number") throw new Error("disk full");
+    if (failures.metadataWrite && String(args[0]).endsWith("/metadata.json")) throw new Error("disk full");
     return actual.writeFileSync(...args);
   } };
 });
@@ -218,6 +218,16 @@ describe("crawlume CLI", () => {
     expect(await main(["backup", backupPath])).toBe(1);
     expect(existsSync(backupPath)).toBe(false);
     expect(readFileSync(`${backupPath}.json`, "utf8")).toBe("old metadata");
+  });
+
+  it.each([null, 1, "metadata", true, []])("rejects non-object backup metadata %s as invalid input", async (value) => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-metadata-"));
+    directories.push(directory);
+    const backupPath = join(directory, "backup.sqlite");
+    writeFileSync(`${backupPath}.json`, JSON.stringify(value));
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    expect(await main(["restore", backupPath, join(directory, "restored.sqlite")])).toBe(1);
+    expect(stderr.mock.calls.at(-1)?.[0]).toContain('"code": "INVALID_ARGUMENT"');
   });
 
   it("backs up the runtime database with metadata and restores it to a new path", async () => {
