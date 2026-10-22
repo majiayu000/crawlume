@@ -20,6 +20,7 @@
   或 `~/.local/share/crawlume`，Windows `%LOCALAPPDATA%\crawlume`。
 - `cache.sqlite`：缓存、Artifact、Attempt Ledger、Frontier、统计和可选本地索引，WAL 模式。
 - `profiles/`：授权浏览器 Profile，含登录态，按凭证对待，不要进入备份共享或镜像。
+- `traces/`：浏览器失败诊断 JSON；SQLite 中只保存 `trace_ref`，不包含这些文件。
 - `rsl-approvals.json`、`rsl-clients.json`：RSL 许可批准和客户端凭证。
 
 同一个数据目录同一时间只应由一个长期 MCP 进程使用；CLI 可以并行做只读查询和备份。
@@ -113,14 +114,28 @@ crawlume restore /backups/crawlume-2026-10-22.sqlite /srv/crawlume-restored/cach
   备份与恢复目标文件系统必须支持并允许 hardlink（例如 exFAT 不支持）；`backup` 会在复制前用私有 staging 文件检查，
   不满足即拒绝。完成后 staging 清理失败会警告但保留成功结果，私有 staging 可能残留，警告会指出路径；
   备份本身失败时保留原始错误。
-- `restore` 先校验元数据，再恢复到一个不存在的新路径；目标及其 `-wal`、`-shm`、`-journal` 必须均不存在。
+- `restore` 将备份复制到目标目录的私有 pending 文件，只在该副本上完整校验元数据、SHA-256 和 SQLite integrity，
+  成功后发布到一个不存在的新路径；源归档可只读，不会在源目录创建 WAL/SHM。独立校验也使用可写临时副本，需有临时磁盘空间。
+  目标及其 `-wal`、`-shm`、`-journal` 必须均不存在。
   恢复期间保持目标离线，不会覆盖运行中的数据库。切换方式：停止进程，
   把恢复出的文件放到新的 `CRAWLUME_DATA_DIR` 下命名为 `cache.sqlite`，再启动。
-- `profiles/`、`rsl-approvals.json` 和 `rsl-clients.json` 不在 SQLite 中，需要单独加密备份。
+- `profiles/`、`traces/`、`rsl-approvals.json` 和 `rsl-clients.json` 不在 SQLite 中，需要单独加密备份。
   切换数据目录时，在进程停止期间把两个 RSL 文件安全恢复到新 `CRAWLUME_DATA_DIR`（或相应的自定义路径），
-  保留 owner-only 权限，并按需恢复 `profiles/`。仅恢复 `cache.sqlite` 不会恢复审批或 OLP 客户端凭据。
+  保留 owner-only 权限，并按需恢复 `profiles/` 和 `traces/`；复制这些目录和文件期间也须停止进程，
+  保护 Profile 内的登录会话凭据。仅恢复 `cache.sqlite` 不会恢复审批、OLP 客户端凭据或 trace 文件。
+- 本地运行配置也须安全保存。启用 Web Bot Auth 时，另行加密备份
+  `CRAWLUME_WEB_BOT_AUTH_JWK_PATH` 指向的 Ed25519 私有 JWK，并恢复其路径、owner-only 权限和
+  `CRAWLUME_AGENT_IDENTITY_URL` 等签名配置；该文件可以在数据目录外，不包含在 SQLite 备份中。
 
 Control Plane 的 PostgreSQL 使用数据库自身的备份方案（`pg_dump` 或托管快照），应用不提供替代。
+云端或 `worker_local` 的 Artifact 元数据只记录引用；如使用外部 payload 存储，还须另行保留对应内容，
+PostgreSQL dump 不等于这些 payload 的备份。
+数据库备份不包含 Secret 卷或运行配置。灾难恢复还须从受保护的独立备份恢复第 4 节的四个 PEM 文件：
+Human access-token 和 Worker session 各自匹配、且两组互异的 Ed25519 公私钥；保留原 issuer/audience，
+更换签名密钥会使原有 token 无法验证。私钥保持 owner-only，四个文件均须为非符号链接的普通文件。
+同时恢复 PostgreSQL 连接配置及凭据、OIDC 配置（含 issuer、端点、client ID、redirect URI、JWKS URI 和算法），
+以及启用时的 `DIAOYAN_CONTROL_DATABASE_CA_PATH` CA 文件和 `DIAOYAN_CONTROL_TLS_KEY_PATH` /
+`DIAOYAN_CONTROL_TLS_CERT_PATH` TLS 配对文件；文件要求见第 4 节。恢复后先确认数据库、密钥和配置一致，再启动服务。
 
 ## 7. 升级
 
