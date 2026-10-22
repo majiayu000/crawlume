@@ -52,6 +52,11 @@ import {
   ControlPlaneJobLeaseSweepRunner,
 } from "./control-plane/job-lease-recovery.js";
 import {
+  ArtifactStorageService,
+  artifactObjectStoreFromEnvironment,
+  type ArtifactObjectStore,
+} from "./control-plane/artifact-storage.js";
+import {
   ApiRequestRateLimiter,
   projectQuotasFromEnvironment,
   unlimitedProjectQuotas,
@@ -95,6 +100,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   listener: WorkerControlServerConfig;
   quotas?: ProjectQuotaLimits;
   webhookCipher?: WebhookSecretCipher | null;
+  artifactStore?: ArtifactObjectStore | null;
 }>;
 
 export type ControlPlaneRuntime = Readonly<{
@@ -257,6 +263,7 @@ export async function loadControlPlaneRuntimeConfig(
     webhookCipher: environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH === undefined
       ? null
       : await WebhookSecretCipher.fromFile(environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH),
+    artifactStore: artifactObjectStoreFromEnvironment(environment),
   });
 }
 
@@ -315,6 +322,7 @@ export async function startControlPlaneRuntime(
       if (hasPendingFatalError) throw pendingFatalError;
     }
     const webhooks = new WebhookService(database, webhookCipher, webhookUrlPolicy);
+    const artifacts = new ArtifactStorageService(database, config.artifactStore ?? null);
     const identity = new WorkerIdentityService(database, config.identity);
     const humanIdentity = new OidcSessionService(database, config.humanIdentity);
     const quotas = config.quotas ?? unlimitedProjectQuotas;
@@ -361,10 +369,11 @@ export async function startControlPlaneRuntime(
       listPublications: results.listPublications.bind(results),
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
       webhooks,
+      artifacts,
     }, quotas.apiRequestsPerMinute === null
       ? {}
       : { rateLimiter: new ApiRequestRateLimiter(quotas.apiRequestsPerMinute) });
-    const workerApi = new WorkerHttpApi({ identity, jobs, results });
+    const workerApi = new WorkerHttpApi({ identity, jobs, results, artifacts });
     listener = await startWorkerControlServer(
       new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
       config.listener,

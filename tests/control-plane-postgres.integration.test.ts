@@ -313,7 +313,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
     await administration.end();
   });
 
-  it("executes all ten checked-in migrations on an empty database", async () => {
+  it("executes all eleven checked-in migrations on an empty database", async () => {
     await runControlPlaneMigrations(database!);
     await runControlPlaneMigrations(database!);
 
@@ -333,6 +333,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       { version: 8, name: "0008_bound_auth_attempts.sql" },
       { version: 9, name: "0009_project_creation_idempotency.sql" },
       { version: 10, name: "0010_webhooks.sql" },
+      { version: 11, name: "0011_artifact_uploads.sql" },
     ]);
   });
 

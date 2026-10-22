@@ -29,6 +29,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:postgres": "sh scripts/test-control-plane-postgres.sh",
+    "test:object-store": "sh scripts/test-object-store.sh",
     "test:watch": "vitest",
     "start": "node dist/server.js",
     "start:control-plane": "node dist/server.js --control-plane",
@@ -46,6 +47,8 @@
     "trial:docs": "node benchmarks/docs-trial/run.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1147.0",
+    "@aws-sdk/s3-request-presigner": "3.1147.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@mozilla/readability": "0.6.0",
     "ipaddr.js": "2.2.0",

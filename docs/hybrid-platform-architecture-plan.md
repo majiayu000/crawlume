@@ -1396,7 +1396,7 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [ ] Remote Worker claim/heartbeat/terminal。已有 `remote-worker/client.ts`、`outbox.ts` 和 `job-lease-recovery.ts` 协议原语；尚无生产 claim/heartbeat/执行/terminal 编排循环。
 - [ ] Public cloud Worker。
 - [ ] Private Worker 数据边界。
-- [ ] Artifact Store。
+- [ ] Artifact Store。服务端已完成（迁移 0011、`control-plane/artifact-storage.ts`、上传/确认/下载接口，LocalStack S3 Gate）；remote Worker 客户端尚未调用上传接口（随公共云 Worker 一起做），对象 tombstone/对账清理未实现。
 - [ ] REST/MCP/TypeScript SDK。REST（OpenAPI v1）与 TypeScript SDK（`src/sdk/client.ts`，`docs/sdk.md`）已完成；云 MCP 适配器未实现。
 - [x] Webhook。迁移 0010、`control-plane/webhooks.ts`；事件目前只有 `job.*`，`monitor.*`、`worker.offline`、`budget.threshold_reached` 待对应功能上线后接入。签名采用 Standard Webhooks（覆盖完整 body）。
 - [ ] C 端 Web/Extension/Companion。

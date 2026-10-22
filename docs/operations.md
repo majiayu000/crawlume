@@ -105,6 +105,31 @@ TLS key 和 cert 均须为非符号链接的普通文件，key 还须使用 owne
 
 配额在创建 Job 的事务内用 Project 级 advisory lock 检查；同一 `Idempotency-Key` 的重放不重复计入。
 
+### Artifact 对象存储
+
+设置 `DIAOYAN_ARTIFACT_S3_BUCKET` 后启用云端 Artifact 存储（AWS S3 或兼容实现，如 Cloudflare R2）；未设置时
+上传与下载接口返回 503 `ARTIFACT_STORAGE_DISABLED`。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DIAOYAN_ARTIFACT_S3_BUCKET` | 无 | Bucket 名 |
+| `DIAOYAN_ARTIFACT_S3_REGION` | `us-east-1` | Region |
+| `DIAOYAN_ARTIFACT_S3_ENDPOINT` | 无 | 非 AWS 的 S3 兼容 endpoint |
+| `DIAOYAN_ARTIFACT_S3_FORCE_PATH_STYLE` | 0 | 兼容实现需要 path-style 时设为 1 |
+
+凭证走 AWS SDK 默认链（`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`、实例角色、`AWS_PROFILE` 等），不读取任何
+Crawlume 专用凭证变量。Control Plane 需要该 Bucket 的 `s3:PutObject`、`s3:GetObject`、`s3:HeadObject` 权限
+（用于签发 URL 与校验）。
+
+流程：Worker 以 `storage: cloud_object` 发布结果后调用 `POST /job-leases/{lease_id}/artifact-uploads` 获取
+15 分钟有效的预签名 PUT，该 URL 绑定已发布的字节数与 SHA-256，对象存储拒绝任何不一致的内容；上传后调用
+`.../artifact-uploads/confirm`，Control Plane 用 HEAD 校验大小与 checksum 后才标记可下载。Project API Key
+（`results:read`）通过 `GET /projects/{project_id}/artifacts/{artifact_id}/download` 获取 5 分钟有效的下载 URL，
+每次签发都写 `artifact.downloaded` 审计事件。对象键为
+`organization/{org}/project/{project}/artifact/{artifact}/{version}`，不同 Project 不按内容去重。
+
+Retention 由 Bucket 生命周期规则执行（计划默认 30 天）；数据库侧的 tombstone 与对账清理尚未实现。
+
 ### Webhook
 
 设置 `DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH` 指向一个 32 字节密钥文件（原始字节、64 位十六进制或 base64）后启用；

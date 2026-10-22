@@ -48,6 +48,20 @@ jobs:
       - run: pnpm build
       - run: pnpm test:postgres
 
+  object-store:
+    name: artifact object store
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:object-store
+
   docker:
     name: docker image
     runs-on: ubuntu-latest
