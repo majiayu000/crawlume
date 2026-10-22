@@ -1,6 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-import { parseCli } from "../src/cli/main.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { main, parseCli } from "../src/cli/main.js";
+
+const directories: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  while (directories.length > 0) {
+    const directory = directories.pop();
+    if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 describe("crawlume CLI", () => {
   it("leaves reader semantic defaults to the shared ReadIntent boundary", () => {
@@ -154,6 +170,8 @@ describe("crawlume CLI", () => {
     [["stats", "--days", "0"], "between 1 and 90"],
     [["stats", "unexpected"], "Unknown stats option"],
     [["rsl-audit", "--limit", "1001"], "between 1 and 1000"],
+    [["backup"], "exactly one backup path"],
+    [["restore", "only-backup.sqlite"], "backup path and a new target path"],
   ])("rejects invalid arguments", (argv, message) => {
     expect(() => parseCli(argv)).toThrow(message);
   });
@@ -161,5 +179,43 @@ describe("crawlume CLI", () => {
   it("supports help without initializing the reader", () => {
     expect(parseCli(["--help"])).toEqual({ kind: "help" });
     expect(parseCli(["read", "--help"])).toEqual({ kind: "help" });
+  });
+
+  it("parses backup and restore paths as absolute paths", () => {
+    expect(parseCli(["backup", "out/cache.sqlite"]))
+      .toEqual({ kind: "backup", backupPath: resolve("out/cache.sqlite") });
+    expect(parseCli(["restore", "out/cache.sqlite", "restored.sqlite"])).toEqual({
+      kind: "restore",
+      backupPath: resolve("out/cache.sqlite"),
+      targetPath: resolve("restored.sqlite"),
+    });
+  });
+
+  it("backs up the runtime database with metadata and restores it to a new path", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-backup-"));
+    directories.push(directory);
+    const dataDir = join(directory, "data");
+    vi.stubEnv("CRAWLUME_DATA_DIR", dataDir);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const errors = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    expect(await main(["stats"])).toBe(0);
+
+    const backupPath = join(directory, "backup", "cache.sqlite");
+    expect(await main(["backup", backupPath])).toBe(0);
+    expect(existsSync(`${backupPath}.json`)).toBe(true);
+    expect(await main(["backup", backupPath])).toBe(1);
+
+    const targetPath = join(directory, "restored", "cache.sqlite");
+    expect(await main(["restore", backupPath, targetPath])).toBe(0);
+    const restored = new DatabaseSync(targetPath, { readOnly: true });
+    try {
+      expect(restored.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+    } finally {
+      restored.close();
+    }
+    expect(await main(["restore", backupPath, targetPath])).toBe(1);
+    expect(await main(["restore", join(directory, "missing.sqlite"), join(directory, "other.sqlite")]))
+      .toBe(1);
+    expect(errors).toHaveBeenCalled();
   });
 });

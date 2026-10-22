@@ -13,12 +13,16 @@ All notable changes to this project are documented here. The format follows
 - Dockerfile with bundled Chromium and a `/data` runtime volume.
 - Security policy.
 - Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line process logs on stderr.
+- `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
+- Operations manual (`docs/operations.md`).
 
 ### Changed
 
 - Minimum Node.js version lowered from 25.7 to 24.14 (LTS).
 
 ### Fixed
+
+- Hybrid platform completion checklist now reflects what is implemented and tested.
 
 - Test fixtures no longer use a fixed fetch date that expired under the cache TTL.
 

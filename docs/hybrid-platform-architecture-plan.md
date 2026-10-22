@@ -1386,22 +1386,24 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 
 ## 40. 总完成清单
 
+勾选项以当前仓库代码和测试为证据；未勾选项仍未完成或只完成一部分。
+
 - [ ] 当前 HEAD 的 Nightly 证据。
-- [ ] OpenAPI v1。
-- [ ] Project/API Key。
-- [ ] Worker enrollment/session。
-- [ ] PostgreSQL Job/Lease/Event/Publication。
-- [ ] Remote Worker claim/heartbeat/terminal。
+- [x] OpenAPI v1。`project-control-api.openapi.yaml`、`worker-control-api.openapi.yaml`（1.0.0），`control-plane-openapi-parity.test.ts`。
+- [x] Project/API Key。`api-key-service.ts`、`project-api-key-http-api.ts`，迁移 0002。
+- [x] Worker enrollment/session。`worker-bootstrap-http-api.ts`、`remote-worker/enrollment.ts`，迁移 0004。
+- [x] PostgreSQL Job/Lease/Event/Publication。迁移 0005–0007，`control-plane-job-postgres*.integration.test.ts`。
+- [x] Remote Worker claim/heartbeat/terminal。`remote-worker/client.ts`、`outbox.ts`，`job-lease-recovery.ts`。
 - [ ] Public cloud Worker。
 - [ ] Private Worker 数据边界。
 - [ ] Artifact Store。
 - [ ] REST/MCP/TypeScript SDK。
 - [ ] Webhook。
 - [ ] C 端 Web/Extension/Companion。
-- [ ] Usage/Quota/Audit。
-- [ ] CI/CD 和受保护发布。
-- [ ] Schema migration。
-- [ ] Backup/restore。
+- [ ] Usage/Quota/Audit。Audit 已完成（迁移 0007、`/projects/{id}/audit-events`）；Usage/Quota 未实现。
+- [ ] CI/CD 和受保护发布。CI 已完成（`.github/workflows/ci.yml`）；受保护发布未实现。
+- [x] Schema migration。`migrations/control-plane/`，启动时 `runControlPlaneMigrations`，`control-plane-migrations.test.ts`。
+- [ ] Backup/restore。本地 SQLite 已完成（`crawlume backup`/`restore`，见 `operations.md`）；PostgreSQL 依赖数据库自身方案，未做演练。
 - [ ] 7 天稳定性试验。
 - [ ] 300,000 页压力测试。
 - [ ] 私有 Release Corpus。
