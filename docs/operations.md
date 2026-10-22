@@ -26,7 +26,11 @@
 
 ## 3. 本地运行配置
 
-所有变量都有默认值，非法值会让进程启动失败，不会静默回退。
+下表列出本地运行默认值。布尔、枚举和带范围的整数项会检查允许值或解析后的范围；
+`CRAWLUME_REQUEST_TIMEOUT_MS`、`CRAWLUME_BROWSER_TIMEOUT_MS`、`CRAWLUME_MAX_RESPONSE_BYTES`、
+`CRAWLUME_MAX_REDIRECTS`、`CRAWLUME_ROBOTS_CACHE_SECONDS` 和 `CRAWLUME_DEFAULT_CACHE_SECONDS`
+使用 `parseInt(value, 10)`，会接受 `20000ms` 这样的数字前缀，
+`1e4` 会被读成 `1`。部署时请填写普通十进制整数，不依赖这类宽松解析；无法解析或非正数会启动失败。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -66,7 +70,8 @@
 必填变量：
 
 - `DIAOYAN_CONTROL_DATABASE_URL`：`postgres://` 或 `postgresql://`，不得在 URL 中写 TLS 参数；只有字面地址 `127.0.0.1`
-  和 `::1` 且未指定 CA 时使用明文，`localhost` 等其他主机名均强制校验证书。自签 CA 用 `DIAOYAN_CONTROL_DATABASE_CA_PATH`。
+  和 `::1` 且未指定 CA 时使用明文，`localhost` 等其他主机名均强制校验证书。自签 CA 用
+  `DIAOYAN_CONTROL_DATABASE_CA_PATH`，该文件同样须为非符号链接的普通文件。
 - `DIAOYAN_OIDC_ISSUER`、`DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT`、`DIAOYAN_OIDC_TOKEN_ENDPOINT`、
   `DIAOYAN_OIDC_CLIENT_ID`、`DIAOYAN_OIDC_REDIRECT_URI`、`DIAOYAN_OIDC_JWKS_URI`、
   `DIAOYAN_OIDC_ID_TOKEN_ALGORITHM`。
@@ -75,8 +80,8 @@
 - `DIAOYAN_WORKER_SESSION_ISSUER`、`DIAOYAN_WORKER_SESSION_AUDIENCE`、
   `DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH`、`DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH`。
 
-两组签名密钥都是 Ed25519 PEM，私钥必须是非符号链接的普通文件，且只允许所有者访问（例如 `0600`）；
-常见的 `0644` Secret 挂载会被拒绝。启动时会做签名自检，不匹配直接失败。可选：
+两组签名密钥都是 Ed25519 PEM，公钥和私钥均须为非符号链接的普通文件；私钥还须只允许所有者访问（例如 `0600`）；
+私钥采用常见的 `0644` Secret 挂载会被拒绝。启动时会做签名自检，不匹配直接失败。可选：
 `DIAOYAN_CONTROL_HOST`（默认 `127.0.0.1`）、`DIAOYAN_CONTROL_PORT`（默认 8787）、
 `DIAOYAN_CONTROL_TLS_KEY_PATH` 与 `DIAOYAN_CONTROL_TLS_CERT_PATH`（必须成对）。
 TLS key 和 cert 均须为非符号链接的普通文件，key 还须使用 owner-only 权限（如 `0600`）；
@@ -105,6 +110,9 @@ crawlume restore /backups/crawlume-2026-10-22.sqlite /srv/crawlume-restored/cach
 
 - `backup` 使用 SQLite online backup，可在 MCP 运行时执行；写出备份文件和同名 `.json` 校验元数据
   （integrity check、页数、字节数、SHA-256），已存在的目标拒绝覆盖。
+  备份与恢复目标文件系统必须支持并允许 hardlink（例如 exFAT 不支持）；`backup` 会在复制前用私有 staging 文件检查，
+  不满足即拒绝。完成后 staging 清理失败会警告但保留成功结果，私有 staging 可能残留，警告会指出路径；
+  备份本身失败时保留原始错误。
 - `restore` 先校验元数据，再恢复到一个不存在的新路径；目标及其 `-wal`、`-shm`、`-journal` 必须均不存在。
   恢复期间保持目标离线，不会覆盖运行中的数据库。切换方式：停止进程，
   把恢复出的文件放到新的 `CRAWLUME_DATA_DIR` 下命名为 `cache.sqlite`，再启动。

@@ -81,10 +81,10 @@ DIAOYAN_CONTROL_TLS_KEY_PATH=/run/secrets/tls-private.pem
 DIAOYAN_CONTROL_TLS_CERT_PATH=/run/secrets/tls-cert.pem
 ```
 
-Store the corresponding PEM files in `./secrets`. Private keys must be regular, non-symlink files
-with owner-only permissions (`0600`), readable by the image's `node` user (UID 1000). Protect the
-env file too. Use a certificate valid for the API hostname and register the exact redirect URI
-with the OIDC provider. Then run:
+Store the corresponding PEM files in `./secrets`. All mounted PEM files must be regular, non-symlink
+files readable by the image's `node` user (UID 1000). Private keys additionally require owner-only
+permissions (`0600`). Protect the env file too. Use a certificate valid for the API hostname and
+register the exact redirect URI with the OIDC provider. Then run:
 
 ```bash
 docker run --rm --publish 127.0.0.1:8787:8787 \

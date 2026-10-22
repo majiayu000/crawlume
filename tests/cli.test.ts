@@ -5,12 +5,26 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const failures = vi.hoisted(() => ({ metadataWrite: false }));
+const failures = vi.hoisted(() => ({ metadataWrite: false, cleanup: false, hardLinks: false, backupCalls: 0 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
     if (failures.metadataWrite && String(args[0]).endsWith("/metadata.json")) throw new Error("disk full");
     return actual.writeFileSync(...args);
+  }, rmSync: (...args: Parameters<typeof actual.rmSync>) => {
+    if (failures.cleanup && String(args[0]).includes(".crawlume-backup-")) throw new Error("cleanup denied");
+    return actual.rmSync(...args);
+  }, linkSync: (...args: Parameters<typeof actual.linkSync>) => {
+    if (failures.hardLinks) throw Object.assign(new Error("hard links unsupported"), { code: "ENOTSUP" });
+    return actual.linkSync(...args);
+  } };
+});
+
+vi.mock("../src/sqlite-backup.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/sqlite-backup.js")>();
+  return { ...actual, createSqliteBackup: (...args: Parameters<typeof actual.createSqliteBackup>) => {
+    failures.backupCalls += 1;
+    return actual.createSqliteBackup(...args);
   } };
 });
 
@@ -20,6 +34,9 @@ const directories: string[] = [];
 
 afterEach(() => {
   failures.metadataWrite = false;
+  failures.cleanup = false;
+  failures.hardLinks = false;
+  failures.backupCalls = 0;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   while (directories.length > 0) {
@@ -199,6 +216,48 @@ describe("crawlume CLI", () => {
       backupPath: resolve("out/cache.sqlite"),
       targetPath: resolve("restored.sqlite"),
     });
+  });
+
+  it("retains a restorable success when staging cleanup fails", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-cleanup-"));
+    directories.push(directory);
+    vi.stubEnv("CRAWLUME_DATA_DIR", directory);
+    const source = new DatabaseSync(join(directory, "cache.sqlite"));
+    source.exec("CREATE TABLE pages(id INTEGER PRIMARY KEY) STRICT;");
+    source.close();
+    const backupPath = join(directory, "backup.sqlite");
+    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    failures.cleanup = true;
+    expect(await main(["backup", backupPath])).toBe(0);
+    expect(errors.mock.calls.some(([text]) => String(text).includes("Warning: backup staging cleanup failed"))).toBe(true);
+    expect(await main(["restore", backupPath, join(directory, "restored.sqlite")])).toBe(0);
+  });
+
+  it("preserves the primary backup error when staging cleanup also fails", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-primary-error-"));
+    directories.push(directory);
+    vi.stubEnv("CRAWLUME_DATA_DIR", directory);
+    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    failures.cleanup = true;
+    expect(await main(["backup", join(directory, "backup.sqlite")])).toBe(1);
+    expect(errors.mock.calls.some(([text]) => String(text).includes("Warning: backup staging cleanup failed"))).toBe(true);
+    expect(errors.mock.calls.at(-1)?.[0]).toContain('"code": "INVALID_ARGUMENT"');
+    expect(errors.mock.calls.at(-1)?.[0]).toContain("SQLite source must be an existing regular file");
+  });
+
+  it("rejects unsupported hardlink destinations before starting the backup copy", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "crawlume-cli-no-hardlinks-"));
+    directories.push(directory);
+    vi.stubEnv("CRAWLUME_DATA_DIR", directory);
+    const errors = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    failures.hardLinks = true;
+    const backupPath = join(directory, "backup.sqlite");
+    expect(await main(["backup", backupPath])).toBe(1);
+    expect(failures.backupCalls).toBe(0);
+    expect(errors.mock.calls.at(-1)?.[0]).toContain("Backup destination must allow hard links");
+    expect(existsSync(backupPath)).toBe(false);
+    expect(existsSync(`${backupPath}.json`)).toBe(false);
   });
 
   it("leaves no orphan database or partial sidecar after metadata failure", async () => {
