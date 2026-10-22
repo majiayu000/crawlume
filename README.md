@@ -39,8 +39,8 @@ Set `CRAWLUME_DATA_DIR` to choose another location.
 ## Observability
 
 Set `CRAWLUME_METRICS_PORT` to serve Prometheus counters at `GET /metrics` (bound to
-`CRAWLUME_METRICS_HOST`, default `127.0.0.1`). Process logs are JSON lines on stderr; stdout stays
-reserved for MCP.
+`CRAWLUME_METRICS_HOST`, default `127.0.0.1`). The MCP and control-plane server entrypoints write
+process event logs as JSON lines on stderr. MCP stdout stays reserved for JSON-RPC.
 
 ## Docker
 
