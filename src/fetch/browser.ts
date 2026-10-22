@@ -201,6 +201,9 @@ async function structuralDomSnapshot(page: Page): Promise<BrowserDomNodeTrace[]>
 
 export class BrowserPageFetcher implements PageFetcher {
   private readonly activeProfiles = new Set<string>();
+  private readonly persistentContexts = new Set<Promise<BrowserContext>>();
+  private readonly activeFetches = new Set<Promise<unknown>>();
+  private closing = false;
 
   constructor(
     private readonly config: AppConfig,
@@ -219,8 +222,15 @@ export class BrowserPageFetcher implements PageFetcher {
   ) {}
 
   async fetch(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
-    const { result, bytes } = await runWithTransferMeter(() => this.fetchUnmetered(url, options));
-    return { ...result, networkBytesIn: bytes };
+    if (this.closing) throw new ReadError("BROWSER_UNAVAILABLE", "The browser fetcher is closed.");
+    const pending = runWithTransferMeter(() => this.fetchUnmetered(url, options));
+    this.activeFetches.add(pending);
+    try {
+      const { result, bytes } = await pending;
+      return { ...result, networkBytesIn: bytes };
+    } finally {
+      this.activeFetches.delete(pending);
+    }
   }
 
   private async fetchUnmetered(url: URL, options: PageFetchOptions = {}): Promise<RawPage> {
@@ -250,6 +260,7 @@ export class BrowserPageFetcher implements PageFetcher {
       ? undefined
       : normalizeBrowserReadinessPolicy(browserReadiness);
     let context: BrowserContext | null = null;
+    let persistentLaunch: Promise<BrowserContext> | null = null;
     let lease: BrowserLease | null = null;
     let leaseHealthy = true;
     let page: Page | null = null;
@@ -284,15 +295,23 @@ export class BrowserPageFetcher implements PageFetcher {
         url,
         await this.robots.licenseUrls(url),
       )).evidence;
+      if (this.closing) throw new ReadError("BROWSER_UNAVAILABLE", "The browser fetcher is closed.");
       const browserProxy = await this.policyProxy.endpoint(proxy);
+      if (this.closing) throw new ReadError("BROWSER_UNAVAILABLE", "The browser fetcher is closed.");
 
       tracePhase = "context";
       if (profilePath !== null) {
-        context = await chromium.launchPersistentContext(profilePath, {
+        persistentLaunch = chromium.launchPersistentContext(profilePath, {
           ...browserLaunchOptions(this.config, true, browserProxy),
+          timeout: this.config.browserTimeoutMs,
           acceptDownloads: false,
           userAgent: this.config.userAgent,
         });
+        this.persistentContexts.add(persistentLaunch);
+        context = await persistentLaunch;
+        if (this.closing) {
+          throw new ReadError("BROWSER_UNAVAILABLE", "The browser fetcher closed during launch.");
+        }
       } else {
         lease = await this.browserPool.acquire(browserProxy, signal);
         context = await lease.browser.newContext({
@@ -614,6 +633,7 @@ export class BrowserPageFetcher implements PageFetcher {
     } finally {
       if (onAbort !== null) signal?.removeEventListener("abort", onAbort);
       await context?.close().catch(() => undefined);
+      if (persistentLaunch !== null) this.persistentContexts.delete(persistentLaunch);
       await lease?.release(leaseHealthy);
       if (authProfile !== undefined) {
         this.activeProfiles.delete(authProfile);
@@ -622,15 +642,22 @@ export class BrowserPageFetcher implements PageFetcher {
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     const results = await Promise.allSettled([
+      ...[...this.persistentContexts].map(async (launch) => {
+        // A failed launch has no context to close; its fetch retains the original error.
+        const context = await launch.catch(() => null);
+        await context?.close();
+      }),
       this.browserPool.close(),
       this.policyProxy.close(),
     ]);
+    await Promise.allSettled([...this.activeFetches]);
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : []);
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) {
-      throw new AggregateError(failures, "The browser pool and policy proxy failed to close.");
+      throw new AggregateError(failures, "The browser resources failed to close.");
     }
   }
 }

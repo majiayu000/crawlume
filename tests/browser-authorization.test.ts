@@ -7,9 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { chromium, type BrowserContext } from "playwright-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { listen } from "../benchmarks/harness/runtime.js";
+import { ReadError } from "../src/errors.js";
 import { BrowserPageFetcher } from "../src/fetch/browser.js";
 import { ProfileManager } from "../src/profiles.js";
 import { parseProxyEndpoints, ProxyPool } from "../src/proxy.js";
@@ -22,6 +24,7 @@ import { publicResolver, testConfig } from "./helpers.js";
 const temporaryDirectories: string[] = [];
 const servers: Server[] = [];
 const sockets = new Set<Duplex>();
+const fetchers: BrowserPageFetcher[] = [];
 
 function trackSocket(socket: Duplex): void {
   sockets.add(socket);
@@ -30,6 +33,8 @@ function trackSocket(socket: Duplex): void {
 }
 
 afterEach(async () => {
+  await Promise.all(fetchers.splice(0).map(async (fetcher) => fetcher.close()));
+  vi.restoreAllMocks();
   for (const socket of sockets) socket.destroy();
   sockets.clear();
   await Promise.all(servers.splice(0).map(async (server) => new Promise<void>((resolve, reject) => {
@@ -142,23 +147,112 @@ async function authorizationHarness(
   const profiles = new ProfileManager(config);
   profiles.create("research");
   const { robots, rsl } = policyStubs();
+  const fetcher = new BrowserPageFetcher(
+    config,
+    new UrlPolicy(async () => publicResolver()),
+    robots,
+    profiles,
+    rsl,
+    new ProxyPool(endpoints),
+  );
+  fetchers.push(fetcher);
   return {
     dataDir,
     observedRequests,
     proxyTargets,
     signatureAgents,
-    fetcher: new BrowserPageFetcher(
-      config,
-      new UrlPolicy(async () => publicResolver()),
-      robots,
-      profiles,
-      rsl,
-      new ProxyPool(endpoints),
-    ),
+    fetcher,
   };
 }
 
 describe("BrowserPageFetcher authorization boundary", () => {
+  it("waits for an in-flight authorized Chrome launch to close before releasing its profile", async () => {
+    const { fetcher, observedRequests } = await authorizationHarness((_host, _path, response) => response.end("unused"));
+    const launch = chromium.launchPersistentContext.bind(chromium);
+    let launched!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { launched = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let context!: BrowserContext;
+    const launchSpy = vi.spyOn(chromium, "launchPersistentContext").mockImplementation(async (...args) => {
+      context = await launch(...args);
+      launched();
+      await released;
+      return context;
+    });
+    const fetching = fetcher.fetch(new URL("http://allowed.example/article"), {
+      authProfile: "research", allowedOrigins: ["http://allowed.example"],
+    }).catch((error: unknown) => error);
+    try {
+      await ready;
+      expect(launchSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ timeout: 5_000 }));
+      let closed = false;
+      const closing = fetcher.close().then(() => { closed = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed).toBe(false);
+      release();
+      await closing;
+      expect(context.browser()?.isConnected()).toBe(false);
+      expect(await fetching).toMatchObject({ code: "BROWSER_UNAVAILABLE" });
+      expect(observedRequests).not.toContain("allowed.example/article");
+      await expect(fetcher.fetch(new URL("http://allowed.example/article"), {
+        authProfile: "research",
+      })).rejects.toMatchObject({ code: "BROWSER_UNAVAILABLE" });
+    } finally {
+      release();
+      await fetching;
+      await context?.close();
+    }
+  }, 15_000);
+
+  it("preserves a pending launch failure while close drains the authorized fetch", async () => {
+    const { fetcher } = await authorizationHarness((_host, _path, response) => response.end("unused"));
+    let launched!: () => void;
+    let rejectLaunch!: (error: Error) => void;
+    const ready = new Promise<void>((resolve) => { launched = resolve; });
+    vi.spyOn(chromium, "launchPersistentContext").mockImplementation(() => {
+      launched();
+      return new Promise<BrowserContext>((_resolve, reject) => { rejectLaunch = reject; });
+    });
+    const fetching = fetcher.fetch(new URL("http://allowed.example/article"), {
+      authProfile: "research",
+    }).catch((error: unknown) => error);
+    await ready;
+    const closing = fetcher.close();
+    const primary = new ReadError("FETCH_TIMEOUT", "persistent launch timed out");
+    rejectLaunch(primary);
+    await expect(closing).resolves.toBeUndefined();
+    expect(await fetching).toMatchObject({ code: "FETCH_TIMEOUT", cause: primary });
+  });
+
+  it("does not start a late proxy or Chrome after close during policy checks", async () => {
+    const { fetcher } = await authorizationHarness((_host, _path, response) => response.end("unused"));
+    let checking!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { checking = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(UrlPolicy.prototype, "assertPublic").mockImplementationOnce(async () => {
+      checking();
+      await released;
+      return publicResolver();
+    });
+    const launch = vi.spyOn(chromium, "launchPersistentContext");
+    const fetching = fetcher.fetch(new URL("http://allowed.example/article"), {
+      authProfile: "research",
+    }).catch((error: unknown) => error);
+    try {
+      await ready;
+      const closing = fetcher.close();
+      release();
+      await closing;
+      expect(await fetching).toMatchObject({ code: "BROWSER_UNAVAILABLE" });
+      expect(launch).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await fetching;
+    }
+  });
+
   it("rejects an authorized main-frame redirect outside allowedOrigins", async () => {
     let deniedOriginRequests = 0;
     const { dataDir, fetcher, observedRequests } = await authorizationHarness((hostname, _path, response) => {
