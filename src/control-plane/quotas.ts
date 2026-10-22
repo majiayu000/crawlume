@@ -75,7 +75,8 @@ export function hasJobCreationQuotas(limits: ProjectQuotaLimits): boolean {
 
 /**
  * Checks a new Job against the Project quotas inside the creating transaction. Monthly quotas count
- * the budgets reserved by Jobs created this UTC month, so a Job can never exceed them at run time.
+ * the budgets reserved by Jobs created within [UTC month start, next UTC month start),
+ * not execution usage metered during that month.
  * Caller holds the per-Project advisory lock and supplies clock_timestamp() read after locking.
  * Artifact bytes is a creation admission check, not a hard storage-write limit.
  */
@@ -93,12 +94,12 @@ export async function enforceJobCreationQuotas(
         WHERE project_id = $1
           AND status IN ('accepted', 'queued', 'assigned', 'running', 'paused'))::text AS active_jobs,
       (SELECT coalesce(sum(budget_max_provider_attempts), 0) FROM jobs
-        WHERE project_id = $1 AND created_at >= $2)::text AS reserved_provider_attempts,
+        WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)::text AS reserved_provider_attempts,
       (SELECT coalesce(sum(budget_max_browser_ms), 0) FROM jobs
-        WHERE project_id = $1 AND created_at >= $2)::text AS reserved_browser_ms,
+        WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)::text AS reserved_browser_ms,
       (SELECT coalesce(sum(byte_count), 0) FROM artifact_metadata
         WHERE project_id = $1)::text AS artifact_bytes
-  `, [projectId, utcMonthStart(now)]);
+  `, [projectId, utcMonthStart(now), new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))]);
   const usage = result.rows[0];
   if (usage === undefined) throw new Error("Project quota usage query returned no row.");
   const monthReset = secondsUntilNextUtcMonth(now);
@@ -120,7 +121,8 @@ export async function enforceJobCreationQuotas(
 
 /** Fixed one-minute window per API key. Counts are per control-plane process. */
 export class ApiRequestRateLimiter {
-  private readonly windows = new Map<string, { startedAt: number; count: number }>();
+  private readonly counts = new Map<string, number>();
+  private windowStart: number | undefined;
 
   constructor(
     private readonly limitPerMinute: number,
@@ -130,23 +132,18 @@ export class ApiRequestRateLimiter {
   take(apiKeyId: string): void {
     const now = this.now();
     const windowStart = now - (now % 60_000);
-    const current = this.windows.get(apiKeyId);
-    if (current === undefined || current.startedAt !== windowStart) {
-      if (this.windows.size > 10_000) {
-        for (const [key, window] of this.windows) {
-          if (window.startedAt !== windowStart) this.windows.delete(key);
-        }
-      }
-      this.windows.set(apiKeyId, { startedAt: windowStart, count: 1 });
-      return;
+    if (this.windowStart !== windowStart) {
+      this.counts.clear();
+      this.windowStart = windowStart;
     }
-    if (current.count >= this.limitPerMinute) {
+    const current = this.counts.get(apiKeyId) ?? 0;
+    if (current >= this.limitPerMinute) {
       throw new QuotaExceededError(
         "apiRequestsPerMinute",
         this.limitPerMinute,
         Math.max(1, Math.ceil((windowStart + 60_000 - now) / 1_000)),
       );
     }
-    current.count += 1;
+    this.counts.set(apiKeyId, current + 1);
   }
 }

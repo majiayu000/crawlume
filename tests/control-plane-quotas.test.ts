@@ -45,6 +45,18 @@ describe("Project quotas", () => {
       .rejects.toMatchObject({ quota: "monthlyProviderAttempts", retryAfterSeconds: resetSeconds });
   });
 
+  it("keeps independent limits for more than 10000 current-window keys and rotates them together", () => {
+    let now = 60_000;
+    const limiter = new ApiRequestRateLimiter(1, () => now);
+    for (let key = 0; key < 12_000; key += 1) limiter.take(`key-${key}`);
+    expect(() => limiter.take("key-0")).toThrow(expect.objectContaining({ quota: "apiRequestsPerMinute" }));
+    expect(() => limiter.take("key-11999")).toThrow(expect.objectContaining({ quota: "apiRequestsPerMinute" }));
+    now = 120_000;
+    expect(() => limiter.take("key-0")).not.toThrow();
+    expect(() => limiter.take("key-11999")).not.toThrow();
+    expect(() => limiter.take("key-0")).toThrow(expect.objectContaining({ retryAfterSeconds: 60 }));
+  });
+
   it("limits each API key within a fixed minute window", () => {
     let now = 60_000;
     const limiter = new ApiRequestRateLimiter(2, () => now);

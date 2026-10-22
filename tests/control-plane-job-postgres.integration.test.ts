@@ -22,7 +22,7 @@ import {
   type ControlPlaneQuery,
   type CreateControlPlaneJobInput,
 } from "../src/control-plane/project-scope.js";
-import { unlimitedProjectQuotas } from "../src/control-plane/quotas.js";
+import { enforceJobCreationQuotas, unlimitedProjectQuotas } from "../src/control-plane/quotas.js";
 import { PostgresControlPlaneDatabase } from "../src/server.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
@@ -794,6 +794,38 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     expect(resetSeconds).toBeGreaterThanOrEqual(Math.ceil((nextMonth - after.getTime()) / 1_000));
     expect(resetSeconds).toBeLessThanOrEqual(Math.ceil((nextMonth - clock.getTime()) / 1_000));
   });
+
+  it.each(["monthlyProviderAttempts", "monthlyBrowserMs"] as const)(
+    "excludes future-created reservations from the current %s window", async (quota) => {
+      const storage = new PostgresControlPlaneDatabase(database!);
+      const input = { ...jobInput("https://example.com/future-reservation"),
+        budget: { ...jobInput("https://example.com/future-reservation").budget, maxBrowserMs: 1_000 } };
+      const future = await new ControlPlaneJobService(storage).createJob(fixtureProjectKey, "future-budget", input,
+        { correlationId: "future-budget" });
+      const clock = await databaseClock(database!);
+      const nextMonthStart = new Date(Date.UTC(clock.getUTCFullYear(), clock.getUTCMonth() + 1, 1));
+      await database!.query(`UPDATE jobs SET created_at = $2, updated_at = $2, not_before = $2,
+        deadline_at = $2::timestamptz + interval '5 minutes' WHERE id = $1`, [future.id, nextMonthStart]);
+      const quotas = { ...unlimitedProjectQuotas, [quota]: quota === "monthlyProviderAttempts" ? 3 : 1_500 };
+      const jobs = new ControlPlaneJobService(storage, { quotas });
+      await expect(jobs.createJob(fixtureProjectKey, "current-budget", input,
+        { correlationId: "current-budget" })).resolves.toMatchObject({ status: "queued" });
+      // The current-month reservation still counts; the next-month row was excluded, not waived forever.
+      await expect(jobs.createJob(fixtureProjectKey, "excess-current-budget", input,
+        { correlationId: "excess-current-budget" })).rejects.toMatchObject({ code: "QUOTA_EXCEEDED", quota });
+      // Query the next UTC window explicitly: only the future row should count there.
+      await storage.transaction(async (transaction) => {
+        await transaction.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
+          [fixtureProjectKey.projectId],
+        );
+        await expect(enforceJobCreationQuotas(transaction, fixtureProjectKey.projectId,
+          { maxProviderAttempts: 1, maxBrowserMs: 500 }, quotas, nextMonthStart)).resolves.toBeUndefined();
+        await expect(enforceJobCreationQuotas(transaction, fixtureProjectKey.projectId,
+          input.budget, quotas, nextMonthStart)).rejects.toMatchObject({ code: "QUOTA_EXCEEDED", quota });
+      });
+    },
+  );
 
   it("enforces Project quotas at creation without charging idempotent replays", async () => {
     const storage = new PostgresControlPlaneDatabase(database!);
