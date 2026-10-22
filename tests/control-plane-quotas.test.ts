@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ApiRequestRateLimiter,
+  enforceJobCreationQuotas,
   projectQuotasFromEnvironment,
   unlimitedProjectQuotas,
 } from "../src/control-plane/quotas.js";
@@ -30,6 +31,18 @@ describe("Project quotas", () => {
   it.each(["0", "-1", "1.5", "many"])("rejects invalid quota value %s", (value) => {
     expect(() => projectQuotasFromEnvironment({ DIAOYAN_QUOTA_ACTIVE_JOBS: value }))
       .toThrow("DIAOYAN_QUOTA_ACTIVE_JOBS must be a positive integer.");
+  });
+
+  it.each([
+    ["2026-10-31T23:59:59.500Z", 1],
+    ["2026-11-01T00:00:00.000Z", 2_592_000],
+  ])("uses the UTC month reset interval for locked DB time %s", async (timestamp, resetSeconds) => {
+    const query = { query: async <Row>() => ({ rows: [{
+      active_jobs: "0", reserved_provider_attempts: "2", reserved_browser_ms: "0", artifact_bytes: "0",
+    } as Row] }) };
+    await expect(enforceJobCreationQuotas(query, "project", { maxProviderAttempts: 2, maxBrowserMs: 0 },
+      { ...unlimitedProjectQuotas, monthlyProviderAttempts: 3 }, new Date(timestamp)))
+      .rejects.toMatchObject({ quota: "monthlyProviderAttempts", retryAfterSeconds: resetSeconds });
   });
 
   it("limits each API key within a fixed minute window", () => {

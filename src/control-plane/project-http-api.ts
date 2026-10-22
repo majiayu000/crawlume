@@ -320,10 +320,10 @@ export class ProjectJobHttpApi {
     try {
       const context = { correlationId: requestId };
       const identity = await this.services.authenticate(projectBearerKey(request), context);
+      this.rateLimiter?.take(identity.apiKeyId);
       if (route.projectId.toLowerCase() !== identity.projectId.toLowerCase()) {
         throw new ProjectPathIdentityMismatchError();
       }
-      this.rateLimiter?.take(identity.apiKeyId);
       if (route.kind !== "publications" && route.kind !== "audit" &&
           (request.query ?? "") !== "") {
         throw new ProjectQueryError();
