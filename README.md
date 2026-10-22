@@ -15,8 +15,8 @@ search-engine extensions remain separate future decisions.
 
 ## Requirements
 
-- Node.js 25.7 or newer
-- pnpm
+- Node.js 24 LTS (24.14 or newer) or Node.js 26
+- pnpm (version pinned by `packageManager` in `package.json`)
 - Google Chrome for browser mode
 
 ## Install and verify
@@ -36,6 +36,19 @@ Runtime data is stored outside this repository. On macOS the default location is
 
 Set `CRAWLUME_DATA_DIR` to choose another location.
 
+## Docker
+
+The image bundles Chromium and stores runtime data in the `/data` volume:
+
+```bash
+docker build --tag crawlume .
+docker run --rm -i --volume crawlume-data:/data crawlume
+```
+
+The default entrypoint serves MCP over stdio, so MCP clients can use `docker` as the command with
+`run --rm -i --volume crawlume-data:/data crawlume` as arguments. Append `--control-plane` to run the
+control-plane HTTP API instead.
+
 ## MCP configuration
 
 Build the project, then add the server to an MCP client:
@@ -48,8 +61,8 @@ disabled_tools = ["search_web", "get_search_status", "get_search_stats"]
 env = { CRAWLUME_ALLOW_DNS_FAKE_IP = "1", CRAWLUME_LOCAL_INDEX_ENABLED = "0" }
 ```
 
-The Fake-IP setting is needed on this machine because its Clash/TUN DNS uses Fake-IP mode. Omit
-`CRAWLUME_ALLOW_DNS_FAKE_IP` on systems whose DNS returns ordinary public addresses. This Codex
+`CRAWLUME_ALLOW_DNS_FAKE_IP` is only needed when local DNS runs in Fake-IP mode (for example
+Clash/TUN). Omit it on systems whose DNS returns ordinary public addresses. This Codex
 configuration focuses on reading supplied URLs and crawling sites; search tools are disabled.
 Use an external search tool to find URLs. Local indexing remains off by default.
 
@@ -379,3 +392,7 @@ Project documents:
 - [RSL approvals and access audit](docs/rsl-approval-audit-spec.md)
 - [RSL OLP Token and CAP authorization](docs/rsl-olp-cap-spec.md)
 - [RSL paid-license quote boundary](docs/rsl-payment-boundary-spec.md)
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
