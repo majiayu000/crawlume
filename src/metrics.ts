@@ -157,6 +157,10 @@ function tableExists(database: DatabaseSync, name: string): boolean {
   ).get(name) !== undefined;
 }
 
+function prometheusLabel(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("\n", "\\n");
+}
+
 function executedTransitions(execution: AccessPlanEvidence | null): AccessPlanEvidence["plannedStages"] {
   if (execution === null) return [];
   const executed = new Set(execution.executedStages);
@@ -408,6 +412,43 @@ export class CrawlerMetrics {
     result.crawlCoverage = this.readCrawlCoverage(sinceMs, todayStart + millisecondsPerDay);
     result.daily = [...dailyByDate.values()];
     return result;
+  }
+
+  prometheusText(): string {
+    const rows = this.database.prepare(`
+      SELECT outcome, error_code, fetch_method, cache_status, final_state,
+             SUM(request_count) AS request_count, SUM(response_bytes) AS response_bytes,
+             SUM(attempts) AS attempts, SUM(retry_delay_ms) AS retry_delay_ms,
+             SUM(duration_ms) AS duration_ms
+      FROM runtime_metrics_daily
+      GROUP BY outcome, error_code, fetch_method, cache_status, final_state
+      ORDER BY outcome, error_code, fetch_method, cache_status, final_state
+    `).all() as unknown as Array<Pick<MetricRow,
+      "outcome" | "error_code" | "fetch_method" | "cache_status" | "final_state" |
+      "request_count" | "response_bytes" | "attempts" | "retry_delay_ms" | "duration_ms"
+    >>;
+    const counters = [
+      ["crawlume_reads_total", "Content reads by terminal outcome.", "request_count"],
+      ["crawlume_read_response_bytes_total", "Upstream response bytes of live reads.", "response_bytes"],
+      ["crawlume_read_attempts_total", "Provider attempts spent on reads.", "attempts"],
+      ["crawlume_read_retry_delay_milliseconds_total", "Retry backoff spent on reads.", "retry_delay_ms"],
+      ["crawlume_read_duration_milliseconds_total", "Wall-clock time spent on reads.", "duration_ms"],
+    ] as const;
+    const lines: string[] = [];
+    for (const [name, help, column] of counters) {
+      lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} counter`);
+      for (const row of rows) {
+        const labels = [
+          ["outcome", row.outcome],
+          ["final_state", row.final_state],
+          ["fetch_method", row.fetch_method],
+          ["cache_status", row.cache_status],
+          ["error_code", row.error_code],
+        ].map(([key, value]) => `${key}="${prometheusLabel(value as string)}"`).join(",");
+        lines.push(`${name}{${labels}} ${row[column]}`);
+      }
+    }
+    return `${lines.join("\n")}\n`;
   }
 
   close(): void {
