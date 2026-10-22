@@ -12,6 +12,12 @@ import {
   recordAuditEvent,
 } from "./organization-authorization.js";
 import { recoverExpiredJobLeases } from "./job-lease-recovery.js";
+import {
+  enforceJobCreationQuotas,
+  hasJobCreationQuotas,
+  unlimitedProjectQuotas,
+  type ProjectQuotaLimits,
+} from "./quotas.js";
 
 export { controlPlaneJobTypes } from "./job-input.js";
 export type {
@@ -388,12 +394,14 @@ function jobLease(row: JobLeaseRow): JobLease {
 
 export class ControlPlaneJobService {
   private readonly now: () => Date;
+  private readonly quotas: ProjectQuotaLimits;
 
   constructor(
     private readonly database: ControlPlaneDatabase,
-    dependencies: Readonly<{ now?: () => Date }> = {},
+    dependencies: Readonly<{ now?: () => Date; quotas?: ProjectQuotaLimits }> = {},
   ) {
     this.now = dependencies.now ?? (() => new Date());
+    this.quotas = dependencies.quotas ?? unlimitedProjectQuotas;
   }
 
   async createJob(
@@ -484,6 +492,16 @@ export class ControlPlaneJobService {
       createdAt: now.toISOString(),
     });
     return this.database.transaction(async (transaction) => {
+      if (hasJobCreationQuotas(this.quotas)) {
+        const replay = await transaction.query<{ id: string }>(
+          "SELECT id FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
+          [scope.projectId, normalizedKey],
+        );
+        // Idempotent replays return the original Job without consuming quota again.
+        if (replay.rows.length === 0) {
+          await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
+        }
+      }
       const result = await transaction.query<ControlPlaneJobRow>(`
       INSERT INTO jobs(
         id, project_id, idempotency_key, request_hash, created_by_user_id,

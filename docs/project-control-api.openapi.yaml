@@ -282,6 +282,8 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/jobs/{job_id}:
@@ -319,6 +321,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/JobNotFound'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/jobs/{job_id}/pause:
@@ -375,6 +379,8 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/jobs/{job_id}/resume:
@@ -431,6 +437,8 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/jobs/{job_id}/cancel:
@@ -483,6 +491,8 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/jobs/{job_id}/publications:
@@ -552,6 +562,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/JobNotFound'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/audit-events:
@@ -610,6 +622,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
   /projects/{project_id}/api-keys:
@@ -1424,6 +1438,15 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     ValidationFailed:
       description: The Job request body violates the contract
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    QuotaExceeded:
+      description: >-
+        A Project quota or the per-API-key request rate is exhausted. Retry-After is present and
+        retryable is true only when the limit resets with time.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

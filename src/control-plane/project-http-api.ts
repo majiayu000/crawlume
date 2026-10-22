@@ -28,6 +28,7 @@ import {
   type CreateControlPlaneJobInput,
   type ControlPlaneJobService,
 } from "./project-scope.js";
+import { QuotaExceededError, type ApiRequestRateLimiter } from "./quotas.js";
 import {
   controlPlaneRouterOperations,
   projectJobRouteDefinitions,
@@ -47,7 +48,10 @@ type ProjectJobHttpServices = Readonly<{
   ): Promise<readonly AuditEvent[]>;
 }>;
 
-type ProjectJobHttpDependencies = Readonly<{ requestId?: () => string }>;
+type ProjectJobHttpDependencies = Readonly<{
+  requestId?: () => string;
+  rateLimiter?: ApiRequestRateLimiter;
+}>;
 
 type ProjectProblem = Readonly<{
   type: string;
@@ -290,12 +294,14 @@ function projectProblem(
 
 export class ProjectJobHttpApi {
   private readonly requestId: () => string;
+  private readonly rateLimiter: ApiRequestRateLimiter | null;
 
   constructor(
     private readonly services: ProjectJobHttpServices,
     dependencies: ProjectJobHttpDependencies = {},
   ) {
     this.requestId = dependencies.requestId ?? randomUUID;
+    this.rateLimiter = dependencies.rateLimiter ?? null;
   }
 
   async handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse> {
@@ -317,6 +323,7 @@ export class ProjectJobHttpApi {
       if (route.projectId.toLowerCase() !== identity.projectId.toLowerCase()) {
         throw new ProjectPathIdentityMismatchError();
       }
+      this.rateLimiter?.take(identity.apiKeyId);
       if (route.kind !== "publications" && route.kind !== "audit" &&
           (request.query ?? "") !== "") {
         throw new ProjectQueryError();
@@ -459,6 +466,18 @@ export class ProjectJobHttpApi {
     if (error instanceof JobTransitionError) {
       return projectProblem(request, requestId, 409, error.code, "Job Transition Invalid",
         error.message);
+    }
+    if (error instanceof QuotaExceededError) {
+      const response = projectProblem(request, requestId, 429, error.code, "Quota Exceeded",
+        error.message);
+      return {
+        ...response,
+        headers: {
+          ...response.headers,
+          ...(error.retryAfterSeconds === null ? {} : { "retry-after": String(error.retryAfterSeconds) }),
+        },
+        body: { ...(response.body as ProjectProblem), retryable: error.retryAfterSeconds !== null },
+      };
     }
     if (error instanceof ZodError) {
       return projectProblem(request, requestId, 422, "JOB_REQUEST_INVALID", "Job Request Invalid",

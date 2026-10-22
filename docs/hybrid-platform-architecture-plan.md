@@ -1400,7 +1400,7 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [ ] REST/MCP/TypeScript SDK。REST（OpenAPI v1）与 TypeScript SDK（`src/sdk/client.ts`，`docs/sdk.md`）已完成；云 MCP 适配器未实现。
 - [ ] Webhook。
 - [ ] C 端 Web/Extension/Companion。
-- [ ] Usage/Quota/Audit。Audit 已完成（迁移 0007、`/projects/{id}/audit-events`）；Usage/Quota 未实现。
+- [ ] Usage/Quota/Audit。Audit 已完成（迁移 0007、`/projects/{id}/audit-events`）；Quota 已完成（`control-plane/quotas.ts`，五项均按 §23.2，429 `QUOTA_EXCEEDED`）；Usage 目前只有 `job_events.usage`，独立的 terminal Usage Ledger 未实现。
 - [ ] CI/CD 和受保护发布。CI 已完成（`.github/workflows/ci.yml`）；受保护发布未实现。
 - [x] Schema migration。`migrations/control-plane/`，启动时 `runControlPlaneMigrations`，`control-plane-migrations.test.ts`。
 - [ ] Backup/restore。本地 SQLite 已完成（`crawlume backup`/`restore`，见 `operations.md`）；PostgreSQL 依赖数据库自身方案，未做演练。

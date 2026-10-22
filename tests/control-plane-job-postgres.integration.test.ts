@@ -22,6 +22,7 @@ import {
   type ControlPlaneQuery,
   type CreateControlPlaneJobInput,
 } from "../src/control-plane/project-scope.js";
+import { unlimitedProjectQuotas } from "../src/control-plane/quotas.js";
 import { PostgresControlPlaneDatabase } from "../src/server.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
@@ -761,4 +762,33 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
     });
   });
 
+  it("enforces Project quotas at creation without charging idempotent replays", async () => {
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const now = await databaseClock(database!);
+    const jobs = new ControlPlaneJobService(storage, {
+      now: () => now,
+      quotas: { ...unlimitedProjectQuotas, activeJobs: 1, monthlyProviderAttempts: 3 },
+    });
+    const context = { correlationId: "job-quota" };
+    const first = await jobs.createJob(
+      fixtureProjectKey, "job-quota-first", jobInput("https://example.com/quota-1"), context,
+    );
+    await expect(jobs.createJob(
+      fixtureProjectKey, "job-quota-first", jobInput("https://example.com/quota-1"), context,
+    )).resolves.toMatchObject({ id: first.id });
+    await expect(jobs.createJob(
+      fixtureProjectKey, "job-quota-second", jobInput("https://example.com/quota-2"), context,
+    )).rejects.toMatchObject({ code: "QUOTA_EXCEEDED", quota: "activeJobs", limit: 1 });
+
+    await jobs.cancel(fixtureProjectKey, first.id);
+    // Two attempts are already reserved this month; another two would exceed the limit of three.
+    await expect(jobs.createJob(
+      fixtureProjectKey, "job-quota-third", jobInput("https://example.com/quota-3"), context,
+    )).rejects.toMatchObject({ quota: "monthlyProviderAttempts", limit: 3 });
+    const counted = await database!.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM jobs WHERE project_id = $1",
+      [fixtureProjectKey.projectId],
+    );
+    expect(counted.rows[0]?.count).toBe("1");
+  });
 });
