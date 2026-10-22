@@ -84,6 +84,12 @@ describe("soak runner result boundaries", () => {
     expect(run.summary).toMatchObject({ passed: true, publishedPages: 300_000,
       capacity: { indexedPages: 300_000, fullCapacityRejected: true, existingUrlUpdated: true } });
   });
+  it("ends a duration-only soak normally when the active job reaches the deadline", async () => {
+    run.total = 0;
+    run.delay = 60_001;
+    await import("../benchmarks/soak/runner.js");
+    expect(run.summary).toMatchObject({ passed: true, failure: null, publishedPages: 0, elapsedMs: 60_001 });
+  });
   it("rejects terminal results received beyond the duration deadline", async () => {
     run.delay = 60_001;
     await import("../benchmarks/soak/runner.js");
