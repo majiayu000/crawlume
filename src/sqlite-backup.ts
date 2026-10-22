@@ -15,6 +15,7 @@ import { basename, dirname, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 
 import { ReadError } from "./errors.js";
+import { logEvent } from "./log.js";
 
 export type SqliteBackupMetadata = {
   format: "crawlume-sqlite-backup-v1";
@@ -77,7 +78,11 @@ async function inspectSqliteBackup(
     if (error instanceof ReadError) throw error;
     throw invalidBackup("SQLite backup failed integrity verification.", path, error);
   } finally {
-    database?.close();
+    try {
+      database?.close();
+    } catch (error) {
+      logEvent("warn", "sqlite.backup.inspection_close_failed", { path, error: String(error) });
+    }
   }
 }
 
@@ -89,7 +94,9 @@ function removeIfPresent(path: string): void {
   try {
     unlinkSync(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logEvent("warn", "sqlite.temporary_file.cleanup_failed", { path, error: String(error) });
+    }
   }
 }
 
@@ -205,7 +212,11 @@ export async function createSqliteBackup(
     publishWithoutOverwrite(pendingPath, backupPath, "backup");
     return metadata;
   } finally {
-    source?.close();
+    try {
+      source?.close();
+    } catch (error) {
+      logEvent("warn", "sqlite.backup.source_close_failed", { path: sourcePath, error: String(error) });
+    }
     removeIfPresent(pendingPath);
   }
 }
