@@ -144,7 +144,7 @@ try {
         crawlBudget: {
           maxDurationMs: Math.min(remainingMs(), Math.max(600_000, pages * 200)),
           maxProviderAttempts: pages * 2,
-          maxDocumentBytes: pages * 64_000,
+          maxDocumentBytes: Math.max(pages, concurrency) * 64_000,
           maxBrowserMs: 0,
           maxBrowserContexts: 0,
         },

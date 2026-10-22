@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const run = vi.hoisted(() => ({
-  updates: 0, toolCalls: 0, now: 0, total: 5, pagesPerJob: 2, completed: 0, delay: 0, samples: 0,
+  budgets: [] as number[], updates: 0, toolCalls: 0, now: 0, total: 5, pagesPerJob: 2, completed: 0, delay: 0, samples: 0,
   batches: [] as number[], paths: [] as string[], summary: {} as Record<string, any>,
   sampler: undefined as (() => void) | undefined,
 }));
@@ -18,7 +18,7 @@ vi.mock("node:fs/promises", () => ({
 }));
 vi.mock("node:util", () => ({ parseArgs: () => ({ values: {
   "total-pages": String(run.total), "pages-per-job": String(run.pagesPerJob),
-  "duration-minutes": "1", "sample-seconds": "1", "report-dir": "/fake/report",
+  "duration-minutes": "1", concurrency: "32", "sample-seconds": "1", "report-dir": "/fake/report",
 } }) }));
 vi.mock("node:sqlite", () => ({ DatabaseSync: class {
   prepare(sql: string) { return { get: () => ({ count: run.completed + (sql === "SELECT count(*) AS count FROM indexed_page_history" ? run.updates : 0) }) }; }
@@ -42,8 +42,9 @@ vi.mock("../benchmarks/harness/mcp-process.js", () => ({
 }));
 vi.mock("../benchmarks/harness/crawl-e2e.js", () => ({
   requireStructuredResult: vi.fn(),
-  startCrawl: async (_server: unknown, args: { url: string }) => {
+  startCrawl: async (_server: unknown, args: { url: string; crawlBudget: { maxDocumentBytes: number } }) => {
     run.paths.push(args.url);
+    run.budgets.push(args.crawlBudget.maxDocumentBytes);
     return { id: "job" };
   },
   waitForTerminalCrawl: async () => {
@@ -56,7 +57,7 @@ vi.mock("../benchmarks/harness/crawl-e2e.js", () => ({
 }));
 beforeEach(() => {
   vi.resetModules();
-  Object.assign(run, { updates: 0, toolCalls: 0, now: 0, total: 5, pagesPerJob: 2, completed: 0, delay: 0, samples: 0,
+  Object.assign(run, { budgets: [], updates: 0, toolCalls: 0, now: 0, total: 5, pagesPerJob: 2, completed: 0, delay: 0, samples: 0,
     batches: [], paths: [], summary: {}, sampler: undefined });
   vi.spyOn(Date, "now").mockImplementation(() => run.now);
   vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
@@ -75,6 +76,12 @@ describe("soak runner result boundaries", () => {
     expect(new Set(run.paths).size).toBe(3);
     expect(run.summary).toMatchObject({ passed: true, publishedPages: 5, elapsedMs: 0,
       capacity: { indexedPages: 5, historyUrls: 5, ftsMatches: 5 } });
+  });
+  it("reserves enough document bytes for a one-page batch at maximum concurrency", async () => {
+    run.total = 1;
+    await import("../benchmarks/soak/runner.js");
+    expect(run.budgets[0]! / 32).toBeGreaterThanOrEqual(64_000);
+    expect(run.summary.passed).toBe(true);
   });
   it("requires update and overflow checks at the 300k capacity boundary", async () => {
     run.total = 300_000;
