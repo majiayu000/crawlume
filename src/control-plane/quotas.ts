@@ -90,16 +90,18 @@ export async function enforceJobCreationQuotas(
   if (!hasJobCreationQuotas(limits)) return;
   const result = await transaction.query<QuotaUsageRow>(`
     SELECT
-      (SELECT count(*) FROM jobs
+      ${limits.activeJobs === null ? "0" : `(SELECT count(*) FROM jobs
         WHERE project_id = $1
-          AND status IN ('accepted', 'queued', 'assigned', 'running', 'paused'))::text AS active_jobs,
-      (SELECT coalesce(sum(budget_max_provider_attempts), 0) FROM jobs
-        WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)::text AS reserved_provider_attempts,
-      (SELECT coalesce(sum(budget_max_browser_ms), 0) FROM jobs
-        WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)::text AS reserved_browser_ms,
-      (SELECT coalesce(sum(byte_count), 0) FROM artifact_metadata
-        WHERE project_id = $1)::text AS artifact_bytes
-  `, [projectId, utcMonthStart(now), new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))]);
+          AND status IN ('accepted', 'queued', 'assigned', 'running', 'paused'))`}::text AS active_jobs,
+      ${limits.monthlyProviderAttempts === null ? "0" : `(SELECT coalesce(sum(budget_max_provider_attempts), 0) FROM jobs
+        WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)`}::text AS reserved_provider_attempts,
+      ${limits.monthlyBrowserMs === null ? "0" : `(SELECT coalesce(sum(budget_max_browser_ms), 0) FROM jobs
+        WHERE project_id = $1 AND created_at >= $2 AND created_at < $3)`}::text AS reserved_browser_ms,
+      ${limits.artifactBytes === null ? "0" : `(SELECT coalesce(sum(byte_count), 0) FROM artifact_metadata
+        WHERE project_id = $1)`}::text AS artifact_bytes
+  `, limits.monthlyProviderAttempts !== null || limits.monthlyBrowserMs !== null
+    ? [projectId, utcMonthStart(now), new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))]
+    : [projectId]);
   const usage = result.rows[0];
   if (usage === undefined) throw new Error("Project quota usage query returned no row.");
   const monthReset = secondsUntilNextUtcMonth(now);

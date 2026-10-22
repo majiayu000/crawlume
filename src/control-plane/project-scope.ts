@@ -473,13 +473,9 @@ export class ControlPlaneJobService {
         if (!(databaseNow instanceof Date)) throw new Error("Project quota clock query returned no timestamp.");
         now = databaseNow;
       }
-      const notBefore = input.notBefore ?? now;
-      if (!(notBefore instanceof Date) || !Number.isFinite(notBefore.getTime()) || notBefore < now) {
+      if (input.notBefore !== undefined &&
+          (!(input.notBefore instanceof Date) || !Number.isFinite(input.notBefore.getTime()))) {
         throw new TypeError("input.notBefore must be a valid date at or after creation.");
-      }
-      const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
-      if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
-        throw new TypeError("The Job deadline must be after notBefore.");
       }
 
       const request = {
@@ -495,6 +491,25 @@ export class ControlPlaneJobService {
         notBefore: input.notBefore?.toISOString() ?? null,
       };
       const requestHash = jobHash(request);
+      if (hasJobCreationQuotas(this.quotas)) {
+        const replay = await transaction.query<ControlPlaneJobRow & { request_hash: Buffer }>(
+          "SELECT * FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
+          [scope.projectId, normalizedKey],
+        );
+        const existing = replay.rows[0];
+        if (existing !== undefined) {
+          if (!existing.request_hash.equals(requestHash)) throw new JobIdempotencyConflictError();
+          return controlPlaneJob(existing);
+        }
+      }
+      const notBefore = input.notBefore ?? now;
+      if (notBefore < now) {
+        throw new TypeError("input.notBefore must be a valid date at or after creation.");
+      }
+      const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
+      if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
+        throw new TypeError("The Job deadline must be after notBefore.");
+      }
       const id = randomUUID();
       const envelopeHash = jobHash({
         id,
@@ -503,14 +518,7 @@ export class ControlPlaneJobService {
         createdAt: now.toISOString(),
       });
       if (hasJobCreationQuotas(this.quotas)) {
-        const replay = await transaction.query<{ id: string }>(
-          "SELECT id FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
-          [scope.projectId, normalizedKey],
-        );
-        // Idempotent replays return the original Job without consuming quota again.
-        if (replay.rows.length === 0) {
-          await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
-        }
+        await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
       }
       const result = await transaction.query<ControlPlaneJobRow>(`
       INSERT INTO jobs(

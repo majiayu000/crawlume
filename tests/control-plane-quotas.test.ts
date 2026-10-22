@@ -12,6 +12,23 @@ describe("Project quotas", () => {
     expect(projectQuotasFromEnvironment({})).toEqual(unlimitedProjectQuotas);
   });
 
+  it.each([
+    ["activeJobs", ["budget_max_provider_attempts", "budget_max_browser_ms", "artifact_metadata"]],
+    ["monthlyProviderAttempts", ["count(*)", "budget_max_browser_ms", "artifact_metadata"]],
+    ["monthlyBrowserMs", ["count(*)", "budget_max_provider_attempts", "artifact_metadata"]],
+    ["artifactBytes", ["FROM jobs", "budget_max_provider_attempts", "budget_max_browser_ms"]],
+  ] as const)("does not query disabled usage when only %s is enabled", async (quota, disabled) => {
+    let sql = "";
+    const query = { query: async <Row>(statement: string) => {
+      sql = statement;
+      return { rows: [{ active_jobs: "0", reserved_provider_attempts: "0",
+        reserved_browser_ms: "0", artifact_bytes: "0" } as Row] };
+    } };
+    await enforceJobCreationQuotas(query, "project", { maxProviderAttempts: 1, maxBrowserMs: 1 },
+      { ...unlimitedProjectQuotas, [quota]: 10 }, new Date("2026-10-22T00:00:00Z"));
+    for (const expression of disabled) expect(sql).not.toContain(expression);
+  });
+
   it("parses every quota and converts browser minutes to milliseconds", () => {
     expect(projectQuotasFromEnvironment({
       DIAOYAN_QUOTA_ACTIVE_JOBS: "5",
