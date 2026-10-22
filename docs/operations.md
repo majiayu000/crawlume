@@ -81,6 +81,21 @@
 
 对外暴露时应启用 TLS 或放在终止 TLS 的反向代理之后，并只开放 API 端口。
 
+### 配额
+
+以下变量对每个 Project 生效，未设置即不限制，非法值启动失败。超限请求返回 HTTP 429 `QUOTA_EXCEEDED`；
+随时间重置的配额带 `Retry-After` 且 `retryable: true`。
+
+| 变量 | 统计方式 |
+|---|---|
+| `DIAOYAN_QUOTA_ACTIVE_JOBS` | 当前处于 accepted/queued/assigned/running/paused 的 Job 数 |
+| `DIAOYAN_QUOTA_MONTHLY_PROVIDER_ATTEMPTS` | 本 UTC 月创建的 Job 预留的 `max_provider_attempts` 之和 |
+| `DIAOYAN_QUOTA_MONTHLY_BROWSER_MINUTES` | 本 UTC 月创建的 Job 预留的 `max_browser_ms` 之和（按分钟配置） |
+| `DIAOYAN_QUOTA_ARTIFACT_BYTES` | Project 已登记 Artifact 的 `byte_count` 之和，达到即拒绝新 Job |
+| `DIAOYAN_QUOTA_API_REQUESTS_PER_MINUTE` | 每个 API Key 每分钟请求数，按单个 Control Plane 进程计数 |
+
+配额在创建 Job 的事务内用 Project 级 advisory lock 检查；同一 `Idempotency-Key` 的重放不重复计入。
+
 ## 5. 可观测性
 
 - 日志：进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。

@@ -66,6 +66,12 @@ import {
   ControlPlaneJobLeaseSweeper,
   ControlPlaneJobLeaseSweepRunner,
 } from "./control-plane/job-lease-recovery.js";
+import {
+  ApiRequestRateLimiter,
+  projectQuotasFromEnvironment,
+  unlimitedProjectQuotas,
+  type ProjectQuotaLimits,
+} from "./control-plane/quotas.js";
 import { WorkerBootstrapHttpApi } from "./control-plane/worker-bootstrap-http-api.js";
 import { logEvent } from "./log.js";
 import { createMcpServer } from "./mcp.js";
@@ -428,6 +434,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   humanIdentity: OidcSessionConfig;
   identity: WorkerIdentityConfig;
   listener: WorkerControlServerConfig;
+  quotas?: ProjectQuotaLimits;
 }>;
 
 export type ControlPlaneRuntime = Readonly<{
@@ -586,6 +593,7 @@ export async function loadControlPlaneRuntimeConfig(
       port: controlPlanePort(environment),
       tls,
     },
+    quotas: projectQuotasFromEnvironment(environment),
   });
 }
 
@@ -625,7 +633,8 @@ export async function startControlPlaneRuntime(
     if (hasPendingFatalError) throw pendingFatalError;
     const identity = new WorkerIdentityService(database, config.identity);
     const humanIdentity = new OidcSessionService(database, config.humanIdentity);
-    const jobs = new ControlPlaneJobService(database);
+    const quotas = config.quotas ?? unlimitedProjectQuotas;
+    const jobs = new ControlPlaneJobService(database, { quotas });
     const results = new JobResultService(database);
     const humanAuthApi = new HumanAuthHttpApi({
       beginLogin: humanIdentity.beginLogin.bind(humanIdentity),
@@ -667,7 +676,9 @@ export async function startControlPlaneRuntime(
       cancelJob: jobs.cancel.bind(jobs),
       listPublications: results.listPublications.bind(results),
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
-    });
+    }, quotas.apiRequestsPerMinute === null
+      ? {}
+      : { rateLimiter: new ApiRequestRateLimiter(quotas.apiRequestsPerMinute) });
     const workerApi = new WorkerHttpApi({ identity, jobs, results });
     listener = await startWorkerControlServer(
       new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),

@@ -20,6 +20,7 @@ import type {
   AuditEvent,
   JobPublication,
 } from "../src/control-plane/organization-authorization.js";
+import { ApiRequestRateLimiter, QuotaExceededError } from "../src/control-plane/quotas.js";
 
 const projectId = "22222222-2222-4222-8222-222222222222";
 const jobId = "33333333-3333-4333-8333-333333333333";
@@ -149,6 +150,7 @@ function harness(options: Readonly<{
     nextSequence: number | null;
   }> | Error;
   auditEvents?: readonly AuditEvent[] | Error;
+  rateLimiter?: ApiRequestRateLimiter;
 }> = {}) {
   const authenticate = vi.fn(async () => {
     if (options.authenticated instanceof Error) throw options.authenticated;
@@ -188,7 +190,10 @@ function harness(options: Readonly<{
         authenticate, createJob, getJob, pauseJob, resumeJob, cancelJob,
         listPublications, listAuditEvents,
       },
-      { requestId: () => requestId },
+      {
+        requestId: () => requestId,
+        ...(options.rateLimiter === undefined ? {} : { rateLimiter: options.rateLimiter }),
+      },
     ),
     authenticate,
     createJob,
@@ -202,6 +207,35 @@ function harness(options: Readonly<{
 }
 
 describe("Project Job HTTP API", () => {
+  it("returns a retryable 429 with Retry-After for a time-bound quota", async () => {
+    const { api } = harness({ created: new QuotaExceededError("monthlyProviderAttempts", 3, 120) });
+    const response = await api.handle(request());
+    expect(response.status).toBe(429);
+    expect(response.headers).toMatchObject({
+      "content-type": "application/problem+json",
+      "retry-after": "120",
+    });
+    expect(response.body).toMatchObject({ code: "QUOTA_EXCEEDED", status: 429, retryable: true });
+  });
+
+  it("returns a non-retryable 429 without Retry-After for a capacity quota", async () => {
+    const { api } = harness({ created: new QuotaExceededError("activeJobs", 1, null) });
+    const response = await api.handle(request());
+    expect(response.status).toBe(429);
+    expect(response.headers).not.toHaveProperty("retry-after");
+    expect(response.body).toMatchObject({ code: "QUOTA_EXCEEDED", retryable: false });
+  });
+
+  it("rate limits each API key per minute before running the route", async () => {
+    const limiter = new ApiRequestRateLimiter(1, () => 30_000);
+    const { api, createJob } = harness({ rateLimiter: limiter });
+    expect((await api.handle(request())).status).toBe(201);
+    const limited = await api.handle(request());
+    expect(limited.status).toBe(429);
+    expect(limited.headers).toMatchObject({ "retry-after": "30" });
+    expect(createJob).toHaveBeenCalledTimes(1);
+  });
+
   it("authenticates, scopes, and creates a Project-bound Job", async () => {
     const { api, authenticate, createJob } = harness();
 
