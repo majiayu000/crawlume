@@ -9,6 +9,12 @@
   "engines": {
     "node": ">=24.14.0"
   },
+  "exports": {
+    "./sdk": {
+      "types": "./dist/sdk/client.d.ts",
+      "default": "./dist/sdk/client.js"
+    }
+  },
   "bin": {
     "crawlume": "./dist/cli/main.js",
     "crawlume-mcp": "./dist/server.js",
