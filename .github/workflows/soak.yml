@@ -1,0 +1,41 @@
+name: Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration-minutes:
+        description: "Run length in minutes (GitHub-hosted jobs stop at 360)"
+        default: "120"
+      total-pages:
+        description: "Stop after this many pages; 0 runs for the full duration"
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - env:
+          DURATION_MINUTES: ${{ inputs.duration-minutes }}
+          TOTAL_PAGES: ${{ inputs.total-pages }}
+        run: >-
+          pnpm bench:soak
+          --duration-minutes "$DURATION_MINUTES"
+          --total-pages "$TOTAL_PAGES"
+          --report-dir benchmarks/reports/soak
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report
+          path: benchmarks/reports/soak
