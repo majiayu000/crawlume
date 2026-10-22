@@ -12,7 +12,7 @@
 | Control Plane | `node dist/server.js --control-plane` | PostgreSQL | 多项目 API、远程 Worker |
 | CLI | `node dist/cli/main.js <command>` | 与 MCP 共用数据目录 | 运维与排障 |
 
-运行时要求 Node.js 24 LTS（≥24.14）或 Node.js 26；浏览器模式需要 Chrome，容器镜像自带 Chromium。
+运行时要求 Node.js 24 LTS（≥24.15）或 Node.js 26；浏览器模式需要 Chrome，容器镜像自带 Chromium。
 
 ## 2. 数据目录
 
@@ -65,8 +65,8 @@
 
 必填变量：
 
-- `DIAOYAN_CONTROL_DATABASE_URL`：`postgres://` 或 `postgresql://`，不得在 URL 中写 TLS 参数；非回环地址
-  强制校验证书，自签 CA 用 `DIAOYAN_CONTROL_DATABASE_CA_PATH`。
+- `DIAOYAN_CONTROL_DATABASE_URL`：`postgres://` 或 `postgresql://`，不得在 URL 中写 TLS 参数；只有字面地址 `127.0.0.1`
+  和 `::1` 且未指定 CA 时使用明文，`localhost` 等其他主机名均强制校验证书。自签 CA 用 `DIAOYAN_CONTROL_DATABASE_CA_PATH`。
 - `DIAOYAN_OIDC_ISSUER`、`DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT`、`DIAOYAN_OIDC_TOKEN_ENDPOINT`、
   `DIAOYAN_OIDC_CLIENT_ID`、`DIAOYAN_OIDC_REDIRECT_URI`、`DIAOYAN_OIDC_JWKS_URI`、
   `DIAOYAN_OIDC_ID_TOKEN_ALGORITHM`。
@@ -79,14 +79,16 @@
 常见的 `0644` Secret 挂载会被拒绝。启动时会做签名自检，不匹配直接失败。可选：
 `DIAOYAN_CONTROL_HOST`（默认 `127.0.0.1`）、`DIAOYAN_CONTROL_PORT`（默认 8787）、
 `DIAOYAN_CONTROL_TLS_KEY_PATH` 与 `DIAOYAN_CONTROL_TLS_CERT_PATH`（必须成对）。
+TLS key 和 cert 均须为非符号链接的普通文件，key 还须使用 owner-only 权限（如 `0600`）；
+`0644` 私钥或符号链接形式的 Secret 挂载会被拒绝。
 
 对外暴露时应启用 TLS 或放在终止 TLS 的反向代理之后，并只开放 API 端口。
 
 ## 5. 可观测性
 
 - 日志：MCP 和 Control Plane 服务端入口的进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。
-- 指标：设置 `CRAWLUME_METRICS_PORT` 后抓取 `GET /metrics`，计数器定义见
-  [`runtime-metrics-spec.md`](./runtime-metrics-spec.md)。建议告警：
+- 指标（仅本地/容器 MCP runtime）：设置 `CRAWLUME_METRICS_PORT` 后抓取 `GET /metrics`，计数器定义见
+  [`runtime-metrics-spec.md`](./runtime-metrics-spec.md)。`--control-plane` 不启动此端点。建议告警：
   - `sum(rate(crawlume_reads_total{outcome="failure"}[15m])) / sum(rate(crawlume_reads_total[15m]))` 持续升高。
   - 某个 `error_code`（如 `SSRF_BLOCKED`、`RATE_LIMITED`）突增。
   - `/metrics` 返回 500：聚合表不可读，按存储故障处理。
@@ -116,9 +118,10 @@ Control Plane 的 PostgreSQL 使用数据库自身的备份方案（`pg_dump` �
 
 1. 阅读 `CHANGELOG.md`。
 2. 先执行 `crawlume backup`；Control Plane 先做 PostgreSQL 快照。
-3. 替换构建产物或镜像，重启进程。SQLite 表和 Control Plane 迁移在启动时自动应用；迁移失败时进程退出，
-   不会带着半迁移的 Schema 继续服务。
-4. 用 `crawlume stats --days 1` 或 `/metrics` 确认读取恢复正常。
+3. 替换构建产物或镜像，重启进程。SQLite 表和 Control Plane 迁移在启动时自动应用；迁移失败时进程退出。
+   SQLite 各 store 的初始化不共享整体事务，失败时可能已部分升级；保持进程停止并从升级前备份恢复到新路径，
+   再启动原版本，不要直接用原数据库反复尝试升级。
+4. MCP 用 `crawlume stats --days 1` 或 `/metrics` 确认读取恢复正常；Control Plane 通过其 HTTP API 验证。
 
 回滚：停止新版本，使用升级前的备份恢复到新路径，再启动旧版本。
 
