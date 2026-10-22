@@ -176,4 +176,5 @@ Human access-token 和 Worker session 各自匹配、且两组互异的 Ed25519 
 配额边界：`DIAOYAN_QUOTA_ARTIFACT_BYTES` 只在新建 Job 时检查当前已登记的 artifact 字节，
 不预留未来产物空间，也不在写入产物时强制存储硬上限。`DIAOYAN_QUOTA_API_REQUESTS_PER_MINUTE`
 按每个 Control Plane 进程内的 API key 计数，多实例部署不共享计数；不能据此宣称全局请求上限。
-月度预算以获取 Project 锁之后的 PostgreSQL 时钟和 UTC 月界计算。
+月度预算以获取 Project 锁之后的 PostgreSQL 时钟和 `[本月初, 下月初)` UTC 窗口计算；
+统计的是该窗口内创建的 Job 预留预算，不是按执行发生月份计量的实际用量。
