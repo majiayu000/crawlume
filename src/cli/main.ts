@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 
 import { resolve } from "node:path";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createApp, type CrawlumeApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { normalizeError, ReadError } from "../errors.js";
+import {
+  createSqliteBackup,
+  restoreSqliteBackup,
+  type SqliteBackupMetadata,
+} from "../sqlite-backup.js";
 import {
   cacheModes,
   type CacheMode,
@@ -26,6 +31,8 @@ const usage = `Usage:
   crawlume search <query> [options]
   crawlume stats [--days <1-90>]
   crawlume rsl-audit [--limit <1-1000>]
+  crawlume backup <backup-path>
+  crawlume restore <backup-path> <target-path>
 
 Options:
   --no-browser                               Forbid browser execution
@@ -57,7 +64,9 @@ export type CliAction =
   | { kind: "crawl"; options: import("../types.js").CrawlSiteOptions }
   | { kind: "search"; options: SearchWebOptions }
   | { kind: "stats"; days: number }
-  | { kind: "rsl-audit"; limit: number };
+  | { kind: "rsl-audit"; limit: number }
+  | { kind: "backup"; backupPath: string }
+  | { kind: "restore"; backupPath: string; targetPath: string };
 
 function nextValue(argv: string[], index: number, flag: string): string {
   const value = argv[index + 1];
@@ -218,6 +227,27 @@ function parseRslAuditCli(argv: string[]): CliAction {
   return { kind: "rsl-audit", limit };
 }
 
+function parseBackupCli(command: "backup" | "restore", argv: string[]): CliAction {
+  if (argv[0] === "--help" || argv[0] === "-h") return { kind: "help" };
+  const expected = command === "backup" ? 1 : 2;
+  if (argv.length !== expected || argv.some((value) => value.startsWith("-"))) {
+    throw new ReadError(
+      "INVALID_ARGUMENT",
+      command === "backup"
+        ? "backup requires exactly one backup path."
+        : "restore requires a backup path and a new target path.",
+      { details: { arguments: argv.join(" ") } },
+    );
+  }
+  return command === "backup"
+    ? { kind: "backup", backupPath: resolve(argv[0] as string) }
+    : { kind: "restore", backupPath: resolve(argv[0] as string), targetPath: resolve(argv[1] as string) };
+}
+
+function backupMetadataPath(backupPath: string): string {
+  return `${backupPath}.json`;
+}
+
 export function parseCli(argv: string[]): CliAction {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     return { kind: "help" };
@@ -230,11 +260,13 @@ export function parseCli(argv: string[]): CliAction {
     command !== "crawl" &&
     command !== "search" &&
     command !== "stats" &&
-    command !== "rsl-audit"
+    command !== "rsl-audit" &&
+    command !== "backup" &&
+    command !== "restore"
   ) {
     throw new ReadError(
       "INVALID_ARGUMENT",
-      "Supported commands are read, extract, map, crawl, search, stats, and rsl-audit.",
+      "Supported commands are read, extract, map, crawl, search, stats, rsl-audit, backup, and restore.",
       { details: { command: argv[0] ?? null } },
     );
   }
@@ -246,6 +278,9 @@ export function parseCli(argv: string[]): CliAction {
   }
   if (command === "rsl-audit") {
     return parseRslAuditCli(argv.slice(1));
+  }
+  if (command === "backup" || command === "restore") {
+    return parseBackupCli(command, argv.slice(1));
   }
 
   let url: string | null = null;
@@ -455,6 +490,30 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const action = parseCli(argv);
     if (action.kind === "help") {
       process.stdout.write(usage);
+      return 0;
+    }
+    if (action.kind === "backup") {
+      const metadata = await createSqliteBackup(loadConfig().cachePath, action.backupPath);
+      writeFileSync(backupMetadataPath(action.backupPath), `${JSON.stringify(metadata, null, 2)}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      process.stdout.write(`${JSON.stringify({ backupPath: action.backupPath, metadata }, null, 2)}\n`);
+      return 0;
+    }
+    if (action.kind === "restore") {
+      const metadataPath = backupMetadataPath(action.backupPath);
+      let metadata: SqliteBackupMetadata;
+      try {
+        metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as SqliteBackupMetadata;
+      } catch (error) {
+        throw new ReadError("INVALID_ARGUMENT", "Backup metadata is missing or unreadable.", {
+          details: { path: metadataPath },
+          cause: error,
+        });
+      }
+      await restoreSqliteBackup(action.backupPath, action.targetPath, metadata);
+      process.stdout.write(`${JSON.stringify({ targetPath: action.targetPath, metadata }, null, 2)}\n`);
       return 0;
     }
     app = createApp(loadConfig(), { runCrawlWorker: false });

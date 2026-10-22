@@ -7,6 +7,7 @@
 - [docs-trial.md](./docs-trial.md)：五个开发者文档站、20 个问题的真实采集与本地检索试用。
 
 - [spec.md](./spec.md)：已经实现并应保持兼容的完整产品合同。
+- [operations.md](./operations.md)：部署、配置、可观测性、备份恢复与升级手册。
 - [roadmap.md](./roadmap.md)：已完成阶段、条件式能力与后续决策门。
 - [architecture-completion-ledger.md](./architecture-completion-ledger.md)：本地模块化 Retrieval Runtime
   的逐目标实现和验证记录。
