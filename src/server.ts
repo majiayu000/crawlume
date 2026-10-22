@@ -92,7 +92,7 @@ const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
 const jobLeaseSweepIntervalMs = 30_000;
 const webhookDeliveryIntervalMs = 1_000;
-const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events))$/u;
+const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries))$/u;
 
 type WorkerTlsConfig = Readonly<{
   key: NonNullable<HttpsServerOptions["key"]>;

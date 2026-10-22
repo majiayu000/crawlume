@@ -695,6 +695,7 @@ describe("control-plane HTTP routing", () => {
       await fetch(`${listener.origin}/v1/organizations?cursor=${cursor}&limit=5`);
       await fetch(`${listener.origin}/v1/organizations/${projectId}/projects?limit=6`);
       await fetch(`${listener.origin}/v1/projects/${projectId}/api-keys?cursor=${cursor}`);
+      await fetch(`${listener.origin}/v1/projects/${projectId}/webhook-deliveries?limit=7`);
       await fetch(`${listener.origin}/v1/auth/refresh`, { method: "POST" });
       await fetch(`${listener.origin}/v1/auth/logout`, { method: "POST" });
 
@@ -709,6 +710,9 @@ describe("control-plane HTTP routing", () => {
       }));
       expect(projectAdmin.handle).toHaveBeenNthCalledWith(3, expect.objectContaining({
         path: `/v1/projects/${projectId}/api-keys`, query: `?cursor=${cursor}`,
+      }));
+      expect(projects.handle).toHaveBeenCalledWith(expect.objectContaining({
+        path: `/v1/projects/${projectId}/webhook-deliveries`, query: "?limit=7",
       }));
       expect(humanAuth.handle).toHaveBeenNthCalledWith(2, expect.objectContaining({
         path: "/v1/auth/refresh", body: null,
