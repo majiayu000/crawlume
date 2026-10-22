@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Resumable web crawling and retrieval for AI agents",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@10.33.2",
   "engines": {
-    "node": ">=25.7.0"
+    "node": ">=24.14.0"
   },
   "bin": {
     "crawlume": "./dist/cli/main.js",
