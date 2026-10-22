@@ -91,9 +91,10 @@ let completedAt = startedAt;
 let lastSeedUrl = site.seedUrl;
 let capacity: Record<string, number | boolean> | null = null;
 const deadline = startedAt + durationMs;
+const durationLimitError = new Error("soak duration limit exceeded");
 function remainingMs(): number {
   const remaining = deadline - Date.now();
-  if (remaining <= 0) throw new Error("soak duration limit exceeded");
+  if (remaining <= 0) throw durationLimitError;
   return remaining;
 }
 async function withinDeadline<T>(operation: () => Promise<T>): Promise<T> {
@@ -102,7 +103,7 @@ async function withinDeadline<T>(operation: () => Promise<T>): Promise<T> {
     const result = await Promise.race([
       operation(),
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("soak duration limit exceeded")), remainingMs());
+        timer = setTimeout(() => reject(durationLimitError), remainingMs());
       }),
     ]);
     remainingMs();
@@ -191,7 +192,11 @@ try {
   }
   record();
 } catch (error) {
-  failure ??= error instanceof Error ? error.stack ?? error.message : String(error);
+  // Reaching the requested run length ends a duration-only soak normally. A capacity run must
+  // finish its target and verification before this same deadline.
+  if (totalPages > 0 || error !== durationLimitError) {
+    failure ??= error instanceof Error ? error.stack ?? error.message : String(error);
+  }
 } finally {
   completedAt = Date.now();
   clearInterval(sampler);
