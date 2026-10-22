@@ -51,7 +51,7 @@ export function rawPage(overrides: Partial<RawPage> = {}): RawPage {
   const body = `<html><head><title>Example article</title></head><body><main><h1>Example article</h1><p>${paragraph.repeat(5)}</p></main></body></html>`;
   return {
     body,
-    fetchedAt: "2026-08-24T00:00:00.000Z",
+    fetchedAt: new Date().toISOString(),
     method: "http",
     httpStatus: 200,
     contentType: "text/html; charset=utf-8",
