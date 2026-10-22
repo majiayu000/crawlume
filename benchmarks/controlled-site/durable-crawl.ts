@@ -312,6 +312,12 @@ export async function createDurableCrawlSite(
     request.pipe(upstream);
   });
   proxy.on("connect", (_request, socket) => {
+    // CONNECT hands the raw socket to this handler. A peer may reset it after our rejection;
+    // HTTP's socket error handler no longer owns that event.
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      if (error.code !== "ECONNRESET") proxy.emit("error", error);
+    });
     socket.end("HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n");
   });
   proxy.on("connection", (socket) => {
