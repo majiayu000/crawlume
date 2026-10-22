@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createApp, type CrawlumeApp } from "../app.js";
@@ -493,11 +493,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
     if (action.kind === "backup") {
-      const metadata = await createSqliteBackup(loadConfig().cachePath, action.backupPath);
-      writeFileSync(backupMetadataPath(action.backupPath), `${JSON.stringify(metadata, null, 2)}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      });
+      const metadataPath = backupMetadataPath(action.backupPath);
+      mkdirSync(dirname(action.backupPath), { recursive: true, mode: 0o700 });
+      // Reserve metadata first: never publish a database beside an old sidecar.
+      const descriptor = openSync(metadataPath, "wx", 0o600);
+      let metadata: SqliteBackupMetadata | undefined;
+      try {
+        metadata = await createSqliteBackup(loadConfig().cachePath, action.backupPath);
+        writeFileSync(descriptor, `${JSON.stringify(metadata, null, 2)}\n`);
+      } catch (error) {
+        const errors: unknown[] = [error];
+        const paths = metadata === undefined ? [metadataPath] : [action.backupPath, metadataPath];
+        for (const path of paths) {
+          try { unlinkSync(path); } catch (cleanupError) { errors.push(cleanupError); }
+        }
+        if (errors.length > 1) throw new AggregateError(errors, "Backup and rollback both failed.");
+        throw error;
+      } finally {
+        closeSync(descriptor);
+      }
       process.stdout.write(`${JSON.stringify({ backupPath: action.backupPath, metadata }, null, 2)}\n`);
       return 0;
     }

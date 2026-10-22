@@ -1393,7 +1393,7 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [x] Project/API Key。`api-key-service.ts`、`project-api-key-http-api.ts`，迁移 0002。
 - [x] Worker enrollment/session。`worker-bootstrap-http-api.ts`、`remote-worker/enrollment.ts`，迁移 0004。
 - [x] PostgreSQL Job/Lease/Event/Publication。迁移 0005–0007，`control-plane-job-postgres*.integration.test.ts`。
-- [x] Remote Worker claim/heartbeat/terminal。`remote-worker/client.ts`、`outbox.ts`，`job-lease-recovery.ts`。
+- [ ] Remote Worker claim/heartbeat/terminal。已有 `remote-worker/client.ts`、`outbox.ts` 和 `job-lease-recovery.ts` 协议原语；尚无生产 claim/heartbeat/执行/terminal 编排循环。
 - [ ] Public cloud Worker。
 - [ ] Private Worker 数据边界。
 - [ ] Artifact Store。
