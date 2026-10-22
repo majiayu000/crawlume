@@ -12,7 +12,7 @@ All notable changes to this project are documented here. The format follows
   and a Docker image build.
 - Dockerfile with bundled Chromium and a `/data` runtime volume.
 - Security policy.
-- Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line process logs on stderr.
+- Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line stderr logs for the MCP and control-plane server entrypoints.
 
 ### Changed
 

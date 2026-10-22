@@ -23,6 +23,16 @@ describe("metrics listener", () => {
     })).toEqual({ host: "0.0.0.0", port: 9464 });
   });
 
+  it("defaults an empty host to loopback", () => {
+    expect(metricsListenerFromEnvironment({ CRAWLUME_METRICS_PORT: "9464", CRAWLUME_METRICS_HOST: "" }))
+      .toEqual({ host: "127.0.0.1", port: 9464 });
+  });
+
+  it.each([" ", "1e3", "0x10", "1.0", "-1", "65536"])("rejects non-decimal or out-of-range port %s", (port) => {
+    expect(() => metricsListenerFromEnvironment({ CRAWLUME_METRICS_PORT: port }))
+      .toThrow("CRAWLUME_METRICS_PORT");
+  });
+
   it("rejects an invalid port instead of silently disabling metrics", () => {
     expect(() => metricsListenerFromEnvironment({ CRAWLUME_METRICS_PORT: "metrics" }))
       .toThrow("CRAWLUME_METRICS_PORT");
