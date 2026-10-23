@@ -214,6 +214,13 @@ class FlowDatabase implements ControlPlaneDatabase {
         upload_private_artifact: this.job.upload_private_artifact,
       }];
     }
+    if (sql.startsWith("SELECT artifact_metadata.id FROM artifact_metadata")) {
+      return this.artifact?.storage_kind === "cloud_object" && this.artifact.uploaded_at === null &&
+        this.publication !== null && this.publication.lease_id === parameters[0] &&
+        this.publication.project_id === parameters[1]
+        ? [{ id: this.artifact.id }]
+        : [];
+    }
     if (sql.includes("WHERE job_publications.lease_id = $1")) {
       return this.publication === null ? [] : [this.existingPublication()];
     }
@@ -232,6 +239,7 @@ class FlowDatabase implements ControlPlaneDatabase {
         media_type: parameters[6],
         storage_kind: parameters[7],
         object_key: parameters[8],
+        uploaded_at: null,
         created_at: now,
       };
       return [this.artifact];
@@ -394,8 +402,9 @@ describe("control-plane Project and Worker integration", () => {
           }),
         },
       );
-      expect(completionResponse.status).toBe(200);
-      await expect(completionResponse.json()).resolves.toMatchObject({
+      const completion = await completionResponse.json();
+      expect(completionResponse.status, JSON.stringify(completion)).toBe(200);
+      expect(completion).toMatchObject({
         job: { id: created.job.id, status: "completed" },
       });
 
