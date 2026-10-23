@@ -198,12 +198,12 @@ describe("RemoteWorkerRunner", () => {
     try {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(client.uploadArtifact).toHaveBeenCalledTimes(1);
-      expect(client.heartbeat).toHaveBeenCalledTimes(2);
+      expect(client.heartbeat).toHaveBeenCalledTimes(recover ? 3 : 2);
       expect(client.complete).not.toHaveBeenCalled();
       uploadDone();
       await vi.advanceTimersByTimeAsync(120_000);
       expect(client.complete).toHaveBeenCalledTimes(1);
-      expect(client.heartbeat).toHaveBeenCalledTimes(4);
+      expect(client.heartbeat).toHaveBeenCalledTimes(recover ? 5 : 4);
       completeDone();
       await expect(running).resolves.toBe(recover ? "idle" : "executed");
       expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("terminal_acked");
@@ -351,6 +351,55 @@ describe("RemoteWorkerRunner", () => {
     } finally {
       controller.abort();
       await running;
+      outbox.close();
+    }
+  });
+
+  it("renews a nearly expired recovered lease before a slow upload starts", async () => {
+    vi.useFakeTimers();
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const publication = { publication: { artifact: { id: "44444444-4444-4444-8444-444444444444" } } } as never;
+    const first = fakeClient({
+      publishResult: vi.fn(async () => publication),
+      uploadArtifact: vi.fn(async () => { throw new Error("worker interrupted"); }),
+    });
+    await expect(runner(first, outbox, async () => result, true).runOnce(new AbortController().signal))
+      .rejects.toThrow("worker interrupted");
+    let heartbeatDeadline = Date.now() + 2_000;
+    const requireLiveLease = () => {
+      if (Date.now() >= heartbeatDeadline) {
+        throw new RemoteWorkerHttpError(409, "JOB_LEASE_FENCED", "r", false, null);
+      }
+    };
+    const client = fakeClient({
+      claim: vi.fn(async () => null),
+      publishResult: vi.fn(async () => publication),
+      heartbeat: vi.fn(async () => {
+        requireLiveLease();
+        heartbeatDeadline = Date.now() + 30_000;
+        return { requestId: "r", lease: claim.lease };
+      }),
+      uploadArtifact: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        requireLiveLease();
+        return { uploadedAt: new Date() };
+      }),
+    });
+    const worker = new RemoteWorkerRunner({
+      client, outbox, identity: createInMemoryWorkerIdentity(), workerId,
+      adapter: { execute: vi.fn(async () => result) }, claimWaitMs: 0,
+    });
+    const running = worker.runOnce(new AbortController().signal);
+    try {
+      await vi.advanceTimersByTimeAsync(6_000);
+      await expect(running).resolves.toBe("idle");
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("terminal_acked");
+      expect(client.heartbeat).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(client.heartbeat).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(client.uploadArtifact).mock.invocationCallOrder[0]!);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await running.catch(() => {});
       outbox.close();
     }
   });

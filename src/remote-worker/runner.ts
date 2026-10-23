@@ -105,7 +105,19 @@ export class RemoteWorkerRunner {
       if (signal.aborted) abort();
       const heartbeat = this.startHeartbeat(lease, delivery);
       try {
+        // A restarted process may have only seconds left before the first periodic heartbeat.
+        await this.options.client.heartbeat({
+          sessionToken: await this.sessionToken(delivery.signal),
+          leaseId: lease.leaseId, generation: lease.generation, signal: delivery.signal,
+        });
         await this.deliverAndComplete(lease, delivery.signal);
+      } catch (error) {
+        if (error instanceof RemoteWorkerHttpError && error.status === 409 && error.code === "JOB_LEASE_FENCED") {
+          this.options.outbox.blockLeaseGeneration(lease.jobId, lease.leaseId, lease.generation, error.code);
+          logEvent("warn", "worker.lease.fenced", { ...lease, code: error.code });
+        } else {
+          throw error;
+        }
       } finally {
         clearInterval(heartbeat);
         delivery.abort();
