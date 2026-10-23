@@ -105,6 +105,24 @@ TLS key 和 cert 均须为非符号链接的普通文件，key 还须使用 owne
 
 配额在创建 Job 的事务内用 Project 级 advisory lock 检查；同一 `Idempotency-Key` 的重放不重复计入。
 
+### Webhook
+
+设置 `DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH` 指向一个 32 字节密钥文件（原始字节、64 位十六进制或 base64）后启用；
+未设置时 Webhook 管理接口返回 503 `WEBHOOKS_DISABLED`，也不启动投递循环。生成密钥：
+
+```bash
+openssl rand -out /etc/diaoyan/webhook.key 32 && chmod 600 /etc/diaoyan/webhook.key
+```
+
+- 事件：`job.completed`、`job.failed`、`job.cancelled`。数据库触发器在 Job 进入终态的同一事务内写入事件并为
+  订阅的 active Endpoint 生成投递，任何终态路径（Worker 完成、取消、lease 超时）都不会漏发。
+- Endpoint 只接受公网 https URL，注册和每次投递都做 SSRF 检查，不跟随重定向。
+- Endpoint secret 以 AES-256-GCM 加密保存；丢失密钥文件后已有 Endpoint 无法再签名，需要重新注册。
+- 投递每秒扫描一次，单次 10 秒超时，2xx 记为成功；失败按 30 秒起的指数退避（上限 1 小时，尊重
+  `Retry-After`）重试，第 8 次失败或 Endpoint 已停用时进入 `dead_letter`。每次尝试写入
+  `webhook_delivery_attempts`。
+- 请求体只含事件 ID、类型和 Job 状态，不含正文。签名格式见 [`sdk.md`](./sdk.md)。
+
 ## 5. 可观测性
 
 - 日志：MCP 和 Control Plane 服务端入口的进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。

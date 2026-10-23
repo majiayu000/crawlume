@@ -43,7 +43,25 @@ for await (const publication of client.publications(job.id)) {
   30 秒；SDK 发出的请求都是幂等的。
 - `publications()` 按服务端 cursor 依次返回全部 publication；`waitForJob()` 轮询到终态，超时抛错。
 
-Webhook 验签 helper 随 Webhook 投递一起提供。
-
 `waitForJob` 的总超时包含 fetch、响应读取、重试等待与轮询等待，超时会中止在途请求。
 重试等待取指数退避与 `Retry-After` 的较大值；服务端要求超过 30 秒时直接返回该错误，不提前重试。
+
+## Webhook 验签
+
+投递使用 [Standard Webhooks](https://www.standardwebhooks.com/) 签名：`webhook-id`、`webhook-timestamp`、
+`webhook-signature` 三个头，HMAC-SHA256 覆盖 `{id}.{timestamp}.{body}`。轮换 secret 后 24 小时内会同时带新旧
+两个签名。
+
+```ts
+import { verifyWebhook } from "crawlume/sdk/webhooks";
+
+const event = verifyWebhook({
+  secrets: [process.env.WEBHOOK_SECRET!],
+  headers: request.headers,
+  body: rawBody, // 未经 JSON 重新序列化的原始请求体
+});
+if (event.type === "job.completed") console.log(event.data.job_id);
+```
+
+时间戳超出 5 分钟或签名不匹配时抛出 `WebhookVerificationError`。同一 `webhook-id` 可能因重试重复到达，
+接收方应按它去重。

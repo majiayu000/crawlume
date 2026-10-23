@@ -636,7 +636,7 @@ describe("Project Job HTTP API", () => {
 });
 
 describe("control-plane HTTP routing", () => {
-  it("dispatches all 27 mounted operations to exactly one target handler", async () => {
+  it("dispatches all 33 mounted operations to exactly one target handler", async () => {
     const handlers = {
       humanAuth: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       projectAdmin: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
@@ -660,11 +660,11 @@ describe("control-plane HTTP routing", () => {
       }
       if (["createWorkerEnrollment", "enrollWorker", "createWorkerSessionChallenge",
         "createWorkerSession", "disableProjectWorker"].includes(operationId)) return "workerBootstrap";
-      if (operationId.includes("Project")) return "projects";
+      if (operationId.includes("Project") || operationId.includes("Webhook")) return "projects";
       return "workers";
     };
 
-    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(27);
+    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(33);
     for (const operation of ControlPlaneHttpApi.routerOperations) {
       const before = Object.values(handlers).reduce((sum, handler) =>
         sum + handler.handle.mock.calls.length, 0);
@@ -674,7 +674,9 @@ describe("control-plane HTTP routing", () => {
         .replaceAll("{job_id}", jobId)
         .replaceAll("{key_id}", jobId)
         .replaceAll("{worker_id}", jobId)
-        .replaceAll("{lease_id}", jobId);
+        .replaceAll("{lease_id}", jobId)
+        .replaceAll("{endpoint_id}", jobId)
+        .replaceAll("{event_id}", jobId);
 
       await api.handle(request({ method: operation.method, path }));
 
@@ -703,6 +705,7 @@ describe("control-plane HTTP routing", () => {
       await fetch(`${listener.origin}/v1/organizations?cursor=${cursor}&limit=5`);
       await fetch(`${listener.origin}/v1/organizations/${projectId}/projects?limit=6`);
       await fetch(`${listener.origin}/v1/projects/${projectId}/api-keys?cursor=${cursor}`);
+      await fetch(`${listener.origin}/v1/projects/${projectId}/webhook-deliveries?limit=7`);
       await fetch(`${listener.origin}/v1/auth/refresh`, { method: "POST" });
       await fetch(`${listener.origin}/v1/auth/logout`, { method: "POST" });
 
@@ -717,6 +720,9 @@ describe("control-plane HTTP routing", () => {
       }));
       expect(projectAdmin.handle).toHaveBeenNthCalledWith(3, expect.objectContaining({
         path: `/v1/projects/${projectId}/api-keys`, query: `?cursor=${cursor}`,
+      }));
+      expect(projects.handle).toHaveBeenCalledWith(expect.objectContaining({
+        path: `/v1/projects/${projectId}/webhook-deliveries`, query: "?limit=7",
       }));
       expect(humanAuth.handle).toHaveBeenNthCalledWith(2, expect.objectContaining({
         path: "/v1/auth/refresh", body: null,

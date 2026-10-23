@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +23,12 @@ import {
   type CreateControlPlaneJobInput,
 } from "../src/control-plane/project-scope.js";
 import { enforceJobCreationQuotas, unlimitedProjectQuotas } from "../src/control-plane/quotas.js";
+import {
+  WebhookDispatcher,
+  WebhookSecretCipher,
+  WebhookService,
+} from "../src/control-plane/webhooks.js";
+import { verifyWebhook } from "../src/sdk/webhooks.js";
 import { PostgresControlPlaneDatabase } from "../src/server.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
@@ -921,5 +927,68 @@ describeWithPostgres("control-plane Job lifecycle on PostgreSQL", () => {
       [fixtureProjectKey.projectId],
     );
     expect(counted.rows[0]?.count).toBe("1");
+  });
+
+  it("records terminal Job events, signs deliveries, retries, and dead-letters disabled endpoints", async () => {
+    const storage = new PostgresControlPlaneDatabase(database!);
+    const now = await databaseClock(database!);
+    const cipher = WebhookSecretCipher.fromKey(randomBytes(32));
+    const urlPolicy = { parse: (input: string) => new URL(input), assertPublic: async () => [] };
+    const webhooks = new WebhookService(storage, cipher, urlPolicy);
+    const { endpoint, secret } = await webhooks.createEndpoint(fixtureProjectKey, {
+      url: "https://hooks.example.com/crawlume",
+      eventTypes: ["job.cancelled"],
+    });
+    const received: Array<{ headers: Record<string, string>; body: string }> = [];
+    const statuses = [500, 200];
+    const fakeFetch = (async (_url: string | URL, init?: RequestInit) => {
+      received.push({ headers: init?.headers as Record<string, string>, body: init?.body as string });
+      return new Response(null, { status: statuses.shift() ?? 200 });
+    }) as typeof fetch;
+    const dispatcher = new WebhookDispatcher(storage, cipher, urlPolicy, { fetch: fakeFetch, retryBaseMs: 0 });
+
+    const jobs = new ControlPlaneJobService(storage, { now: () => now });
+    const context = { correlationId: "job-webhook" };
+    const job = await jobs.createJob(fixtureProjectKey, "job-webhook", jobInput("https://example.com/hook"), context);
+    await jobs.cancel(fixtureProjectKey, job.id);
+    await jobs.cancel(fixtureProjectKey, job.id);
+    const events = await database!.query<{ id: string; event_type: string }>(
+      "SELECT id, event_type FROM webhook_events WHERE job_id = $1", [job.id],
+    );
+    expect(events.rows).toEqual([{ id: expect.any(String), event_type: "job.cancelled" }]);
+
+    await expect(dispatcher.sweep()).resolves.toBe(1);
+    await expect(dispatcher.sweep()).resolves.toBe(1);
+    await expect(dispatcher.sweep()).resolves.toBe(0);
+    expect(received).toHaveLength(2);
+    const delivered = verifyWebhook({ secrets: secret, headers: received[1]!.headers, body: received[1]!.body });
+    expect(delivered).toMatchObject({
+      id: events.rows[0]!.id,
+      type: "job.cancelled",
+      data: { job_id: job.id, project_id: fixture.projectId, status: "cancelled" },
+    });
+    const [delivery] = await webhooks.listDeliveries(fixtureProjectKey, 10);
+    expect(delivery).toMatchObject({ endpointId: endpoint.id, status: "succeeded", attemptCount: 2, lastStatusCode: 200 });
+    const attempts = await database!.query<{ attempt: number; status_code: number }>(
+      "SELECT attempt, status_code FROM webhook_delivery_attempts ORDER BY attempt",
+    );
+    expect(attempts.rows).toEqual([{ attempt: 1, status_code: 500 }, { attempt: 2, status_code: 200 }]);
+
+    const rotated = await webhooks.rotateSecret(fixtureProjectKey, endpoint.id);
+    await expect(webhooks.redeliver(fixtureProjectKey, events.rows[0]!.id)).resolves.toBe(1);
+    await dispatcher.sweep();
+    const redelivered = received[2]!;
+    expect(verifyWebhook({ secrets: rotated, headers: redelivered.headers, body: redelivered.body }).id)
+      .toBe(events.rows[0]!.id);
+    expect(verifyWebhook({ secrets: secret, headers: redelivered.headers, body: redelivered.body }).id)
+      .toBe(events.rows[0]!.id);
+
+    await webhooks.redeliver(fixtureProjectKey, events.rows[0]!.id);
+    await webhooks.disableEndpoint(fixtureProjectKey, endpoint.id);
+    await dispatcher.sweep();
+    expect(received).toHaveLength(3);
+    const [latest] = await webhooks.listDeliveries(fixtureProjectKey, 1);
+    expect(latest).toMatchObject({ status: "dead_letter", lastError: "The endpoint is disabled." });
+    await expect(webhooks.listEndpoints(fixtureProjectKey)).resolves.toMatchObject([{ status: "disabled" }]);
   });
 });

@@ -30,6 +30,17 @@ import {
 } from "./project-scope.js";
 import { QuotaExceededError, type ApiRequestRateLimiter } from "./quotas.js";
 import {
+  WebhookQueryError,
+  handleWebhookRoute,
+  matchWebhookRoute,
+  type WebhookHttpServices,
+} from "./webhook-http.js";
+import {
+  WebhookEndpointInvalidError,
+  WebhookNotFoundError,
+  WebhooksDisabledError,
+} from "./webhooks.js";
+import {
   controlPlaneRouterOperations,
   projectJobRouteDefinitions,
 } from "./router-contract.js";
@@ -46,6 +57,7 @@ type ProjectJobHttpServices = Readonly<{
     identity: AuthenticatedProjectApiKey,
     input: Readonly<{ limit: number; before: AuditCursor | null }>,
   ): Promise<readonly AuditEvent[]>;
+  webhooks?: WebhookHttpServices;
 }>;
 
 type ProjectJobHttpDependencies = Readonly<{
@@ -306,24 +318,46 @@ export class ProjectJobHttpApi {
 
   async handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse> {
     const requestId = this.requestId();
-    const route = matchProjectJobRoute(request.path);
-    if (route === null) {
+    const webhookMatch = this.services.webhooks === undefined
+      ? null
+      : matchWebhookRoute(request.path, request.method);
+    const route = webhookMatch === null ? matchProjectJobRoute(request.path) : null;
+    if (webhookMatch === null && route === null) {
       return projectProblem(request, requestId, 404, "PROJECT_ROUTE_NOT_FOUND", "Not Found",
         "The Project API route does not exist.");
     }
-    if (request.method.toUpperCase() !== route.method) {
+    const allow = webhookMatch !== null && "allow" in webhookMatch
+      ? webhookMatch.allow
+      : route !== null && request.method.toUpperCase() !== route.method ? route.method : null;
+    if (allow !== null) {
       const response = projectProblem(request, requestId, 405, "PROJECT_METHOD_NOT_ALLOWED",
         "Method Not Allowed", "The Project API route does not accept this method.");
-      return { ...response, headers: { ...response.headers, allow: route.method } };
+      return { ...response, headers: { ...response.headers, allow } };
     }
 
     try {
       const context = { correlationId: requestId };
       const identity = await this.services.authenticate(projectBearerKey(request), context);
       this.rateLimiter?.take(identity.apiKeyId);
-      if (route.projectId.toLowerCase() !== identity.projectId.toLowerCase()) {
+      const pathProjectId = webhookMatch !== null && "route" in webhookMatch
+        ? webhookMatch.route.projectId
+        : (route as ProjectJobRoute).projectId;
+      if (pathProjectId.toLowerCase() !== identity.projectId.toLowerCase()) {
         throw new ProjectPathIdentityMismatchError();
       }
+      if (webhookMatch !== null && "route" in webhookMatch && this.services.webhooks !== undefined) {
+        if (request.body !== undefined && request.body !== null && !isJsonControlPlaneRequest(request)) {
+          return projectProblem(request, requestId, 415, "PROJECT_MEDIA_TYPE_UNSUPPORTED",
+            "Unsupported Media Type", "Project requests must use application/json.");
+        }
+        const handled = await handleWebhookRoute(this.services.webhooks, webhookMatch.route, identity, request);
+        return projectResponse(
+          handled.status,
+          requestId,
+          handled.status === 204 ? null : { request_id: requestId, ...(handled.body as object) },
+        );
+      }
+      if (route === null) throw new Error("Project route resolution failed.");
       if (route.kind !== "publications" && route.kind !== "audit" &&
           (request.query ?? "") !== "") {
         throw new ProjectQueryError();
@@ -466,6 +500,18 @@ export class ProjectJobHttpApi {
     if (error instanceof JobTransitionError) {
       return projectProblem(request, requestId, 409, error.code, "Job Transition Invalid",
         error.message);
+    }
+    if (error instanceof WebhooksDisabledError) {
+      return projectProblem(request, requestId, 503, error.code, "Webhooks Disabled", error.message);
+    }
+    if (error instanceof WebhookEndpointInvalidError) {
+      return projectProblem(request, requestId, 422, error.code, "Webhook Endpoint Invalid", error.message);
+    }
+    if (error instanceof WebhookNotFoundError) {
+      return projectProblem(request, requestId, 404, error.code, "Webhook Not Found", error.message);
+    }
+    if (error instanceof WebhookQueryError) {
+      return projectProblem(request, requestId, 400, error.code, "Webhook Query Invalid", error.message);
     }
     if (error instanceof QuotaExceededError) {
       const response = projectProblem(request, requestId, 429, error.code, "Quota Exceeded",

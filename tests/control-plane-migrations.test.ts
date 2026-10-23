@@ -115,6 +115,7 @@ describe("control-plane migration runner", () => {
       { version: 7, name: "0007_audit_events.sql" },
       { version: 8, name: "0008_bound_auth_attempts.sql" },
       { version: 9, name: "0009_project_creation_idempotency.sql" },
+      { version: 10, name: "0010_webhooks.sql" },
     ]);
   });
 
