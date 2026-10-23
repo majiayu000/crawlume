@@ -220,7 +220,9 @@ export class RemoteWorkerRunner {
             leaseId: lease.leaseId, error: error instanceof Error ? error.message : String(error),
           });
           if (error instanceof RemoteWorkerHttpError && error.status === 409 && error.code === "JOB_LEASE_FENCED") {
-            execution.abort(error);
+            // Completion may have committed before its response arrives. Let that request
+            // establish its outcome instead of cancelling it on the now-closed lease.
+            if (this.options.outbox.getExecution(lease)?.state !== "terminal_attempted") execution.abort(error);
           }
         }
       })();

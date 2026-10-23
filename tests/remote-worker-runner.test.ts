@@ -285,4 +285,73 @@ describe("RemoteWorkerRunner", () => {
       outbox.close();
     }
   });
+
+  it("acknowledges an accepted completion when its response overlaps a fenced heartbeat", async () => {
+    vi.useFakeTimers();
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    let completeDone!: () => void;
+    const completionAborted = vi.fn();
+    const client = fakeClient({
+      heartbeat: vi.fn(async () => {
+        throw new RemoteWorkerHttpError(409, "JOB_LEASE_FENCED", "r", false, null);
+      }),
+      complete: vi.fn(async ({ signal }) => {
+        // The terminal has committed remotely; only its successful response is delayed.
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => {
+            completionAborted();
+            reject(signal?.reason);
+          };
+          signal?.addEventListener("abort", abort, { once: true });
+          completeDone = () => {
+            signal?.removeEventListener("abort", abort);
+            resolve();
+          };
+        });
+        return {} as never;
+      }),
+    });
+    const running = runner(client, outbox, async () => result).runOnce(new AbortController().signal);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client.complete).toHaveBeenCalledTimes(1);
+      expect(client.heartbeat).toHaveBeenCalledTimes(1);
+      expect(completionAborted).not.toHaveBeenCalled();
+      completeDone();
+      await expect(running).resolves.toBe("executed");
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("terminal_acked");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      completeDone();
+      await running.catch(() => {});
+      outbox.close();
+    }
+  });
+
+  it("still aborts execution when its heartbeat reports a genuinely fenced lease", async () => {
+    vi.useFakeTimers();
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const failure = new RemoteWorkerHttpError(409, "JOB_LEASE_FENCED", "r", false, null);
+    const client = fakeClient({ heartbeat: vi.fn(async () => { throw failure; }) });
+    const controller = new AbortController();
+    const worker = new RemoteWorkerRunner({
+      client, outbox, identity: createInMemoryWorkerIdentity(), workerId,
+      adapter: { execute: vi.fn(async (_job, signal) => new Promise<ReadPageResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      })) },
+      claimWaitMs: 0, heartbeatIntervalMs: 60_000,
+    });
+    const running = worker.runOnce(controller.signal).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await running).toBe(failure);
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(outbox.listRecoverableExecutions()).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      controller.abort();
+      await running;
+      outbox.close();
+    }
+  });
 });
