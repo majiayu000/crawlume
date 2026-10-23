@@ -141,7 +141,7 @@ async function authorizationHarness(
     dataDir,
     profilesDir: join(dataDir, "profiles"),
     proxyEndpoints: endpoints,
-    browserTimeoutMs: 5_000,
+    browserTimeoutMs: browserLaunchTimeoutMs,
     ...configOverrides,
   };
   const profiles = new ProfileManager(config);
@@ -164,6 +164,10 @@ async function authorizationHarness(
     fetcher,
   };
 }
+
+// A cold persistent-profile Chrome launch on hosted CI runners can exceed 5 seconds.
+const browserLaunchTimeoutMs = 30_000;
+const browserTestTimeoutMs = 60_000;
 
 describe("BrowserPageFetcher authorization boundary", () => {
   it("waits for an in-flight authorized context launch to close before releasing its profile", async () => {
@@ -189,7 +193,7 @@ describe("BrowserPageFetcher authorization boundary", () => {
     }).catch((error: unknown) => error);
     try {
       await ready;
-      expect(launchSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ timeout: 5_000 }));
+      expect(launchSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ timeout: browserLaunchTimeoutMs }));
       let closed = false;
       const closing = fetcher.close().then(() => { closed = true; });
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -209,7 +213,7 @@ describe("BrowserPageFetcher authorization boundary", () => {
       await fetching;
       await context?.close();
     }
-  }, 15_000);
+  }, browserTestTimeoutMs);
 
   it("preserves a pending launch failure while close drains the authorized fetch", async () => {
     const { fetcher } = await authorizationHarness((_host, _path, response) => response.end("unused"));
@@ -293,7 +297,7 @@ describe("BrowserPageFetcher authorization boundary", () => {
     } finally {
       await fetcher.close();
     }
-  }, 15_000);
+  }, browserTestTimeoutMs);
 
   it("allows public third-party subresources without widening main-frame origins", async () => {
     const { fetcher, observedRequests, proxyTargets } = await authorizationHarness((hostname, path, response) => {
@@ -328,7 +332,7 @@ describe("BrowserPageFetcher authorization boundary", () => {
     } finally {
       await fetcher.close();
     }
-  }, 15_000);
+  }, browserTestTimeoutMs);
 
   it("records only bounded DOM structure for an anonymous browser failure", async () => {
     const secret = "private-message-cookie-token";
@@ -360,7 +364,7 @@ describe("BrowserPageFetcher authorization boundary", () => {
     } finally {
       await fetcher.close();
     }
-  }, 15_000);
+  }, browserTestTimeoutMs);
 
   it("signs the main document request when Web Bot Auth is configured", async () => {
     const directory = mkdtempSync(join(tmpdir(), "crawlume-browser-wba-"));
@@ -389,5 +393,5 @@ describe("BrowserPageFetcher authorization boundary", () => {
     } finally {
       await fetcher.close();
     }
-  }, 15_000);
+  }, browserTestTimeoutMs);
 });
