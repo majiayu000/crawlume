@@ -51,6 +51,10 @@ describeWithS3("S3 Artifact object store", () => {
     const downloaded = await fetch(await store.presignGet(key, 60));
     expect(downloaded.status).toBe(200);
     expect(Buffer.from(await downloaded.arrayBuffer())).toEqual(body);
+
+    await store.delete(key);
+    await expect(store.head(key)).resolves.toBeNull();
+    await expect(store.delete(key)).resolves.toBeUndefined();
   });
 
   it("rejects an upload whose bytes do not match the signed SHA-256", async () => {

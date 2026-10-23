@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   NotFound,
@@ -35,6 +36,8 @@ export interface ArtifactObjectStore {
   }>): Promise<Readonly<{ url: string; headers: Readonly<Record<string, string>> }>>;
   head(key: string): Promise<StoredObject | null>;
   presignGet(key: string, expiresInSeconds: number): Promise<string>;
+  /** Deletes the object; deleting an absent object succeeds. */
+  delete(key: string): Promise<void>;
 }
 
 export class ArtifactStorageDisabledError extends Error {
@@ -100,6 +103,61 @@ export class S3ArtifactObjectStore implements ArtifactObjectStore {
     return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key: key }), {
       expiresIn: expiresInSeconds,
     });
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+}
+
+export function artifactRetentionDaysFromEnvironment(environment: NodeJS.ProcessEnv): number | null {
+  const raw = environment.DIAOYAN_ARTIFACT_RETENTION_DAYS;
+  if (raw === undefined || raw === "") return null;
+  const days = Number(raw);
+  if (!Number.isSafeInteger(days) || days < 1 || days > 3_650) {
+    throw new Error("DIAOYAN_ARTIFACT_RETENTION_DAYS must be an integer between 1 and 3650.");
+  }
+  return days;
+}
+
+/**
+ * Expires cloud Artifacts older than the retention window: each sweep tombstones a batch (they stop
+ * being downloadable immediately), then deletes objects for every tombstone not yet deleted, which
+ * also retries deletions that failed in an earlier sweep.
+ */
+export class ArtifactRetentionSweeper {
+  constructor(
+    private readonly database: ControlPlaneDatabase,
+    private readonly store: Pick<ArtifactObjectStore, "delete">,
+    private readonly retentionDays: number,
+    private readonly batchSize = 100,
+  ) {}
+
+  async sweep(): Promise<number> {
+    await this.database.query(`
+      UPDATE artifact_metadata SET tombstoned_at = clock_timestamp()
+      WHERE id IN (
+        SELECT id FROM artifact_metadata
+        WHERE storage_kind = 'cloud_object' AND tombstoned_at IS NULL
+          AND created_at < clock_timestamp() - ($1::integer * interval '1 day')
+        ORDER BY created_at, id
+        LIMIT $2
+      )
+    `, [this.retentionDays, this.batchSize]);
+    const pending = await this.database.query<{ id: string; project_id: string; object_key: string }>(`
+      SELECT id, project_id, object_key FROM artifact_metadata
+      WHERE storage_kind = 'cloud_object' AND tombstoned_at IS NOT NULL AND object_deleted_at IS NULL
+      ORDER BY tombstoned_at, id
+      LIMIT $1
+    `, [this.batchSize]);
+    for (const artifact of pending.rows) {
+      await this.store.delete(artifact.object_key);
+      await this.database.query(`
+        UPDATE artifact_metadata SET object_deleted_at = clock_timestamp()
+        WHERE id = $1 AND project_id = $2 AND object_deleted_at IS NULL
+      `, [artifact.id, artifact.project_id]);
+    }
+    return pending.rows.length;
   }
 }
 
@@ -259,6 +317,7 @@ export class ArtifactStorageService {
       const found = await transaction.query<{ object_key: string }>(`
         SELECT object_key FROM artifact_metadata
         WHERE id = $1 AND project_id = $2 AND storage_kind = 'cloud_object' AND uploaded_at IS NOT NULL
+          AND tombstoned_at IS NULL
       `, [artifactId, identity.projectId]);
       const objectKey = found.rows[0]?.object_key;
       if (objectKey === undefined) throw new ArtifactNotFoundError();

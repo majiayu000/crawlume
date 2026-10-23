@@ -52,8 +52,10 @@ import {
   ControlPlaneJobLeaseSweepRunner,
 } from "./control-plane/job-lease-recovery.js";
 import {
+  ArtifactRetentionSweeper,
   ArtifactStorageService,
   artifactObjectStoreFromEnvironment,
+  artifactRetentionDaysFromEnvironment,
   type ArtifactObjectStore,
 } from "./control-plane/artifact-storage.js";
 import {
@@ -85,6 +87,7 @@ import {
 
 const jobLeaseSweepIntervalMs = 30_000;
 const webhookDeliveryIntervalMs = 1_000;
+const artifactRetentionIntervalMs = 60 * 60 * 1_000;
 
 export { PostgresControlPlaneDatabase };
 export {
@@ -101,6 +104,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   quotas?: ProjectQuotaLimits;
   webhookCipher?: WebhookSecretCipher | null;
   artifactStore?: ArtifactObjectStore | null;
+  artifactRetentionDays?: number | null;
 }>;
 
 export type ControlPlaneRuntime = Readonly<{
@@ -264,6 +268,7 @@ export async function loadControlPlaneRuntimeConfig(
       ? null
       : await WebhookSecretCipher.fromFile(environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH),
     artifactStore: artifactObjectStoreFromEnvironment(environment),
+    artifactRetentionDays: artifactRetentionDaysFromEnvironment(environment),
   });
 }
 
@@ -273,6 +278,7 @@ export async function startControlPlaneRuntime(
   const database = new PostgresControlPlaneDatabase(new Pool(config.database));
   let sweepRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let webhookRunner: ControlPlaneJobLeaseSweepRunner | undefined;
+  let retentionRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let listener: WorkerControlListener | undefined;
   let resolveFinished!: () => void;
   let rejectFinished!: (error: unknown) => void;
@@ -323,6 +329,23 @@ export async function startControlPlaneRuntime(
     }
     const webhooks = new WebhookService(database, webhookCipher, webhookUrlPolicy);
     const artifacts = new ArtifactStorageService(database, config.artifactStore ?? null);
+    if (config.artifactStore != null && config.artifactRetentionDays != null) {
+      retentionRunner = new ControlPlaneJobLeaseSweepRunner(
+        new ArtifactRetentionSweeper(database, config.artifactStore, config.artifactRetentionDays),
+        {
+          intervalMs: artifactRetentionIntervalMs,
+          onFatalError: (error) => {
+            if (runtimeReady) rejectFinished(error);
+            else {
+              pendingFatalError = error;
+              hasPendingFatalError = true;
+            }
+          },
+        },
+      );
+      await retentionRunner.start();
+      if (hasPendingFatalError) throw pendingFatalError;
+    }
     const identity = new WorkerIdentityService(database, config.identity);
     const humanIdentity = new OidcSessionService(database, config.humanIdentity);
     const quotas = config.quotas ?? unlimitedProjectQuotas;
@@ -388,6 +411,7 @@ export async function startControlPlaneRuntime(
       for (const close of [
         () => activeListener.close(),
         () => webhookRunner?.close(),
+        () => retentionRunner?.close(),
         () => sweepRunner?.close(),
         () => database.close(),
       ]) {
@@ -420,10 +444,12 @@ export async function startControlPlaneRuntime(
     } catch (listenerCloseError) {
       cleanupErrors.push(listenerCloseError);
     }
-    try {
-      await webhookRunner?.close();
-    } catch (webhookCloseError) {
-      cleanupErrors.push(webhookCloseError);
+    for (const runner of [webhookRunner, retentionRunner]) {
+      try {
+        await runner?.close();
+      } catch (runnerCloseError) {
+        cleanupErrors.push(runnerCloseError);
+      }
     }
     try {
       await sweepRunner?.close();

@@ -538,7 +538,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         SELECT count(*)::integer AS count, max(version)::integer AS version
         FROM control_plane_schema_migrations
       `);
-      expect(migrations.rows[0]).toEqual({ count: 11, version: 11 });
+      expect(migrations.rows[0]).toEqual({ count: 12, version: 12 });
       const storedKey = await inspectionPool.query<{ key_hash: Buffer; project_id: string }>(`
         SELECT key_hash, project_id FROM api_keys WHERE id = $1
       `, [apiKey.api_key.id]);

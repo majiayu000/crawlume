@@ -1396,7 +1396,7 @@ Web 产品进入 Phase 6 后，再根据构建和发布边界决定是否转为 
 - [x] Remote Worker claim/heartbeat/terminal。`remote-worker/client.ts`、`outbox.ts`，`job-lease-recovery.ts`。
 - [ ] Public cloud Worker。`crawlume-worker`（`remote-worker/runner.ts`）已能执行公开 `read` Job 并可上传云端 Artifact，E2E-01（真 PG + 真 HTTP + 真 Worker）已通过；其他 Job 类型、容器化部署与扩缩容未做。
 - [ ] Private Worker 数据边界。
-- [ ] Artifact Store。服务端已完成（迁移 0011、`control-plane/artifact-storage.ts`、上传/确认/下载接口，LocalStack S3 Gate）；`crawlume-worker` 在 `CRAWLUME_WORKER_CLOUD_ARTIFACTS=1` 时上传；对象 tombstone/对账清理未实现。
+- [ ] Artifact Store。服务端已完成（迁移 0011、`control-plane/artifact-storage.ts`、上传/确认/下载接口，LocalStack S3 Gate）；`crawlume-worker` 在 `CRAWLUME_WORKER_CLOUD_ARTIFACTS=1` 时上传；Retention 采用 tombstone 后删除对象并重试（迁移 0012，`DIAOYAN_ARTIFACT_RETENTION_DAYS` 显式开启）。
 - [ ] REST/MCP/TypeScript SDK。REST（OpenAPI v1）与 TypeScript SDK（`src/sdk/client.ts`，`docs/sdk.md`）已完成；云 MCP 适配器未实现。
 - [x] Webhook。迁移 0010、`control-plane/webhooks.ts`；事件目前只有 `job.*`，`monitor.*`、`worker.offline`、`budget.threshold_reached` 待对应功能上线后接入。签名采用 Standard Webhooks（覆盖完整 body）。
 - [ ] C 端 Web/Extension/Companion。
