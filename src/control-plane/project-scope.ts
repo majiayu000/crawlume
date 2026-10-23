@@ -27,6 +27,23 @@ export type {
   ControlPlaneRequiredCapabilities,
 } from "./job-input.js";
 
+export {
+  JobIdempotencyConflictError,
+  JobNotFoundError,
+  JobTransitionError,
+  JobWorkerAccessDeniedError,
+  LeaseFencedError,
+  JobTerminalValidationError,
+} from "./job-errors.js";
+import {
+  JobIdempotencyConflictError,
+  JobNotFoundError,
+  JobTransitionError,
+  JobWorkerAccessDeniedError,
+  LeaseFencedError,
+  JobTerminalValidationError,
+} from "./job-errors.js";
+
 const projectScopeBrand: unique symbol = Symbol("ProjectScope");
 
 export type OrganizationRole = "owner" | "admin" | "member";
@@ -248,54 +265,6 @@ type JobLeaseRow = {
   lease_deadline: Date;
 };
 
-export class JobIdempotencyConflictError extends Error {
-  readonly code = "JOB_IDEMPOTENCY_CONFLICT";
-  constructor() {
-    super("The idempotency key is already bound to a different Job request.");
-    this.name = "JobIdempotencyConflictError";
-  }
-}
-
-export class JobNotFoundError extends Error {
-  readonly code = "JOB_NOT_FOUND";
-  constructor() {
-    super("The Job does not exist in this project.");
-    this.name = "JobNotFoundError";
-  }
-}
-
-export class JobTransitionError extends Error {
-  readonly code = "JOB_TRANSITION_INVALID";
-  constructor() {
-    super("The requested Job state transition is not valid.");
-    this.name = "JobTransitionError";
-  }
-}
-
-export class JobWorkerAccessDeniedError extends Error {
-  readonly code = "JOB_WORKER_ACCESS_DENIED";
-  constructor() {
-    super("The Worker session cannot access this Project Job queue.");
-    this.name = "JobWorkerAccessDeniedError";
-  }
-}
-
-export class LeaseFencedError extends Error {
-  readonly code = "JOB_LEASE_FENCED";
-  constructor() {
-    super("The Job lease is expired, revoked, or superseded by a newer generation.");
-    this.name = "LeaseFencedError";
-  }
-}
-
-export class JobTerminalValidationError extends Error {
-  readonly code = "JOB_TERMINAL_INVALID";
-  constructor() {
-    super("The Job terminal payload is inconsistent with its status.");
-    this.name = "JobTerminalValidationError";
-  }
-}
-
 function canonicalJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
@@ -461,46 +430,64 @@ export class ControlPlaneJobService {
       requireIdentifier(input.placement.pinnedWorkerId, "input.placement.pinnedWorkerId");
     }
 
-    const now = this.now();
-    const notBefore = input.notBefore ?? now;
-    if (!(notBefore instanceof Date) || !Number.isFinite(notBefore.getTime()) || notBefore < now) {
-      throw new TypeError("input.notBefore must be a valid date at or after creation.");
-    }
-    const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
-    if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
-      throw new TypeError("The Job deadline must be after notBefore.");
-    }
-
-    const request = {
-      type: parsedCreation.type,
-      input: jobInput.value,
-      dataClass: input.dataClass,
-      placement: input.placement,
-      requiredCapabilities: capabilities.value,
-      budget: input.budget,
-      policyVersion,
-      uploadPrivateArtifact: input.uploadPrivateArtifact,
-      priority,
-      notBefore: input.notBefore?.toISOString() ?? null,
-    };
-    const requestHash = jobHash(request);
-    const id = randomUUID();
-    const envelopeHash = jobHash({
-      id,
-      projectId: scope.projectId,
-      requestHash: requestHash.toString("base64url"),
-      createdAt: now.toISOString(),
-    });
     return this.database.transaction(async (transaction) => {
+      let now = this.now();
       if (hasJobCreationQuotas(this.quotas)) {
-        const replay = await transaction.query<{ id: string }>(
-          "SELECT id FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
+        await transaction.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
+          [scope.projectId],
+        );
+        const clock = await transaction.query<{ now: Date }>("SELECT clock_timestamp() AS now", []);
+        const databaseNow = clock.rows[0]?.now;
+        if (!(databaseNow instanceof Date)) throw new Error("Project quota clock query returned no timestamp.");
+        now = databaseNow;
+      }
+      if (input.notBefore !== undefined &&
+          (!(input.notBefore instanceof Date) || !Number.isFinite(input.notBefore.getTime()))) {
+        throw new TypeError("input.notBefore must be a valid date at or after creation.");
+      }
+
+      const request = {
+        type: parsedCreation.type,
+        input: jobInput.value,
+        dataClass: input.dataClass,
+        placement: input.placement,
+        requiredCapabilities: capabilities.value,
+        budget: input.budget,
+        policyVersion,
+        uploadPrivateArtifact: input.uploadPrivateArtifact,
+        priority,
+        notBefore: input.notBefore?.toISOString() ?? null,
+      };
+      const requestHash = jobHash(request);
+      if (hasJobCreationQuotas(this.quotas)) {
+        const replay = await transaction.query<ControlPlaneJobRow & { request_hash: Buffer }>(
+          "SELECT * FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
           [scope.projectId, normalizedKey],
         );
-        // Idempotent replays return the original Job without consuming quota again.
-        if (replay.rows.length === 0) {
-          await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
+        const existing = replay.rows[0];
+        if (existing !== undefined) {
+          if (!existing.request_hash.equals(requestHash)) throw new JobIdempotencyConflictError();
+          return controlPlaneJob(existing);
         }
+      }
+      const notBefore = input.notBefore ?? now;
+      if (notBefore < now) {
+        throw new TypeError("input.notBefore must be a valid date at or after creation.");
+      }
+      const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
+      if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
+        throw new TypeError("The Job deadline must be after notBefore.");
+      }
+      const id = randomUUID();
+      const envelopeHash = jobHash({
+        id,
+        projectId: scope.projectId,
+        requestHash: requestHash.toString("base64url"),
+        createdAt: now.toISOString(),
+      });
+      if (hasJobCreationQuotas(this.quotas)) {
+        await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
       }
       const result = await transaction.query<ControlPlaneJobRow>(`
       INSERT INTO jobs(

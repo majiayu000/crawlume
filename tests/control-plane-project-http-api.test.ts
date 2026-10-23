@@ -236,6 +236,16 @@ describe("Project Job HTTP API", () => {
     expect(createJob).toHaveBeenCalledTimes(1);
   });
 
+  it("charges authenticated cross-project requests to the same rate limit", async () => {
+    const { api, createJob } = harness({ rateLimiter: new ApiRequestRateLimiter(1, () => 30_000) });
+    const otherProject = request({ path: "/v1/projects/44444444-4444-4444-8444-444444444444/jobs" });
+    expect((await api.handle(otherProject)).status).toBe(403);
+    const response = await api.handle(otherProject);
+    expect(response).toMatchObject({ status: 429, body: { code: "QUOTA_EXCEEDED" } });
+    expect(response.headers["retry-after"]).toBe("30");
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
   it("authenticates, scopes, and creates a Project-bound Job", async () => {
     const { api, authenticate, createJob } = harness();
 

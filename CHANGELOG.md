@@ -12,7 +12,7 @@ All notable changes to this project are documented here. The format follows
   and a Docker image build.
 - Dockerfile with bundled Chromium and a `/data` runtime volume.
 - Security policy.
-- Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line process logs on stderr.
+- Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line stderr logs for the MCP and control-plane server entrypoints.
 - `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
 - Operations manual (`docs/operations.md`).
 - `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
@@ -22,7 +22,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Minimum Node.js version lowered from 25.7 to 24.14 (LTS).
+- Minimum Node.js version lowered from 25.7 to 24.15 (LTS).
 
 ### Fixed
 

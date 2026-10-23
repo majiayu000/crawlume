@@ -5,15 +5,16 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 
 import { createDurableCrawlSite } from "../controlled-site/durable-crawl.js";
-import { startCrawl, waitForTerminalCrawl, type JsonRecord } from "../harness/crawl-e2e.js";
+import { requireStructuredResult, startCrawl, waitForTerminalCrawl, type JsonRecord } from "../harness/crawl-e2e.js";
 import { startBuiltMcpProcess } from "../harness/mcp-process.js";
 
 type Sample = { elapsedMs: number; rssBytes: number; publishedPages: number; jobs: number };
 
-type JobResult = { id: string; status: string; succeeded: number; failed: number; stopped: number };
+
 
 function integerOption(value: string | undefined, name: string, fallback: number, minimum: number, maximum: number): number {
   if (value === undefined) return fallback;
@@ -56,13 +57,14 @@ const { values } = parseArgs({
 });
 const durationMs = integerOption(values["duration-minutes"], "duration-minutes", 10, 1, 20_160) * 60_000;
 const totalPages = integerOption(values["total-pages"], "total-pages", 0, 0, 10_000_000);
-const pagesPerJob = integerOption(values["pages-per-job"], "pages-per-job", 1_000, 2, 10_000);
+const pagesPerJob = integerOption(values["pages-per-job"], "pages-per-job", 1_000, 1, 10_000);
 const concurrency = integerOption(values.concurrency, "concurrency", 16, 1, 32);
 const sampleMs = integerOption(values["sample-seconds"], "sample-seconds", 30, 1, 3_600) * 1_000;
 const maxRssGrowth = integerOption(values["max-rss-growth-percent"], "max-rss-growth-percent", 50, 1, 1_000) / 100;
 const reportDir = resolve(values["report-dir"] ?? join("benchmarks", "reports", `soak-${new Date().toISOString().replaceAll(":", "-")}`));
 mkdirSync(reportDir, { recursive: true });
 const samplesPath = join(reportDir, "samples.jsonl");
+writeFileSync(samplesPath, "");
 
 // One controlled site serves every job: the server's proxy pool is fixed at startup.
 const site = await createDurableCrawlSite({ pages: pagesPerJob });
@@ -75,20 +77,47 @@ const server = await startBuiltMcpProcess({
     CRAWLUME_CRAWL_MIN_HOST_INTERVAL_MS: "0",
     CRAWLUME_CRAWL_RETRY_BASE_MS: "0",
     CRAWLUME_CRAWL_WORKER_CONCURRENCY: String(concurrency),
-    CRAWLUME_LOCAL_INDEX_ENABLED: "0",
+    CRAWLUME_LOCAL_INDEX_ENABLED: totalPages > 0 ? "1" : "0",
     CRAWLUME_PROXY_URLS: site.proxyUrl,
     CRAWLUME_REQUEST_TIMEOUT_MS: "30000",
   },
 });
 
 const startedAt = Date.now();
-const samples: Sample[] = [];
-const jobs: JobResult[] = [];
+const rssSamples: number[] = [];
+let peakRss = 0;
+let jobCount = 0;
+let completedAt = startedAt;
+let lastSeedUrl = site.seedUrl;
+let capacity: Record<string, number | boolean> | null = null;
+const deadline = startedAt + durationMs;
+const durationLimitError = new Error("soak duration limit exceeded");
+function remainingMs(): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw durationLimitError;
+  return remaining;
+}
+async function withinDeadline<T>(operation: () => Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const result = await Promise.race([
+      operation(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(durationLimitError), remainingMs());
+      }),
+    ]);
+    remainingMs();
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 let publishedPages = 0;
 let failure: string | null = null;
 const record = (): void => {
-  const sample = { elapsedMs: Date.now() - startedAt, rssBytes: rssBytes(server.pid), publishedPages, jobs: jobs.length };
-  samples.push(sample);
+  const sample = { elapsedMs: Date.now() - startedAt, rssBytes: rssBytes(server.pid), publishedPages, jobs: jobCount };
+  rssSamples.push(sample.rssBytes);
+  peakRss = Math.max(peakRss, sample.rssBytes);
   appendFileSync(samplesPath, `${JSON.stringify(sample)}\n`);
 };
 const sampler = setInterval(() => {
@@ -102,67 +131,100 @@ const sampler = setInterval(() => {
 try {
   record();
   while (failure === null && Date.now() - startedAt < durationMs && (totalPages === 0 || publishedPages < totalPages)) {
-    const pages = totalPages === 0 ? pagesPerJob : Math.min(pagesPerJob, Math.max(2, totalPages - publishedPages));
+    const pages = totalPages === 0 ? pagesPerJob : Math.min(pagesPerJob, totalPages - publishedPages);
     {
-      const started = await startCrawl(server, {
-        url: site.seedUrl,
+      lastSeedUrl = site.startBatch(pages);
+      const started = await withinDeadline(() => startCrawl(server, {
+        url: lastSeedUrl,
         browserAllowed: false,
         cacheMode: "live",
         maxPages: pages,
         maxDepth: 1,
         concurrency,
         crawlBudget: {
-          maxDurationMs: Math.max(600_000, pages * 200),
+          maxDurationMs: Math.min(remainingMs(), Math.max(600_000, pages * 200)),
           maxProviderAttempts: pages * 2,
-          maxDocumentBytes: pages * 64_000,
+          maxDocumentBytes: Math.max(pages, concurrency) * 64_000,
           maxBrowserMs: 0,
           maxBrowserContexts: 0,
         },
-      });
-      const terminal = await waitForTerminalCrawl(server, started.id, Math.max(600_000, pages * 200));
-      const job: JobResult = {
+      }));
+      const terminal = await withinDeadline(() => waitForTerminalCrawl(server, started.id, remainingMs()));
+      const job = {
         id: started.id,
         status: String(terminal.status),
         succeeded: progressCount(terminal, "succeededCount"),
         failed: progressCount(terminal, "failedCount"),
         stopped: progressCount(terminal, "stoppedCount"),
       };
-      jobs.push(job);
+      jobCount += 1;
       publishedPages += job.succeeded + job.failed + job.stopped;
       if (job.status !== "completed" || job.succeeded !== pages) {
         failure = `job ${job.id} ended ${job.status} with ${job.succeeded}/${pages} succeeded pages`;
       }
     }
   }
+  if (totalPages > 0 && publishedPages === totalPages && failure === null) {
+    const database = new DatabaseSync(join(dataDirectory, "cache.sqlite"), { readOnly: true });
+    try {
+      const count = (sql: string): number => (database.prepare(sql).get() as { count: number }).count;
+      const indexedPages = count("SELECT count(*) AS count FROM indexed_pages");
+      const historyUrls = count("SELECT count(DISTINCT final_url) AS count FROM indexed_page_history");
+      const ftsMatches = count("SELECT count(*) AS count FROM page_index WHERE page_index MATCH 'durable'");
+      if (indexedPages !== totalPages || historyUrls !== totalPages || ftsMatches !== totalPages) {
+        throw new Error(`capacity projection mismatch: ${JSON.stringify({ indexedPages, historyUrls, ftsMatches })}`);
+      }
+      capacity = { indexedPages, historyUrls, ftsMatches, fullCapacityRejected: false, existingUrlUpdated: false };
+      if (totalPages === 300_000) {
+        requireStructuredResult(await withinDeadline(() => server.callTool("read_page", {
+          url: lastSeedUrl, browserAllowed: false, cacheMode: "live",
+        })), "read_page at capacity");
+        capacity.existingUrlUpdated = count("SELECT count(*) AS count FROM indexed_page_history") > totalPages;
+        const overflow = await withinDeadline(() => server.callTool("read_page", {
+          url: site.startBatch(1), browserAllowed: false, cacheMode: "live",
+        }));
+        const errorText = overflow.content.filter((item) => item.type === "text").map((item) => item.text).join("");
+        capacity.fullCapacityRejected = overflow.isError === true && JSON.parse(errorText).code === "BUDGET_EXHAUSTED";
+        if (!capacity.fullCapacityRejected || !capacity.existingUrlUpdated) throw new Error("full-capacity behavior failed");
+      }
+      remainingMs();
+    } finally { database.close(); }
+  }
   record();
 } catch (error) {
-  failure ??= error instanceof Error ? error.stack ?? error.message : String(error);
+  // Reaching the requested run length ends a duration-only soak normally. A capacity run must
+  // finish its target and verification before this same deadline.
+  if (totalPages > 0 || error !== durationLimitError) {
+    failure ??= error instanceof Error ? error.stack ?? error.message : String(error);
+  }
 } finally {
+  completedAt = Date.now();
   clearInterval(sampler);
   await server.close().catch(() => undefined);
   await site.close();
   await rm(dataDirectory, { recursive: true, force: true });
 }
 
-const quarter = Math.max(1, Math.floor(samples.length / 4));
-const earlyRss = median(samples.slice(0, quarter).map((sample) => sample.rssBytes));
-const lateRss = median(samples.slice(-quarter).map((sample) => sample.rssBytes));
+const quarter = Math.max(1, Math.floor(rssSamples.length / 4));
+const earlyRss = median(rssSamples.slice(0, quarter));
+const lateRss = median(rssSamples.slice(-quarter));
 const rssGrowth = earlyRss === 0 ? 0 : (lateRss - earlyRss) / earlyRss;
-if (failure === null && samples.length >= 8 && rssGrowth > maxRssGrowth) {
+if (failure === null && rssSamples.length >= 8 && rssGrowth > maxRssGrowth) {
   failure = `RSS grew ${(rssGrowth * 100).toFixed(1)}% (limit ${(maxRssGrowth * 100).toFixed(0)}%)`;
 }
 if (failure === null && totalPages > 0 && publishedPages < totalPages) {
   failure = `published ${publishedPages} of ${totalPages} pages before the duration limit`;
 }
-const elapsedMs = Date.now() - startedAt;
+const elapsedMs = completedAt - startedAt;
 const summary = {
   passed: failure === null,
   failure,
   elapsedMs,
-  jobs: jobs.length,
+  jobs: jobCount,
   publishedPages,
   pagesPerSecond: elapsedMs === 0 ? 0 : publishedPages / (elapsedMs / 1_000),
-  rss: { earlyMedianBytes: earlyRss, lateMedianBytes: lateRss, growth: rssGrowth, peakBytes: Math.max(...samples.map((sample) => sample.rssBytes)) },
+  rss: { earlyMedianBytes: earlyRss, lateMedianBytes: lateRss, growth: rssGrowth, peakBytes: peakRss },
+  capacity,
   config: { durationMs, totalPages, pagesPerJob, concurrency, sampleMs, maxRssGrowth },
 };
 writeFileSync(join(reportDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);

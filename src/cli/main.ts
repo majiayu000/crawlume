@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createApp, type CrawlumeApp } from "../app.js";
@@ -493,11 +493,48 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
     if (action.kind === "backup") {
-      const metadata = await createSqliteBackup(loadConfig().cachePath, action.backupPath);
-      writeFileSync(backupMetadataPath(action.backupPath), `${JSON.stringify(metadata, null, 2)}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      });
+      const metadataPath = backupMetadataPath(action.backupPath);
+      mkdirSync(dirname(action.backupPath), { recursive: true, mode: 0o700 });
+      if (existsSync(action.backupPath) || existsSync(metadataPath)) {
+        throw new ReadError("INVALID_ARGUMENT", "Backup database or metadata target already exists.");
+      }
+      const staging = mkdtempSync(join(dirname(action.backupPath), ".crawlume-backup-"));
+      const stagedBackup = join(staging, "backup.sqlite");
+      const stagedMetadata = join(staging, "metadata.json");
+      const published: string[] = [];
+      let metadata: SqliteBackupMetadata;
+      try {
+        const probe = join(staging, "hardlink-probe");
+        writeFileSync(probe, "", { flag: "wx", mode: 0o600 });
+        try {
+          linkSync(probe, `${probe}.link`);
+        } catch (error) {
+          throw new ReadError("INVALID_ARGUMENT", "Backup destination must allow hard links.", {
+            details: { path: dirname(action.backupPath) }, cause: error,
+          });
+        }
+        metadata = await createSqliteBackup(loadConfig().cachePath, stagedBackup);
+        writeFileSync(stagedMetadata, `${JSON.stringify(metadata, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+        // No final output is visible during the asynchronous backup. Commit only complete files,
+        // without yielding between publications; atomic links also refuse concurrent overwrites.
+        linkSync(stagedBackup, action.backupPath);
+        published.push(action.backupPath);
+        linkSync(stagedMetadata, metadataPath);
+        published.push(metadataPath);
+      } catch (error) {
+        const errors: unknown[] = [error];
+        for (const path of published) {
+          try { unlinkSync(path); } catch (cleanupError) { errors.push(cleanupError); }
+        }
+        if (errors.length > 1) throw new AggregateError(errors, "Backup and rollback both failed.");
+        throw error;
+      } finally {
+        try {
+          rmSync(staging, { recursive: true });
+        } catch (error) {
+          process.stderr.write(`Warning: backup staging cleanup failed; inspect leftover files at ${staging}: ${String(error)}\n`);
+        }
+      }
       process.stdout.write(`${JSON.stringify({ backupPath: action.backupPath, metadata }, null, 2)}\n`);
       return 0;
     }

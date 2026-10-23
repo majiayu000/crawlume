@@ -338,13 +338,13 @@ export class ProjectJobHttpApi {
     try {
       const context = { correlationId: requestId };
       const identity = await this.services.authenticate(projectBearerKey(request), context);
+      this.rateLimiter?.take(identity.apiKeyId);
       const pathProjectId = webhookMatch !== null && "route" in webhookMatch
         ? webhookMatch.route.projectId
         : (route as ProjectJobRoute).projectId;
       if (pathProjectId.toLowerCase() !== identity.projectId.toLowerCase()) {
         throw new ProjectPathIdentityMismatchError();
       }
-      this.rateLimiter?.take(identity.apiKeyId);
       if (webhookMatch !== null && "route" in webhookMatch && this.services.webhooks !== undefined) {
         if (request.body !== undefined && request.body !== null && !isJsonControlPlaneRequest(request)) {
           return projectProblem(request, requestId, 415, "PROJECT_MEDIA_TYPE_UNSUPPORTED",

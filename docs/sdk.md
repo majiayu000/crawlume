@@ -43,6 +43,9 @@ for await (const publication of client.publications(job.id)) {
   30 秒；SDK 发出的请求都是幂等的。
 - `publications()` 按服务端 cursor 依次返回全部 publication；`waitForJob()` 轮询到终态，超时抛错。
 
+`waitForJob` 的总超时包含 fetch、响应读取、重试等待与轮询等待，超时会中止在途请求。
+重试等待取指数退避与 `Retry-After` 的较大值；服务端要求超过 30 秒时直接返回该错误，不提前重试。
+
 ## Webhook 验签
 
 投递使用 [Standard Webhooks](https://www.standardwebhooks.com/) 签名：`webhook-id`、`webhook-timestamp`、
