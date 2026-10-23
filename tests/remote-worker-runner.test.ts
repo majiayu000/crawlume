@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReadError } from "../src/errors.js";
 import { RemoteWorkerHttpError, type RemoteWorkerClaim, type RemoteWorkerJob } from "../src/remote-worker/client.js";
@@ -61,6 +61,8 @@ function runner(
     adapter: { execute: vi.fn(execute) }, claimWaitMs: 0, heartbeatIntervalMs: 60_000, cloudArtifacts,
   });
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("RemoteWorkerRunner", () => {
   it("publishes a successful read and completes the lease", async () => {
@@ -149,5 +151,138 @@ describe("RemoteWorkerRunner", () => {
     expect(second.complete).toHaveBeenCalledTimes(1);
     expect(outbox.listRecoverableExecutions()).toEqual([]);
     outbox.close();
+  });
+
+  it.each([false, true])("keeps the lease alive through slow upload and completion (recovery=%s)", async (recover) => {
+    vi.useFakeTimers();
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const publication = { publication: { artifact: { id: "44444444-4444-4444-8444-444444444444" } } } as never;
+    if (recover) {
+      const first = fakeClient({
+        publishResult: vi.fn(async () => publication),
+        uploadArtifact: vi.fn(async () => { throw new Error("upload interrupted"); }),
+      });
+      await expect(runner(first, outbox, async () => result, true).runOnce(new AbortController().signal))
+        .rejects.toThrow("upload interrupted");
+    }
+    let uploadDone!: () => void;
+    let completeDone!: () => void;
+    const upload = new Promise<void>((resolve) => { uploadDone = resolve; });
+    const completion = new Promise<void>((resolve) => { completeDone = resolve; });
+    let heartbeatDeadline = Date.now() + 90_000;
+    const requireLiveLease = () => {
+      if (Date.now() >= heartbeatDeadline) {
+        throw new RemoteWorkerHttpError(409, "JOB_LEASE_FENCED", "r", false, null);
+      }
+    };
+    const client = fakeClient({
+      ...(recover ? { claim: vi.fn(async () => null) } : {}),
+      publishResult: vi.fn(async () => publication),
+      heartbeat: vi.fn(async () => {
+        requireLiveLease();
+        heartbeatDeadline = Date.now() + 90_000;
+        return { requestId: "r", lease: claim.lease };
+      }),
+      uploadArtifact: vi.fn(async () => {
+        await upload;
+        requireLiveLease();
+        return { uploadedAt: new Date() };
+      }),
+      complete: vi.fn(async () => {
+        await completion;
+        requireLiveLease();
+        return {} as never;
+      }),
+    });
+    const running = runner(client, outbox, async () => result, true).runOnce(new AbortController().signal);
+    try {
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(client.uploadArtifact).toHaveBeenCalledTimes(1);
+      expect(client.heartbeat).toHaveBeenCalledTimes(2);
+      expect(client.complete).not.toHaveBeenCalled();
+      uploadDone();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(client.complete).toHaveBeenCalledTimes(1);
+      expect(client.heartbeat).toHaveBeenCalledTimes(4);
+      completeDone();
+      await expect(running).resolves.toBe(recover ? "idle" : "executed");
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("terminal_acked");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      uploadDone();
+      completeDone();
+      await running.catch(() => {});
+      outbox.close();
+    }
+  });
+
+  it("leaves completion retryable when session renewal fails before terminal dispatch", async () => {
+    vi.useFakeTimers();
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const client = fakeClient({
+      createSession: vi.fn()
+        .mockResolvedValueOnce({ requestId: "r", token: "a.b.c", expiresAt: new Date(Date.now() + 600_000) })
+        .mockRejectedValueOnce(new Error("session refresh failed"))
+        .mockImplementation(async () => ({ requestId: "r", token: "a.b.c", expiresAt: new Date(Date.now() + 600_000) })),
+      publishResult: vi.fn(async () => ({ publication: { artifact: { id: "44444444-4444-4444-8444-444444444444" } } }) as never),
+      uploadArtifact: vi.fn(async () => ({ uploadedAt: new Date() }))
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(Date.now() + 600_000);
+          return { uploadedAt: new Date() };
+        }),
+    });
+    const worker = runner(client, outbox, async () => result, true);
+    try {
+      await expect(worker.runOnce(new AbortController().signal)).rejects.toThrow("session refresh failed");
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })).toMatchObject({
+        state: "staged", terminalAttemptedAtMs: null,
+      });
+      await worker.recoverStaged(new AbortController().signal);
+      expect(client.complete).toHaveBeenCalledTimes(1);
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("terminal_acked");
+    } finally {
+      outbox.close();
+    }
+  });
+
+  it("does not mark terminal attempted when cancelled before dispatch", async () => {
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const controller = new AbortController();
+    const client = fakeClient({
+      publishResult: vi.fn(async () => ({ publication: { artifact: { id: "44444444-4444-4444-8444-444444444444" } } }) as never),
+      uploadArtifact: vi.fn(async () => {
+        controller.abort(new Error("worker stopped"));
+        return { uploadedAt: new Date() };
+      }),
+    });
+    try {
+      await expect(runner(client, outbox, async () => result, true).runOnce(controller.signal)).rejects.toThrow("worker stopped");
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })).toMatchObject({
+        state: "staged", terminalAttemptedAtMs: null,
+      });
+    } finally {
+      outbox.close();
+    }
+  });
+
+  it("keeps a retryable upload confirmation conflict staged for recovery", async () => {
+    const outbox = new RemoteWorkerOutbox(":memory:");
+    const failure = new RemoteWorkerHttpError(409, "ARTIFACT_UPLOAD_UNVERIFIED", "r", true, null);
+    const client = fakeClient({
+      publishResult: vi.fn(async () => ({ publication: { artifact: { id: "44444444-4444-4444-8444-444444444444" } } }) as never),
+      uploadArtifact: vi.fn(async () => ({ uploadedAt: new Date() })).mockRejectedValueOnce(failure),
+    });
+    const worker = runner(client, outbox, async () => result, true);
+    try {
+      await expect(worker.runOnce(new AbortController().signal)).rejects.toBe(failure);
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("staged");
+      await worker.recoverStaged(new AbortController().signal);
+      expect(client.complete).toHaveBeenCalledTimes(1);
+      expect(outbox.getExecution({ jobId, leaseId, generation: 1 })?.state).toBe("terminal_acked");
+    } finally {
+      outbox.close();
+    }
   });
 });

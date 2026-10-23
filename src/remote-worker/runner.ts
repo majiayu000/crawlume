@@ -68,7 +68,8 @@ export class RemoteWorkerRunner {
     const execution = new AbortController();
     const abort = (): void => execution.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
-    const heartbeat = this.startHeartbeat(claim, execution);
+    if (signal.aborted) abort();
+    const heartbeat = this.startHeartbeat(lease, execution);
     try {
       const startedAt = this.now();
       let result: ReadPageResult | null = null;
@@ -81,11 +82,12 @@ export class RemoteWorkerRunner {
       }
       execution.signal.throwIfAborted();
       this.stage(lease, result, failure, this.now() - startedAt);
+      await this.deliverAndComplete(lease, execution.signal);
     } finally {
       clearInterval(heartbeat);
+      execution.abort();
       signal.removeEventListener("abort", abort);
     }
-    await this.deliverAndComplete(lease, signal);
     return "executed";
   }
 
@@ -97,7 +99,18 @@ export class RemoteWorkerRunner {
         logEvent("warn", "worker.terminal.outcome_unknown", lease);
         continue;
       }
-      await this.deliverAndComplete(lease, signal);
+      const delivery = new AbortController();
+      const abort = (): void => delivery.abort(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      const heartbeat = this.startHeartbeat(lease, delivery);
+      try {
+        await this.deliverAndComplete(lease, delivery.signal);
+      } finally {
+        clearInterval(heartbeat);
+        delivery.abort();
+        signal.removeEventListener("abort", abort);
+      }
     }
   }
 
@@ -146,15 +159,17 @@ export class RemoteWorkerRunner {
         lease, sessionToken: await this.sessionToken(signal), client: this.options.client, signal,
       }) !== null);
       await this.uploadCloudArtifact(lease, signal);
+      const sessionToken = await this.sessionToken(signal);
+      signal.throwIfAborted();
       const start = this.options.outbox.beginTerminal(lease);
       await this.options.client.complete({
-        sessionToken: await this.sessionToken(signal), leaseId: lease.leaseId,
+        sessionToken, leaseId: lease.leaseId,
         expectedJobId: lease.jobId, generation: lease.generation, terminal: start.terminal, signal,
       });
       this.options.outbox.ackTerminal(start.attempt);
       logEvent("info", "worker.job.completed", { ...lease, status: start.terminal.status });
     } catch (error) {
-      if (error instanceof RemoteWorkerHttpError && error.status === 409) {
+      if (error instanceof RemoteWorkerHttpError && error.status === 409 && error.code === "JOB_LEASE_FENCED") {
         // The lease was fenced; the control plane re-queues the Job under a new generation.
         this.options.outbox.blockLeaseGeneration(lease.jobId, lease.leaseId, lease.generation, error.code);
         logEvent("warn", "worker.lease.fenced", { ...lease, code: error.code });
@@ -189,22 +204,24 @@ export class RemoteWorkerRunner {
     logEvent("info", "worker.artifact.uploaded", { ...lease, artifactId: published.publication.artifact.id });
   }
 
-  private startHeartbeat(claim: RemoteWorkerClaim, execution: AbortController): ReturnType<typeof setInterval> {
+  private startHeartbeat(lease: RemoteWorkerOutboxLease, execution: AbortController): ReturnType<typeof setInterval> {
     return setInterval(() => {
       void (async () => {
         try {
           await this.options.client.heartbeat({
             sessionToken: await this.sessionToken(execution.signal),
-            leaseId: claim.lease.id,
-            generation: claim.lease.generation,
+            leaseId: lease.leaseId,
+            generation: lease.generation,
             signal: execution.signal,
           });
         } catch (error) {
           if (execution.signal.aborted) return;
           logEvent("warn", "worker.heartbeat.failed", {
-            leaseId: claim.lease.id, error: error instanceof Error ? error.message : String(error),
+            leaseId: lease.leaseId, error: error instanceof Error ? error.message : String(error),
           });
-          if (error instanceof RemoteWorkerHttpError && error.status === 409) execution.abort(error);
+          if (error instanceof RemoteWorkerHttpError && error.status === 409 && error.code === "JOB_LEASE_FENCED") {
+            execution.abort(error);
+          }
         }
       })();
     }, this.options.heartbeatIntervalMs ?? 10_000);
