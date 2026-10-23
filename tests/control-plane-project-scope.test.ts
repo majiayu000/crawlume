@@ -758,6 +758,7 @@ describe("control-plane Job completion and controls", () => {
         heartbeat_deadline: new Date(jobNow.getTime() + 30_000),
         lease_deadline: new Date(jobNow.getTime() + 300_000),
       }] },
+      { rows: [] },
       { rows: [jobRow({
         status: "completed",
         result_completeness: "partial",
@@ -775,8 +776,9 @@ describe("control-plane Job completion and controls", () => {
     expect(database.calls[1]?.parameters.slice(0, 4)).toEqual([
       "lease-b", "worker-a", "project-a", 2,
     ]);
-    expect(database.calls[3]?.parameters[1]).toBe("project-a");
-    expect(database.calls[3]?.statement).toContain("status = 'running'");
+    expect(database.calls[3]?.parameters).toEqual(["lease-b", "project-a"]);
+    expect(database.calls[4]?.parameters[1]).toBe("project-a");
+    expect(database.calls[4]?.statement).toContain("status = 'running'");
   });
 
   it("rejects inconsistent terminal input before authenticating the Worker", async () => {

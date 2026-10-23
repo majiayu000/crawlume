@@ -219,11 +219,17 @@ export class ArtifactStorageService {
     artifactId: string,
   ): Promise<Date> {
     const store = this.requireStore();
+    const snapshot = await withLeaseCloudArtifact(
+      this.database, identity, leaseId, generation, artifactId,
+      async (artifact) => artifact,
+    );
+    if (snapshot.uploadedAt !== null) return snapshot.uploadedAt;
+    // Object storage can be slow; release database locks before the network request.
+    const stored = await store.head(snapshot.objectKey);
     return withLeaseCloudArtifact(
       this.database, identity, leaseId, generation, artifactId,
       async (artifact, transaction) => {
         if (artifact.uploadedAt !== null) return artifact.uploadedAt;
-        const stored = await store.head(artifact.objectKey);
         if (stored === null) throw new ArtifactUploadVerificationError("The Artifact object has not been uploaded.");
         if (stored.byteCount !== artifact.byteCount ||
             stored.sha256Base64 !== sha256Base64(artifact.contentHash)) {
