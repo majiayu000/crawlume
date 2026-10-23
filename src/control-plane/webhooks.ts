@@ -1,5 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import type { LookupFunction } from "node:net";
+
+import { Agent, fetch as undiciFetch } from "undici";
 
 import { ReadError } from "../errors.js";
 import { parseRetryAfterMs } from "../sdk/client.js";
@@ -278,7 +281,7 @@ function truncate(value: string): string {
  * recorded as attempts; only database failures escape sweep() and stop the runner.
  */
 export class WebhookDispatcher {
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: typeof fetch | typeof undiciFetch;
   private readonly now: () => Date;
   private readonly batchSize: number;
   private readonly maxAttempts: number;
@@ -291,7 +294,7 @@ export class WebhookDispatcher {
     private readonly urlPolicy: Pick<UrlPolicy, "parse" | "assertPublic">,
     options: WebhookDispatcherOptions = {},
   ) {
-    this.fetchImpl = options.fetch ?? fetch;
+    this.fetchImpl = options.fetch ?? undiciFetch;
     this.now = options.now ?? (() => new Date());
     this.batchSize = options.batchSize ?? 20;
     this.maxAttempts = options.maxAttempts ?? 8;
@@ -339,43 +342,73 @@ export class WebhookDispatcher {
       await this.finish(delivery, attempt, startedAt, "dead_letter", null, "The endpoint is disabled.", null);
       return;
     }
-    const body = JSON.stringify({
-      id: delivery.event_id,
-      type: delivery.event_type,
-      occurred_at: delivery.occurred_at.toISOString(),
-      data: delivery.payload,
-    });
-    const secrets = [this.cipher.decrypt(delivery.secret_ciphertext)];
-    if (delivery.previous_secret_ciphertext !== null && delivery.previous_secret_expires_at !== null &&
-        delivery.previous_secret_expires_at > startedAt) {
-      secrets.push(this.cipher.decrypt(delivery.previous_secret_ciphertext));
-    }
-    const timestamp = Math.floor(startedAt.getTime() / 1_000);
     let statusCode: number | null = null;
     let error: string | null = null;
     let retryAfter: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const url = this.urlPolicy.parse(delivery.url);
-      await this.urlPolicy.assertPublic(url);
-      const response = await this.fetchImpl(url, {
-        method: "POST",
-        redirect: "manual",
-        signal: AbortSignal.timeout(this.timeoutMs),
-        headers: {
-          "content-type": "application/json",
-          "user-agent": "Diaoyan-Webhooks/1",
-          "webhook-id": delivery.id,
-          "webhook-timestamp": String(timestamp),
-          "webhook-signature": signWebhook(secrets, delivery.id, timestamp, body),
-        },
-        body,
+      const controller = new AbortController();
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const timeout = new DOMException("The webhook delivery timed out.", "TimeoutError");
+          controller.abort(timeout);
+          reject(timeout);
+        }, this.timeoutMs);
       });
-      statusCode = response.status;
-      retryAfter = response.headers.get("retry-after");
-      await response.body?.cancel();
-      if (statusCode < 200 || statusCode > 299) error = `Endpoint returned HTTP ${statusCode}.`;
+      const body = JSON.stringify({
+        id: delivery.event_id,
+        type: delivery.event_type,
+        occurred_at: delivery.occurred_at.toISOString(),
+        data: delivery.payload,
+      });
+      const secrets = [this.cipher.decrypt(delivery.secret_ciphertext)];
+      if (delivery.previous_secret_ciphertext !== null && delivery.previous_secret_expires_at !== null &&
+          delivery.previous_secret_expires_at > startedAt) {
+        secrets.push(this.cipher.decrypt(delivery.previous_secret_ciphertext));
+      }
+      const timestamp = Math.floor(startedAt.getTime() / 1_000);
+      const url = this.urlPolicy.parse(delivery.url);
+      const addresses = await Promise.race([this.urlPolicy.assertPublic(url), deadline]);
+      // Keep the hostname (Host and TLS SNI), but never resolve it again when connecting.
+      const lookup: LookupFunction = (_hostname, options, callback) => {
+        const allowed = addresses.filter(({ family }) => !options.family || family === options.family);
+        const first = allowed[0];
+        if (first === undefined) {
+          callback(new Error("No validated address matches the requested family."), [], 0);
+        } else if (options.all === true) {
+          callback(null, allowed);
+        } else {
+          callback(null, first.address, first.family);
+        }
+      };
+      const dispatcher = new Agent({ connect: { lookup } });
+      try {
+        const request = {
+          method: "POST",
+          redirect: "manual",
+          signal: controller.signal,
+          dispatcher,
+          headers: {
+            "content-type": "application/json",
+            "user-agent": "Diaoyan-Webhooks/1",
+            "webhook-id": delivery.id,
+            "webhook-timestamp": String(timestamp),
+            "webhook-signature": signWebhook(secrets, delivery.id, timestamp, body),
+          },
+          body,
+        } satisfies RequestInit & { dispatcher: Agent };
+        const response = await Promise.race([this.fetchImpl(url, request), deadline]);
+        statusCode = response.status;
+        retryAfter = response.headers.get("retry-after");
+        if (response.body !== null) await Promise.race([response.body.cancel(), deadline]);
+        if (statusCode < 200 || statusCode > 299) error = `Endpoint returned HTTP ${statusCode}.`;
+      } finally {
+        await dispatcher.destroy();
+      }
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      clearTimeout(timer);
     }
     if (error === null) {
       await this.finish(delivery, attempt, startedAt, "succeeded", statusCode, null, null);
