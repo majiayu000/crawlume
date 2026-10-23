@@ -216,6 +216,101 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '500':
           $ref: '#/components/responses/InternalError'
+  /job-leases/{lease_id}/artifact-uploads:
+    post:
+      operationId: requestArtifactUpload
+      summary: Get a presigned PUT for a cloud Artifact published by this active Lease
+      description: >-
+        The URL is bound to the published byte count and SHA-256; the Worker must send the returned
+        headers unchanged. Object storage rejects any other body.
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactUploadRequest'
+      responses:
+        '201':
+          description: Presigned upload valid for 15 minutes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, upload]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  upload:
+                    type: object
+                    additionalProperties: false
+                    required: [url, method, headers, expires_at]
+                    properties:
+                      url: { type: string, format: uri }
+                      method: { type: string, const: PUT }
+                      headers:
+                        type: object
+                        additionalProperties: { type: string }
+                      expires_at: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/ArtifactUploadConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ArtifactStorageDisabled'
+  /job-leases/{lease_id}/artifact-uploads/confirm:
+    post:
+      operationId: confirmArtifactUpload
+      summary: Verify the uploaded object's size and SHA-256 and mark the Artifact downloadable
+      parameters:
+        - $ref: '#/components/parameters/LeaseId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactUploadRequest'
+      responses:
+        '200':
+          description: The Artifact is uploaded; repeated confirmations return the original time
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, uploaded_at]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  uploaded_at: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/ArtifactUploadConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ArtifactStorageDisabled'
   /projects/{project_id}/worker-enrollments:
     post:
       operationId: createWorkerEnrollment
@@ -834,6 +929,13 @@ components:
                 - { type: string }
                 - { type: 'null' }
             created_at: { type: string, format: date-time }
+    ArtifactUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [generation, artifact_id]
+      properties:
+        generation: { type: integer, minimum: 1 }
+        artifact_id: { $ref: '#/components/schemas/Uuid' }
     CompleteJobRequest:
       oneOf:
         - type: object
@@ -934,6 +1036,18 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     Forbidden:
       description: Authenticated Worker is not authorized for this operation
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ArtifactUploadConflict:
+      description: >-
+        The Lease is fenced, or the stored object does not yet match the published size and SHA-256
+        (code ARTIFACT_UPLOAD_UNVERIFIED, retryable after uploading).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ArtifactStorageDisabled:
+      description: Cloud Artifact storage is not configured on this control plane
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

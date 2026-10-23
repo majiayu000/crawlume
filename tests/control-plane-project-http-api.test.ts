@@ -636,7 +636,7 @@ describe("Project Job HTTP API", () => {
 });
 
 describe("control-plane HTTP routing", () => {
-  it("dispatches all 33 mounted operations to exactly one target handler", async () => {
+  it("dispatches all 36 mounted operations to exactly one target handler", async () => {
     const handlers = {
       humanAuth: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       projectAdmin: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
@@ -664,7 +664,7 @@ describe("control-plane HTTP routing", () => {
       return "workers";
     };
 
-    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(33);
+    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(36);
     for (const operation of ControlPlaneHttpApi.routerOperations) {
       const before = Object.values(handlers).reduce((sum, handler) =>
         sum + handler.handle.mock.calls.length, 0);
@@ -676,7 +676,8 @@ describe("control-plane HTTP routing", () => {
         .replaceAll("{worker_id}", jobId)
         .replaceAll("{lease_id}", jobId)
         .replaceAll("{endpoint_id}", jobId)
-        .replaceAll("{event_id}", jobId);
+        .replaceAll("{event_id}", jobId)
+        .replaceAll("{artifact_id}", jobId);
 
       await api.handle(request({ method: operation.method, path }));
 

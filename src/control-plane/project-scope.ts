@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import type { AuthenticatedProjectApiKey, AuthenticatedWorker } from "./api-key-service.js";
+import { ArtifactUploadVerificationError } from "./artifact-storage.js";
 import {
   parseControlPlaneJobCreation,
   type ControlPlaneJobRequest,
@@ -713,6 +714,22 @@ export class ControlPlaneJobService {
       `, [leaseId, identity.workerId, identity.projectId, generation, now]);
       const lease = finishedLease.rows[0];
       if (lease === undefined) throw new LeaseFencedError();
+      if (terminal.status === "completed") {
+        const pendingUploads = await transaction.query<{ id: string }>(`
+          SELECT artifact_metadata.id FROM artifact_metadata
+          INNER JOIN job_publications ON job_publications.artifact_id = artifact_metadata.id
+            AND job_publications.project_id = artifact_metadata.project_id
+          WHERE job_publications.lease_id = $1 AND job_publications.project_id = $2
+            AND artifact_metadata.storage_kind = 'cloud_object'
+            AND artifact_metadata.uploaded_at IS NULL
+          LIMIT 1
+        `, [leaseId, identity.projectId]);
+        if (pendingUploads.rows[0] !== undefined) {
+          throw new ArtifactUploadVerificationError(
+            "Confirm all cloud Artifact uploads before completing the Job.",
+          );
+        }
+      }
       const finishedJob = await transaction.query<ControlPlaneJobRow>(`
         UPDATE jobs SET status = $3, result_completeness = $4, error_code = $5,
           completed_at = $6, updated_at = $6

@@ -688,13 +688,18 @@ describe("Worker HTTP API", () => {
   it("publishes a contract without Worker-supplied tenant, body, credential, or object path inputs", () => {
     const contract = readFileSync(new URL("../docs/worker-control-api.openapi.yaml", import.meta.url), "utf8");
     expect(contract).toContain("openapi: 3.2.0");
-    expect(contract.match(/^  \/(?:workers|job-leases)\//gmu)).toHaveLength(5);
+    expect(contract.match(/^  \/(?:workers|job-leases)\//gmu)).toHaveLength(7);
     const eventRequest = contract.slice(contract.indexOf("    JobEventRequest:"), contract.indexOf("    JobEvent:"));
     const publicationRequest = contract.slice(
       contract.indexOf("    JobPublicationRequest:"),
       contract.indexOf("    JobPublication:"),
     );
-    expect(`${eventRequest}${publicationRequest}`).not.toMatch(
+    const uploadRequest = contract.slice(
+      contract.indexOf("    ArtifactUploadRequest:"),
+      contract.indexOf("    CompleteJobRequest:"),
+    );
+    expect(uploadRequest).toContain("artifact_id");
+    expect(`${eventRequest}${publicationRequest}${uploadRequest}`).not.toMatch(
       /^\s+(project_id|body|cookie|authorization|object_key):/mu,
     );
   });

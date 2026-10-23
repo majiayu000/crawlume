@@ -863,6 +863,54 @@ paths:
           $ref: '#/components/responses/QuotaExceeded'
         '500':
           $ref: '#/components/responses/InternalError'
+  /projects/{project_id}/artifacts/{artifact_id}/download:
+    get:
+      operationId: getProjectArtifactDownload
+      summary: Get a 5-minute presigned download URL for an uploaded cloud Artifact
+      description: Requires results:read. Every issued URL is recorded as an artifact.downloaded audit event.
+      security:
+        - ProjectApiKey: []
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+        - name: artifact_id
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: Short-lived download URL
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, url, expires_at]
+                properties:
+                  request_id:
+                    $ref: '#/components/schemas/Uuid'
+                  url: { type: string, format: uri }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ArtifactNotFound'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ArtifactStorageDisabled'
   /projects/{project_id}/audit-events:
     get:
       operationId: listProjectAuditEvents
@@ -1781,6 +1829,16 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     ValidationFailed:
       description: The Job request body violates the contract
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ArtifactNotFound:
+      description: The cloud Artifact does not exist in this Project or has not been uploaded
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ArtifactStorageDisabled:
+      description: Cloud Artifact storage is not configured on this control plane
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
