@@ -4,6 +4,9 @@ import {
   randomUUID,
   sign as signMessage,
 } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { generateKeyPair, SignJWT } from "jose";
 import { Pool } from "pg";
@@ -14,6 +17,15 @@ import {
   type ControlPlaneRuntime,
 } from "../src/server.js";
 import { CrawlumeClient, type CreateJobRequest } from "../src/sdk/client.js";
+import { PageCache } from "../src/cache.js";
+import { ReaderService } from "../src/reader.js";
+import { RemoteWorkerClient } from "../src/remote-worker/client.js";
+import { InMemoryWorkerIdentity } from "../src/remote-worker/enrollment.js";
+import { RemoteWorkerOutbox } from "../src/remote-worker/outbox.js";
+import { RemoteWorkerRunner } from "../src/remote-worker/runner.js";
+import { PublicReadRuntimeAdapter } from "../src/remote-worker/runtime-adapter.js";
+import { UrlPolicy } from "../src/security/url-policy.js";
+import { publicResolver, rawPage, StubFetcher, testConfig } from "./helpers.js";
 
 const configuredDatabaseUrl = process.env.DIAOYAN_TEST_POSTGRES_URL;
 const describeWithPostgres = configuredDatabaseUrl === undefined ? describe.skip : describe;
@@ -481,7 +493,46 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       const sdkPublications = [];
       for await (const publication of sdk.publications(createdJob.id)) sdkPublications.push(publication);
       expect(sdkPublications).toEqual([]);
-      await expect(sdk.cancelJob(createdJob.id)).resolves.toMatchObject({ status: "cancelled" });
+
+      // E2E-01: a real Worker identity, HTTP client and durable outbox run the Job to completion.
+      const workerDirectory = await mkdtemp(join(tmpdir(), "crawlume-e2e-worker-"));
+      const outbox = new RemoteWorkerOutbox(join(workerDirectory, "outbox.sqlite"));
+      const readerCache = join(workerDirectory, "reader.sqlite");
+      try {
+        const runner = new RemoteWorkerRunner({
+          client: new RemoteWorkerClient(`${runtime.origin}/v1`, { fetch: originalFetch }),
+          outbox,
+          identity: InMemoryWorkerIdentity.fromPkcs8Der(
+            workerKeys.privateKey.export({ format: "der", type: "pkcs8" }),
+          ),
+          workerId: worker.worker.id,
+          adapter: new PublicReadRuntimeAdapter(new ReaderService(
+            { ...testConfig(), cachePath: readerCache },
+            new UrlPolicy(async () => publicResolver()),
+            new PageCache(readerCache),
+            new StubFetcher(rawPage({ finalUrl: "https://example.com/" })),
+            new StubFetcher(new Error("browser must not run")),
+          )),
+          claimWaitMs: 0,
+        });
+        await expect(runner.runOnce(new AbortController().signal)).resolves.toBe("executed");
+        await expect(runner.runOnce(new AbortController().signal)).resolves.toBe("idle");
+      } finally {
+        outbox.close();
+        await rm(workerDirectory, { recursive: true, force: true });
+      }
+      await expect(sdk.waitForJob(createdJob.id, { timeoutMs: 5_000, intervalMs: 50 }))
+        .resolves.toMatchObject({ status: "completed", result_completeness: "complete" });
+      const completedPublications = [];
+      for await (const publication of sdk.publications(createdJob.id)) completedPublications.push(publication);
+      expect(completedPublications).toEqual([expect.objectContaining({
+        sequence: 1,
+        completeness: "complete",
+        artifact: expect.objectContaining({ storage: "worker_local", media_type: expect.stringContaining("public-read-result") }),
+      })]);
+
+      const cancelledJob = await sdk.createJob(sdkRequest, { idempotencyKey: "bootstrap-sdk-cancel" });
+      await expect(sdk.cancelJob(cancelledJob.id)).resolves.toMatchObject({ status: "cancelled" });
 
       const migrations = await inspectionPool.query<{ count: number; version: number }>(`
         SELECT count(*)::integer AS count, max(version)::integer AS version

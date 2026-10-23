@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format follows
 - `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
 - TypeScript SDK for the Project Control API (`crawlume/sdk`).
 - Control-plane Project quotas (`DIAOYAN_QUOTA_*`) returning HTTP 429 `QUOTA_EXCEEDED`.
+- `crawlume-worker` Remote Worker command (enroll/run) with durable outbox delivery, heartbeats, fenced-lease handling and optional cloud Artifact uploads.
 - S3-compatible cloud Artifact storage: presigned, checksum-bound Worker uploads with HEAD verification and audited presigned downloads.
 - Signed webhooks for terminal Job events with retries, dead letters, secret rotation and redelivery; `verifyWebhook` in `crawlume/sdk/webhooks`.
 

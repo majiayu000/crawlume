@@ -90,6 +90,24 @@ TLS key 和 cert 均须为非符号链接的普通文件，key 还须使用 owne
 
 对外暴露时应启用 TLS 或放在终止 TLS 的反向代理之后，并只开放 API 端口。
 
+### Remote Worker
+
+`crawlume-worker` 在 Control Plane 之外执行公开 `read` Job：
+
+```bash
+CRAWLUME_WORKER_ENROLLMENT_TOKEN=dya_we_... crawlume-worker enroll --control-url https://control.example/v1
+crawlume-worker run --control-url https://control.example/v1
+```
+
+- Enrollment token 只通过环境变量传入，不出现在命令行参数里；enroll 生成 Ed25519 私钥并与 Worker ID 一起保存在
+  `CRAWLUME_WORKER_STATE_DIR`（默认 `<数据目录>/worker`，权限 0700），已注册的目录拒绝再次注册。
+- `run` 用私钥换短期 Session，循环 claim → 执行 → 写入本地 durable outbox → 投递 event/publication → 提交终态，
+  执行期间每 10 秒 heartbeat；进程重启后先补投 outbox 中已暂存的结果。Lease 被 fence 时放弃该 generation，由
+  Control Plane 重新排队。终态请求已发出但未确认的执行只记录 `worker.terminal.outcome_unknown`，不重复提交。
+- `CRAWLUME_WORKER_CLOUD_ARTIFACTS=1` 时结果以 `cloud_object` 发布并在提交终态前上传到对象存储（需要 Control Plane
+  配置 Artifact 存储）；默认结果只保存在 Worker 本地。
+- 读取行为沿用本地 `CRAWLUME_*` 配置（代理、浏览器、超时等）。日志为 stderr JSON Lines。
+
 ### 配额
 
 以下变量对每个 Project 生效，未设置即不限制，非法值启动失败。超限请求返回 HTTP 429 `QUOTA_EXCEEDED`；
