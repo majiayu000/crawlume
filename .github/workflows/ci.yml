@@ -62,6 +62,19 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:object-store
 
+  alert-rules:
+    name: alert rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: >-
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules
+          --entrypoint promtool prom/prometheus:v3.5.0 check rules alerts.yml
+      - run: >-
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules
+          --entrypoint promtool prom/prometheus:v3.5.0 test rules alerts.test.yml
+
   docker:
     name: docker image
     runs-on: ubuntu-latest

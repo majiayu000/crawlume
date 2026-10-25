@@ -1,0 +1,92 @@
+# promtool rule tests: promtool test rules deploy/prometheus/alerts.test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="crawlume-control-plane", instance="cp:9464"}'
+        values: "1 1 0 0 0 0"
+      - series: "crawlume_control_workers_with_session"
+        values: "0x15"
+      - series: 'crawlume_control_jobs{status="queued"}'
+        values: "2x15"
+      - series: "crawlume_control_oldest_queued_job_age_seconds"
+        values: "0 120 240 360 480 600 720 840 960 1080 1200 1320 1440 1560 1680 1800"
+      - series: "crawlume_control_overdue_leases"
+        values: "0 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CrawlumeControlPlaneDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: crawlume-control-plane, instance: "cp:9464" }
+            exp_annotations:
+              summary: Control-plane metrics are unreachable or failing
+              description: "cp:9464 has not served /metrics for 2 minutes; the process may be down or PostgreSQL unreadable."
+      - eval_time: 9m
+        alertname: CrawlumeNoWorkerAvailable
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: CrawlumeNoWorkerAvailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: Jobs are queued but no Worker holds a session
+              description: No active Worker has had a valid session for 10 minutes while Jobs wait in the queue.
+      - eval_time: 10m
+        alertname: CrawlumeJobQueueBacklog
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: CrawlumeJobQueueBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: Claimable Jobs are waiting more than 10 minutes
+              description: "The oldest claimable queued Job is 22m 0s old."
+      - eval_time: 6m
+        alertname: CrawlumeLeasesNotRecovered
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: Expired Job leases are not being recovered
+              description: "1 active leases are past their deadline; the lease sweeper may be stalled."
+
+  - interval: 1m
+    input_series:
+      - series: 'crawlume_control_jobs_terminal_total{status="completed"}'
+        values: "0+6x60"
+      - series: 'crawlume_control_jobs_terminal_total{status="failed"}'
+        values: "0+4x60"
+      - series: 'crawlume_control_webhook_deliveries{status="dead_letter"}'
+        values: "0x30 1 1 1"
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: CrawlumeJobFailureRateHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: More than 20% of finished Jobs are failing
+              description: "40% of Jobs finished in the last 30 minutes failed."
+      - eval_time: 30m
+        alertname: CrawlumeWebhookDeadLetters
+        exp_alerts: []
+      - eval_time: 32m
+        alertname: CrawlumeWebhookDeadLetters
+        exp_alerts:
+          - exp_labels: { severity: warning, status: dead_letter }
+            exp_annotations:
+              summary: Webhook deliveries are exhausting their retries
+              description: "1 webhook deliveries became dead letters in the last 30 minutes."
+
+  - interval: 1m
+    input_series:
+      - series: 'crawlume_control_jobs_terminal_total{status="completed"}'
+        values: "0+10x60"
+      - series: 'crawlume_control_jobs_terminal_total{status="failed"}'
+        values: "0+1x60"
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: CrawlumeJobFailureRateHigh
+        exp_alerts: []

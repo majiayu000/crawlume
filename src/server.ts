@@ -71,6 +71,7 @@ import {
 } from "./control-plane/webhooks.js";
 import { WorkerBootstrapHttpApi } from "./control-plane/worker-bootstrap-http-api.js";
 import { logEvent } from "./log.js";
+import { ControlPlaneMetrics } from "./control-plane/control-metrics.js";
 import { PostgresControlPlaneDatabase } from "./control-plane/postgres-database.js";
 import {
   startWorkerControlServer,
@@ -83,6 +84,7 @@ import {
   metricsListenerFromEnvironment,
   startMetricsListener,
   type MetricsListener,
+  type MetricsListenerConfig,
 } from "./metrics-server.js";
 
 const jobLeaseSweepIntervalMs = 30_000;
@@ -105,6 +107,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   webhookCipher?: WebhookSecretCipher | null;
   artifactStore?: ArtifactObjectStore | null;
   artifactRetentionDays?: number | null;
+  metrics?: MetricsListenerConfig | null;
 }>;
 
 export type ControlPlaneRuntime = Readonly<{
@@ -269,6 +272,7 @@ export async function loadControlPlaneRuntimeConfig(
       : await WebhookSecretCipher.fromFile(environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH),
     artifactStore: artifactObjectStoreFromEnvironment(environment),
     artifactRetentionDays: artifactRetentionDaysFromEnvironment(environment),
+    metrics: metricsListenerFromEnvironment(environment),
   });
 }
 
@@ -280,6 +284,7 @@ export async function startControlPlaneRuntime(
   let webhookRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let retentionRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let listener: WorkerControlListener | undefined;
+  let controlMetricsListener: MetricsListener | undefined;
   let resolveFinished!: () => void;
   let rejectFinished!: (error: unknown) => void;
   const finished = new Promise<void>((resolve, reject) => {
@@ -397,10 +402,17 @@ export async function startControlPlaneRuntime(
       ? {}
       : { rateLimiter: new ApiRequestRateLimiter(quotas.apiRequestsPerMinute) });
     const workerApi = new WorkerHttpApi({ identity, jobs, results, artifacts });
+    const controlMetrics = new ControlPlaneMetrics(database);
     listener = await startWorkerControlServer(
-      new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
+      controlMetrics.instrument(
+        new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
+      ),
       config.listener,
     );
+    if (config.metrics != null) {
+      controlMetricsListener = await startMetricsListener(controlMetrics, config.metrics);
+      logEvent("info", "metrics.listening", { origin: controlMetricsListener.origin });
+    }
     const activeListener = listener;
     if (hasPendingFatalError) throw pendingFatalError;
     runtimeReady = true;
@@ -410,6 +422,7 @@ export async function startControlPlaneRuntime(
       const errors: unknown[] = [];
       for (const close of [
         () => activeListener.close(),
+        () => controlMetricsListener?.close(),
         () => webhookRunner?.close(),
         () => retentionRunner?.close(),
         () => sweepRunner?.close(),
@@ -439,10 +452,12 @@ export async function startControlPlaneRuntime(
     });
   } catch (error) {
     const cleanupErrors: unknown[] = [];
-    try {
-      await listener?.close();
-    } catch (listenerCloseError) {
-      cleanupErrors.push(listenerCloseError);
+    for (const openListener of [listener, controlMetricsListener]) {
+      try {
+        await openListener?.close();
+      } catch (listenerCloseError) {
+        cleanupErrors.push(listenerCloseError);
+      }
     }
     for (const runner of [webhookRunner, retentionRunner]) {
       try {

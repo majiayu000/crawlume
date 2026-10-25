@@ -1,0 +1,103 @@
+# Prometheus alerting rules for Crawlume. The control-plane job scrapes `--control-plane` processes
+# started with CRAWLUME_METRICS_PORT; the mcp job scrapes MCP processes with the same setting.
+groups:
+  - name: crawlume-control-plane
+    rules:
+      - alert: CrawlumeControlPlaneDown
+        expr: up{job="crawlume-control-plane"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Control-plane metrics are unreachable or failing
+          description: "{{ $labels.instance }} has not served /metrics for 2 minutes; the process may be down or PostgreSQL unreadable."
+
+      - alert: CrawlumeNoWorkerAvailable
+        expr: |
+          max(crawlume_control_workers_with_session) == 0
+          and on() sum(crawlume_control_jobs{status="queued"}) > 0
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: Jobs are queued but no Worker holds a session
+          description: No active Worker has had a valid session for 10 minutes while Jobs wait in the queue.
+
+      - alert: CrawlumeJobQueueBacklog
+        expr: max(crawlume_control_oldest_queued_job_age_seconds) > 600
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Claimable Jobs are waiting more than 10 minutes
+          description: "The oldest claimable queued Job is {{ $value | humanizeDuration }} old."
+
+      - alert: CrawlumeLeasesNotRecovered
+        expr: max(crawlume_control_overdue_leases) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Expired Job leases are not being recovered
+          description: "{{ $value }} active leases are past their deadline; the lease sweeper may be stalled."
+
+      - alert: CrawlumeJobFailureRateHigh
+        expr: |
+          sum(rate(crawlume_control_jobs_terminal_total{status="failed"}[30m]))
+            / sum(rate(crawlume_control_jobs_terminal_total[30m])) > 0.2
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 20% of finished Jobs are failing
+          description: "{{ $value | humanizePercentage }} of Jobs finished in the last 30 minutes failed."
+
+      - alert: CrawlumeControlPlaneErrors
+        expr: |
+          sum(rate(crawlume_control_http_requests_total{status_class="5xx"}[10m]))
+            / sum(rate(crawlume_control_http_requests_total[10m])) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 5% of control-plane API responses are 5xx
+          description: "{{ $value | humanizePercentage }} of API responses in the last 10 minutes were server errors."
+
+      - alert: CrawlumeWebhookDeadLetters
+        expr: |
+          crawlume_control_webhook_deliveries{status="dead_letter"}
+            - crawlume_control_webhook_deliveries{status="dead_letter"} offset 30m > 0
+        labels: { severity: warning }
+        annotations:
+          summary: Webhook deliveries are exhausting their retries
+          description: "{{ $value }} webhook deliveries became dead letters in the last 30 minutes."
+
+      - alert: CrawlumeWebhookDeliveryBacklog
+        expr: max(crawlume_control_oldest_pending_webhook_delivery_age_seconds) > 900
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: A webhook delivery has been pending for more than 15 minutes
+          description: "The oldest pending webhook delivery is {{ $value | humanizeDuration }} old."
+
+      - alert: CrawlumeArtifactUploadsStuck
+        expr: max(crawlume_control_oldest_pending_artifact_upload_age_seconds) > 1800
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: A cloud Artifact upload has been unconfirmed for more than 30 minutes
+          description: Workers published cloud Artifacts that were never confirmed; their Jobs cannot complete.
+
+      - alert: CrawlumeArtifactDeletionsStuck
+        expr: max(crawlume_control_oldest_pending_artifact_deletion_age_seconds) > 7200
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: Expired Artifacts have not been deleted for more than 2 hours
+          description: The retention sweeper is failing to delete tombstoned objects; check object-store access.
+
+  - name: crawlume-mcp
+    rules:
+      - alert: CrawlumeReadFailureRateHigh
+        expr: |
+          sum(rate(crawlume_reads_total{outcome="failure"}[30m]))
+            / sum(rate(crawlume_reads_total[30m])) > 0.5
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: More than half of MCP content reads are failing
+          description: "{{ $value | humanizePercentage }} of reads in the last 30 minutes failed."

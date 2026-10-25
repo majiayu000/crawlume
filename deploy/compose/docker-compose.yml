@@ -16,6 +16,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:8787:8787"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "crawlume", "-d", "crawlume"]
       interval: 5s
@@ -29,8 +30,9 @@ services:
       SERVICES: s3
     volumes:
       - s3-data:/var/lib/localstack
+      - ./localstack-init:/etc/localstack/init/ready.d:ro
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:4566/_localstack/health"]
+      test: ["CMD", "sh", "-c", "awslocal s3api head-bucket --bucket crawlume-artifacts"]
       interval: 5s
       retries: 30
     restart: unless-stopped
@@ -93,6 +95,7 @@ services:
       DIAOYAN_ARTIFACT_S3_ENDPOINT: http://127.0.0.1:4566
       DIAOYAN_ARTIFACT_S3_FORCE_PATH_STYLE: "1"
       DIAOYAN_ARTIFACT_RETENTION_DAYS: "7"
+      CRAWLUME_METRICS_PORT: "9464"
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_REGION: us-east-1
@@ -142,6 +145,18 @@ services:
     restart: unless-stopped
     profiles: ["traffic"]
 
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    network_mode: service:postgres
+    depends_on:
+      - control-plane
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
   bootstrap:
     image: crawlume:local
     network_mode: service:postgres
@@ -163,3 +178,4 @@ volumes:
   s3-data:
   worker-data:
   traffic-data:
+  prometheus-data:
