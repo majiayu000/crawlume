@@ -1,0 +1,165 @@
+# Single-host Crawlume deployment for local staging and soak runs. Run ./setup.sh first.
+#
+# postgres owns the shared network namespace; control-plane, worker and s3 join it so they talk over
+# 127.0.0.1 (the control plane requires TLS for non-loopback databases and the Worker client allows
+# plain HTTP only on loopback). The test identity provider runs separately over TLS.
+name: crawlume
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crawlume
+      POSTGRES_DB: crawlume
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:8787:8787"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "crawlume", "-d", "crawlume"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  s3:
+    image: localstack/localstack:4.4.0
+    network_mode: service:postgres
+    environment:
+      SERVICES: s3
+    volumes:
+      - s3-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:4566/_localstack/health"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+  idp:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.10
+    environment:
+      SERVER_PORT: "8443"
+      JSON_CONFIG: >-
+        {"interactiveLogin": false,
+         "httpServer": {"type": "NettyWrapper", "ssl": {"keystoreFile": "/certs/idp.p12",
+           "keystorePassword": "crawlume-local", "keyPassword": "crawlume-local",
+           "keystoreType": "PKCS12"}},
+         "tokenCallbacks": [{"issuerId": "default", "tokenExpiry": 300, "requestMappings": [
+           {"requestParam": "grant_type", "match": "*", "claims": {
+             "sub": "local-operator", "aud": ["crawlume-local"],
+             "email": "operator@crawlume.local", "name": "Local Operator"}}]}]}
+    volumes:
+      - ./.secrets/idp.p12:/certs/idp.p12:ro
+    restart: unless-stopped
+
+  control-plane:
+    build:
+      context: ../..
+    image: crawlume:local
+    network_mode: service:postgres
+    user: "${HOST_UID}:${HOST_GID}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+      idp:
+        condition: service_started
+    command: ["--control-plane"]
+    environment:
+      NODE_EXTRA_CA_CERTS: /secrets/ca.crt
+      DIAOYAN_CONTROL_DATABASE_URL: postgresql://crawlume:${POSTGRES_PASSWORD}@127.0.0.1:5432/crawlume
+      DIAOYAN_CONTROL_HOST: 0.0.0.0
+      DIAOYAN_CONTROL_PORT: "8787"
+      DIAOYAN_CONTROL_TLS_CERT_PATH: /secrets/control.crt
+      DIAOYAN_CONTROL_TLS_KEY_PATH: /secrets/control.key
+      DIAOYAN_OIDC_ISSUER: https://idp:8443/default
+      DIAOYAN_OIDC_AUTHORIZATION_ENDPOINT: https://idp:8443/default/authorize
+      DIAOYAN_OIDC_TOKEN_ENDPOINT: https://idp:8443/default/token
+      DIAOYAN_OIDC_JWKS_URI: https://idp:8443/default/jwks
+      DIAOYAN_OIDC_CLIENT_ID: crawlume-local
+      DIAOYAN_OIDC_REDIRECT_URI: https://control.crawlume.local/v1/auth/oidc/callback
+      DIAOYAN_OIDC_ID_TOKEN_ALGORITHM: RS256
+      DIAOYAN_HUMAN_ACCESS_TOKEN_ISSUER: https://control.crawlume.local
+      DIAOYAN_HUMAN_ACCESS_TOKEN_AUDIENCE: crawlume-human
+      DIAOYAN_HUMAN_ACCESS_TOKEN_PRIVATE_KEY_PATH: /secrets/human-access-token.key
+      DIAOYAN_HUMAN_ACCESS_TOKEN_PUBLIC_KEY_PATH: /secrets/human-access-token.pub
+      DIAOYAN_WORKER_SESSION_ISSUER: https://control.crawlume.local
+      DIAOYAN_WORKER_SESSION_AUDIENCE: crawlume-worker
+      DIAOYAN_WORKER_SESSION_PRIVATE_KEY_PATH: /secrets/worker-session.key
+      DIAOYAN_WORKER_SESSION_PUBLIC_KEY_PATH: /secrets/worker-session.pub
+      DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH: /secrets/webhook.key
+      DIAOYAN_ARTIFACT_S3_BUCKET: crawlume-artifacts
+      DIAOYAN_ARTIFACT_S3_ENDPOINT: http://127.0.0.1:4566
+      DIAOYAN_ARTIFACT_S3_FORCE_PATH_STYLE: "1"
+      DIAOYAN_ARTIFACT_RETENTION_DAYS: "7"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+    volumes:
+      - ./.secrets:/secrets:ro
+    restart: unless-stopped
+
+  worker:
+    image: crawlume:local
+    network_mode: service:postgres
+    depends_on:
+      - control-plane
+    entrypoint: ["node", "--disable-warning=ExperimentalWarning", "dist/cli/worker.js"]
+    command: ["run"]
+    environment:
+      CRAWLUME_CONTROL_URL: https://127.0.0.1:8787/v1
+      NODE_EXTRA_CA_CERTS: /secrets/ca.crt
+      CRAWLUME_WORKER_STATE_DIR: /data/worker
+      CRAWLUME_WORKER_CLOUD_ARTIFACTS: "1"
+      CRAWLUME_ALLOW_DNS_FAKE_IP: ${CRAWLUME_ALLOW_DNS_FAKE_IP:-0}
+    env_file:
+      - path: ./.secrets/project.env
+        required: false
+    volumes:
+      - worker-data:/data
+      - ./.secrets/ca.crt:/secrets/ca.crt:ro
+    restart: unless-stopped
+
+  traffic:
+    image: crawlume:local
+    network_mode: service:postgres
+    depends_on:
+      - worker
+    entrypoint: ["node", "/app/deploy/traffic.mjs"]
+    environment:
+      CRAWLUME_CONTROL_URL: https://127.0.0.1:8787/v1
+      NODE_EXTRA_CA_CERTS: /secrets/ca.crt
+      CRAWLUME_TRAFFIC_TARGET: ${CRAWLUME_TRAFFIC_TARGET:-https://example.com/}
+      CRAWLUME_TRAFFIC_INTERVAL_SECONDS: ${CRAWLUME_TRAFFIC_INTERVAL_SECONDS:-60}
+    env_file:
+      - path: ./.secrets/project.env
+        required: false
+    volumes:
+      - ./traffic.mjs:/app/deploy/traffic.mjs:ro
+      - traffic-data:/data
+      - ./.secrets/ca.crt:/secrets/ca.crt:ro
+    restart: unless-stopped
+    profiles: ["traffic"]
+
+  bootstrap:
+    image: crawlume:local
+    network_mode: service:postgres
+    user: "${HOST_UID}:${HOST_GID}"
+    depends_on:
+      - control-plane
+    entrypoint: ["node", "/app/deploy/bootstrap.mjs"]
+    environment:
+      NODE_EXTRA_CA_CERTS: /secrets/ca.crt
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    volumes:
+      - ./bootstrap.mjs:/app/deploy/bootstrap.mjs:ro
+      - ./.secrets:/secrets
+    profiles: ["bootstrap"]
+
+volumes:
+  postgres-data:
+  s3-data:
+  worker-data:
+  traffic-data:
