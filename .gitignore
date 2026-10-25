@@ -14,3 +14,7 @@ benchmarks/runners/**/.venv/
 # defensive in case CRAWLUME_DATA_DIR is pointed here accidentally.
 profiles/
 cache.sqlite*
+
+# Local Compose deployment secrets
+deploy/compose/.secrets/
+deploy/compose/.env

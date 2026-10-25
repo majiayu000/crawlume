@@ -14,6 +14,28 @@
 
 运行时要求 Node.js 24 LTS（≥24.15）或 Node.js 26；浏览器模式需要 Chrome，容器镜像自带 Chromium。
 
+### 单机 Compose 部署（本地 staging / soak）
+
+`deploy/compose/` 在一台机器上启动完整控制面栈：Postgres、Control Plane（TLS）、Worker、LocalStack S3、
+测试用 OIDC 身份提供方（`mock-oauth2-server`，TLS），以及可选的持续流量生成器。仅用于本地 staging 和稳定性
+试验，测试身份提供方会为任何登录直接签发身份，不能用于生产。
+
+```bash
+cd deploy/compose
+./setup.sh                                          # 生成本地 CA、TLS 证书、签名密钥和 webhook 密钥（.secrets/，已 gitignore）
+docker compose up -d postgres s3 idp control-plane
+docker compose --profile bootstrap run --rm bootstrap   # OIDC 登录 → 创建 Project、API Key、Worker enrollment token、S3 bucket
+docker compose run --rm worker enroll
+docker compose up -d worker
+docker compose --profile traffic up -d traffic      # 每分钟一个 read Job，并校验云端 Artifact 的 SHA-256
+```
+
+- Postgres、Control Plane、Worker 和 S3 共享一个网络命名空间，经 127.0.0.1 互通；Control Plane 监听
+  `https://127.0.0.1:8787/v1`，证书由 `.secrets/ca.crt` 签发。
+- 本机 DNS 为 Fake-IP 模式时在 `.env` 加 `CRAWLUME_ALLOW_DNS_FAKE_IP=1`；`CRAWLUME_TRAFFIC_TARGET` 和
+  `CRAWLUME_TRAFFIC_INTERVAL_SECONDS` 调整流量目标与间隔。
+- 流量结果：`docker compose logs -f traffic`，或 `traffic-data` 卷中的 `/data/traffic.jsonl`。
+
 ## 2. 数据目录
 
 - 默认位置：macOS `~/Library/Application Support/crawlume/`，Linux `$XDG_DATA_HOME/crawlume`
