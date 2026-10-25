@@ -19,6 +19,7 @@ All notable changes to this project are documented here. The format follows
 - TypeScript SDK for the Project Control API (`crawlume/sdk`).
 - Control-plane Project quotas (`DIAOYAN_QUOTA_*`) returning HTTP 429 `QUOTA_EXCEEDED`.
 - `crawlume-worker` Remote Worker command (enroll/run) with durable outbox delivery, heartbeats, fenced-lease handling and optional cloud Artifact uploads.
+- Control-plane Prometheus metrics from PostgreSQL state plus API request counters, 11 alert rules with promtool tests, and Prometheus in the Compose stack.
 - Opt-in Artifact retention (`DIAOYAN_ARTIFACT_RETENTION_DAYS`): tombstone, then delete objects with retry.
 - S3-compatible cloud Artifact storage: presigned, checksum-bound Worker uploads with HEAD verification and audited presigned downloads.
 - Signed webhooks for terminal Job events with retries, dead letters, secret rotation and redelivery; `verifyWebhook` in `crawlume/sdk/webhooks`.

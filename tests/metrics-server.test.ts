@@ -67,4 +67,27 @@ describe("metrics listener", () => {
     expect(response.status).toBe(500);
     expect(await response.text()).toContain("database is locked");
   });
+
+  it("awaits asynchronous sources and reports their rejections as server errors", async () => {
+    let fail = false;
+    const listener = await startMetricsListener(
+      {
+        prometheusText: async () => {
+          await new Promise((resolve) => setImmediate(resolve));
+          if (fail) throw new Error("control-plane database unavailable");
+          return "crawlume_control_active_leases 2\n";
+        },
+      },
+      { host: "127.0.0.1", port: 0 },
+    );
+    listeners.push(listener);
+
+    const ok = await fetch(`${listener.origin}/metrics`);
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe("crawlume_control_active_leases 2\n");
+    fail = true;
+    const failed = await fetch(`${listener.origin}/metrics`);
+    expect(failed.status).toBe(500);
+    expect(await failed.text()).toContain("control-plane database unavailable");
+  });
 });

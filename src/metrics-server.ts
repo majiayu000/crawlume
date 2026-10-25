@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 
-import type { CrawlerMetrics } from "./metrics.js";
+/** Anything that can render Prometheus text, synchronously or after reading a database. */
+export type PrometheusSource = Readonly<{ prometheusText(): string | Promise<string> }>;
 
 export type MetricsListenerConfig = {
   host: string;
@@ -25,17 +26,17 @@ export function metricsListenerFromEnvironment(
 }
 
 export async function startMetricsListener(
-  metrics: Pick<CrawlerMetrics, "prometheusText">,
+  metrics: PrometheusSource,
   config: MetricsListenerConfig,
 ): Promise<MetricsListener> {
-  const server: Server = createServer((request, response) => {
+  const server: Server = createServer(async (request, response) => {
     if (request.method !== "GET" || request.url !== "/metrics") {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }).end("Not found\n");
       return;
     }
     let body: string;
     try {
-      body = metrics.prometheusText();
+      body = await metrics.prometheusText();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       response.writeHead(500, { "content-type": "text/plain; charset=utf-8" })

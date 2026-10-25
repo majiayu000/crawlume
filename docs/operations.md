@@ -35,6 +35,11 @@ docker compose --profile traffic up -d traffic      # 每分钟一个 read Job�
 - 本机 DNS 为 Fake-IP 模式时在 `.env` 加 `CRAWLUME_ALLOW_DNS_FAKE_IP=1`；`CRAWLUME_TRAFFIC_TARGET` 和
   `CRAWLUME_TRAFFIC_INTERVAL_SECONDS` 调整流量目标与间隔。
 - 流量结果：`docker compose logs -f traffic`，或 `traffic-data` 卷中的 `/data/traffic.jsonl`。
+- 监控：`prometheus` 服务抓取 Control Plane 的 `/metrics` 并加载告警规则，界面在 `http://127.0.0.1:9090`（告警页
+  `/alerts`）。
+- LocalStack 社区版不持久化 S3 数据：`s3` 重启后 bucket 由 `localstack-init/` 自动重建，但已上传对象会丢失。
+- 其他服务共享 `postgres` 的网络命名空间；修改 `postgres` 服务（如端口）会重建它，之后需要
+  `docker compose --profile traffic up -d --force-recreate` 让所有服务重新加入。
 
 ## 2. 数据目录
 
@@ -193,12 +198,36 @@ openssl rand -out /etc/diaoyan/webhook.key 32 && chmod 600 /etc/diaoyan/webhook.
 
 ## 5. 可观测性
 
-- 日志：MCP 和 Control Plane 服务端入口的进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。
-- 指标（仅本地/容器 MCP runtime）：设置 `CRAWLUME_METRICS_PORT` 后抓取 `GET /metrics`，计数器定义见
-  [`runtime-metrics-spec.md`](./runtime-metrics-spec.md)。`--control-plane` 不启动此端点。建议告警：
-  - `sum(rate(crawlume_reads_total{outcome="failure"}[15m])) / sum(rate(crawlume_reads_total[15m]))` 持续升高。
-  - 某个 `error_code`（如 `SSRF_BLOCKED`、`RATE_LIMITED`）突增。
-  - `/metrics` 返回 500：聚合表不可读，按存储故障处理。
+- 日志：MCP 与 Control Plane 进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。
+- 指标：MCP 和 `--control-plane` 进程设置 `CRAWLUME_METRICS_PORT`（可选 `CRAWLUME_METRICS_HOST`，默认 `127.0.0.1`）后
+  提供 `GET /metrics`。
+  - MCP：读取计数器，定义见 [`runtime-metrics-spec.md`](./runtime-metrics-spec.md)。
+  - Control Plane：每次抓取从 PostgreSQL 读取当前状态，所有实例数值一致。`crawlume_control_jobs{status}`、
+    `crawlume_control_jobs_terminal_total{status}`、`crawlume_control_oldest_queued_job_age_seconds`、
+    `crawlume_control_active_leases`、`crawlume_control_overdue_leases`、`crawlume_control_workers{status}`、
+    `crawlume_control_workers_with_session`、`crawlume_control_webhook_deliveries{status}`、
+    `crawlume_control_oldest_pending_webhook_delivery_age_seconds`、`crawlume_control_pending_artifact_uploads`、
+    `crawlume_control_pending_artifact_deletions`（及对应 oldest age）、`crawlume_control_live_artifact_bytes`；
+    进程内的 `crawlume_control_http_requests_total{area,method,status_class}` 与请求耗时累计。读取失败返回 HTTP 500，
+    Prometheus 记为 `up == 0`。
+- 告警：[`deploy/prometheus/alerts.yml`](../deploy/prometheus/alerts.yml) 提供 11 条规则，CI 用 `promtool` 校验并运行
+  `alerts.test.yml` 中的规则单测。
+
+| 告警 | 条件 | 级别 |
+|---|---|---|
+| `CrawlumeControlPlaneDown` | `/metrics` 连续 2 分钟不可用 | critical |
+| `CrawlumeNoWorkerAvailable` | 有排队 Job 但 10 分钟内没有持有 Session 的 Worker | critical |
+| `CrawlumeJobQueueBacklog` | 最老的可领取 Job 等待超过 10 分钟（持续 5 分钟） | warning |
+| `CrawlumeLeasesNotRecovered` | 过期 lease 5 分钟未回收 | warning |
+| `CrawlumeJobFailureRateHigh` | 30 分钟内失败 Job 占比超过 20%（持续 15 分钟） | warning |
+| `CrawlumeControlPlaneErrors` | 10 分钟内 5xx 响应超过 5% | warning |
+| `CrawlumeWebhookDeadLetters` | 30 分钟内新增 dead letter | warning |
+| `CrawlumeWebhookDeliveryBacklog` | 待投递 webhook 超过 15 分钟 | warning |
+| `CrawlumeArtifactUploadsStuck` | 云端 Artifact 上传 30 分钟未确认 | warning |
+| `CrawlumeArtifactDeletionsStuck` | 过期 Artifact 2 小时未删除 | warning |
+| `CrawlumeReadFailureRateHigh` | MCP 读取 30 分钟内失败超过 50% | warning |
+
+规则只负责判定；通知需要另配 Alertmanager 及接收方（邮件、IM、PagerDuty 等），仓库不内置。
 - 明细：`crawlume stats --days <1-90>` 和 MCP `get_crawler_stats` 给出窗口内成功率、失败原因和成本。
 
 ## 6. 备份与恢复
