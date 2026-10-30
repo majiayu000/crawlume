@@ -31,7 +31,7 @@
 
 SIGKILL 那条 E2E 是绿的，所以「重启可恢复」容易被当成已经证明。它只覆盖进程被杀、来不及写 Ledger 的路径，不覆盖正常停 MCP。
 
-2026-09-03 Wave 1 集成复核：L1、L2、L3、L5 与 C1–C4 已解决；L4 仍开放。C1–C4 已有真实 PostgreSQL 生命周期、并发、锁和回滚证据。下文保留已解决问题的原始分析，作为修复依据和历史记录。
+2026-09-03 Wave 1 集成复核：L1、L2、L3、L5 与 C1–C4 已解决；L4 随后解决。C1–C4 已有真实 PostgreSQL 生命周期、并发、锁和回滚证据。下文保留已解决问题的原始分析，作为修复依据和历史记录。
 
 ---
 
@@ -42,7 +42,7 @@ SIGKILL 那条 E2E 是绿的，所以「重启可恢复」容易被当成已经�
 | L1 | Critical | Resolved | 本地 crawl | Attempt identity 已包含 lease generation；优雅关闭恢复已有回归测试 |
 | L2 | High | Resolved | HTTP 代理 SSRF | 管理员代理流量已经由 `PolicyEgressProxy` 钉扎已批准地址 |
 | L3 | High | Resolved | 浏览器 SSRF | Browser 已统一经由 policy proxy，授权重定向边界已有回归测试 |
-| L4 | Medium | Confirmed | robots | `robots.txt` 任意 200 body 都当规则，软 404 HTML 等于全放行 |
+| L4 | Medium | Resolved | robots | 200 响应必须是 `text/plain` 或未声明类型，且正文不是 HTML/JSON，否则 `ROBOTS_UNAVAILABLE` |
 | L5 | Medium | Resolved | RSL 审计 | 成功审计已移动到 cache/index/terminal commit 之前 |
 | C1 | High | Resolved | 控制面 Job | claim 在同一事务进入 running，可不经 heartbeat 直接提交 |
 | C2 | High | Resolved | 控制面 Job | 独立 sweeper 已接入 runtime，过期 lease 不再依赖下一次 claim |
@@ -217,7 +217,9 @@ Agent 会抓调用方给的任意 URL。配置了管理员代理后，恶意站�
 
 ---
 
-### L4 · Medium · `robots.txt` HTTP 200 不检查是否真是规则文本
+### L4 · Medium · Resolved · `robots.txt` HTTP 200 不检查是否真是规则文本
+
+当前状态：`RobotsPolicy` 校验媒体类型和正文开头，非规则文档失败关闭；`tests/robots-policy.test.ts` 覆盖软 404、JSON 错误、伪装成 `text/plain` 的页面和合法规则。以下保留原始问题分析。
 
 **合同**
 
@@ -390,11 +392,7 @@ Frontier 本地 lease 在 complete 时不检查 `lease_expires_at_ms`。测试�
 
 ## 6. 建议处理
 
-L1、L2、L3、L5 与 C1–C4 已完成；当前唯一仍开放的编号问题是 L4。
-
-| 阶段 | 项 | 依赖 | 完成标准 |
-|---|---|---|---|
-| 1 | L4 | 无 | robots 非文本 200 失败关闭 |
+L1–L5 与 C1–C4 均已完成，当前没有开放的编号问题。
 
 Wave 0 已完成 L1/L2/L3/L5 的聚焦回归；Wave 1 又完成 C1–C4、真实 PostgreSQL 与合同 Gate。相关聚焦命令包括：
 

@@ -33,6 +33,7 @@ All notable changes to this project are documented here. The format follows
 - Hybrid platform completion checklist now reflects what is implemented and tested.
 
 - Test fixtures no longer use a fixed fetch date that expired under the cache TTL.
+- `robots.txt` responses that are not rule documents (soft 404 HTML, JSON errors, challenge pages) now fail closed with `ROBOTS_UNAVAILABLE` instead of allowing every page.
 
 ## [0.17.0]
 

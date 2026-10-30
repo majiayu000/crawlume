@@ -18,6 +18,15 @@ type RobotsParser = (
 const require = createRequire(import.meta.url);
 const robotsParser = require("robots-parser") as RobotsParser;
 
+/** Soft 404s and challenge pages parse as "no rules", so they must not count as a rule file. */
+function isRobotsDocument(contentType: string, body: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "" && mediaType !== "text/plain") {
+    return false;
+  }
+  return !/^[<{[]/.test(body.trimStart());
+}
+
 export function parseRobotsLicenseUrls(text: string, userAgent: string): string[] {
   type Group = { agents: string[]; licenses: string[] };
   const globals: string[] = [];
@@ -139,6 +148,11 @@ export class RobotsPolicy {
       throw new ReadError("ROBOTS_UNAVAILABLE", `robots.txt returned HTTP ${response.status}.`, {
         retryable: response.status >= 500,
         details: { httpStatus: response.status, robotsUrl: response.url.toString() },
+      });
+    }
+    if (!isRobotsDocument(response.contentType, response.body)) {
+      throw new ReadError("ROBOTS_UNAVAILABLE", "robots.txt did not return a rule document.", {
+        details: { contentType: response.contentType, robotsUrl: response.url.toString() },
       });
     }
 
