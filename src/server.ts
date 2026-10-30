@@ -18,6 +18,7 @@ import {
   WorkerIdentityService,
   type WorkerIdentityConfig,
 } from "./control-plane/api-key-service.js";
+import { withHealthChecks } from "./control-plane/health.js";
 import { HumanAuthHttpApi } from "./control-plane/human-auth-http-api.js";
 import { assertEd25519KeyPair } from "./control-plane/ed25519-key-pair.js";
 import {
@@ -404,8 +405,11 @@ export async function startControlPlaneRuntime(
     const workerApi = new WorkerHttpApi({ identity, jobs, results, artifacts });
     const controlMetrics = new ControlPlaneMetrics(database);
     listener = await startWorkerControlServer(
-      controlMetrics.instrument(
-        new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
+      withHealthChecks(
+        controlMetrics.instrument(
+          new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
+        ),
+        database,
       ),
       config.listener,
     );

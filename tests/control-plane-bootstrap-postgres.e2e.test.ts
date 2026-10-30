@@ -226,6 +226,10 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
       });
       inspectionPool = new Pool({ connectionString: databaseUrl(databaseName), max: 1 });
 
+      const readiness = await originalFetch(`${runtime.origin}/readyz`);
+      expect(readiness.status).toBe(200);
+      await expect(readiness.json()).resolves.toEqual({ status: "ready" });
+
       const begin = await originalFetch(`${runtime.origin}/v1/auth/oidc/begin`, {
         redirect: "manual",
       });

@@ -95,6 +95,9 @@ docker compose --profile traffic up -d traffic      # 每分钟一个 read Job�
 [`project-control-api.openapi.yaml`](./project-control-api.openapi.yaml) 与
 [`worker-control-api.openapi.yaml`](./worker-control-api.openapi.yaml) 描述的 HTTP API。
 
+API 端口同时提供不鉴权的探针，只接受 `GET`，不计入 API 指标：`/healthz` 只表示进程能响应（存活探针），不访问
+数据库；`/readyz` 在 3 秒内查询 PostgreSQL，失败返回 503，原因只写入日志事件 `control_plane.readiness.failed`（就绪探针）。
+
 必填变量：
 
 - `DIAOYAN_CONTROL_DATABASE_URL`：`postgres://` 或 `postgresql://`，不得在 URL 中写 TLS 参数；只有字面地址 `127.0.0.1`

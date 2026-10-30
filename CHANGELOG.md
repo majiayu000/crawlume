@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows
   and a Docker image build.
 - Dockerfile with bundled Chromium and a `/data` runtime volume.
 - Security policy.
+- Control-plane `/healthz` and `/readyz` probes, a Compose healthcheck, and a Worker that waits for a ready Control Plane.
 - Prometheus `/metrics` endpoint behind `CRAWLUME_METRICS_PORT`, and JSON-line stderr logs for the MCP and control-plane server entrypoints.
 - `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
 - Operations manual (`docs/operations.md`).

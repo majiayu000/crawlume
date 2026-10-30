@@ -293,6 +293,9 @@ describe("control-plane runtime startup", () => {
           body: { code },
         });
       }
+      await expect(invokeListener(listener!, "GET", "/healthz")).resolves.toMatchObject({
+        body: { status: "ok" },
+      });
     } finally {
       await runtime.close();
     }

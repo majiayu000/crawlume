@@ -101,13 +101,18 @@ services:
       AWS_REGION: us-east-1
     volumes:
       - ./.secrets:/secrets:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('https://127.0.0.1:8787/readyz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      retries: 20
     restart: unless-stopped
 
   worker:
     image: crawlume:local
     network_mode: service:postgres
     depends_on:
-      - control-plane
+      control-plane:
+        condition: service_healthy
     entrypoint: ["node", "--disable-warning=ExperimentalWarning", "dist/cli/worker.js"]
     command: ["run"]
     environment:
