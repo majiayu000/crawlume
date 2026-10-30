@@ -605,6 +605,24 @@ describe("Project Job HTTP API", () => {
     expect(createJob).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["inspect", { type: "inspect" }],
+    ["map", { type: "map" }],
+    ["crawl", { type: "crawl" }],
+    ["search", { type: "search", input: { query: "example" } }],
+    ["authorized data", { data_class: "authorized" }],
+    ["intranet data", { data_class: "intranet" }],
+    ["private placement", { placement: { class: "private", pinned_worker_id: null } }],
+  ])("rejects %s because no released Worker can execute it", async (_name, overrides) => {
+    const { api, createJob } = harness();
+
+    expect(await api.handle(request({ body: body(overrides) }))).toMatchObject({
+      status: 422,
+      body: { code: "JOB_REQUEST_INVALID" },
+    });
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
   it("maps idempotency conflicts and domain validation without hiding server failures", async () => {
     const conflict = harness({ created: new JobIdempotencyConflictError() });
     expect(await conflict.api.handle(request())).toMatchObject({

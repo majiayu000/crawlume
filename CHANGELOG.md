@@ -33,6 +33,8 @@ All notable changes to this project are documented here. The format follows
 - Hybrid platform completion checklist now reflects what is implemented and tested.
 
 - Test fixtures no longer use a fixed fetch date that expired under the cache TTL.
+- `POST /jobs` returns 422 `JOB_REQUEST_INVALID` for Job types and non-public Jobs that no released Worker can execute, instead of accepting them and failing after a claim.
+- `crawlume-worker enroll` declares `pdf` and `feed`, plus `browser` when `CRAWLUME_BROWSER_EXECUTABLE` exists; it no longer declares only `http`, which left such Jobs queued until their deadline.
 - `robots.txt` responses that are not rule documents (soft 404 HTML, JSON errors, challenge pages) now fail closed with `ROBOTS_UNAVAILABLE` instead of allowing every page.
 
 ## [0.17.0]

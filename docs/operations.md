@@ -119,7 +119,7 @@ TLS key 和 cert 均须为非符号链接的普通文件，key 还须使用 owne
 
 ### Remote Worker
 
-`crawlume-worker` 在 Control Plane 之外执行公开 `read` Job：
+`crawlume-worker` 在 Control Plane 之外执行公开 `read` Job；`POST /jobs` 对其他类型和非公开 Job 返回 422：
 
 ```bash
 CRAWLUME_WORKER_ENROLLMENT_TOKEN=dya_we_... crawlume-worker enroll --control-url https://control.example/v1
@@ -133,6 +133,8 @@ crawlume-worker run --control-url https://control.example/v1
   Control Plane 重新排队。终态请求已发出但未确认的执行只记录 `worker.terminal.outcome_unknown`，不重复提交。
 - `CRAWLUME_WORKER_CLOUD_ARTIFACTS=1` 时结果以 `cloud_object` 发布并在提交终态前上传到对象存储（需要 Control Plane
   配置 Artifact 存储）；默认结果只保存在 Worker 本地。
+- enroll 时声明能力 `http`、`pdf`、`feed`；只有 `CRAWLUME_BROWSER_EXECUTABLE` 指向已存在的文件时才声明 `browser`。
+  能力在注册时固定，已注册的 Worker 要声明新能力需换状态目录重新 enroll。
 - 读取行为沿用本地 `CRAWLUME_*` 配置（代理、浏览器、超时等）。日志为 stderr JSON Lines。
 
 ### 配额

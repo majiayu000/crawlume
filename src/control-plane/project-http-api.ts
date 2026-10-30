@@ -149,6 +149,16 @@ const createJobBodySchema = z.object({
   not_before: z.string().datetime({ offset: true }).optional(),
 }).strict();
 const controlJobBodySchema = z.object({}).strict();
+
+/** Rejects what no released Worker runs, which would otherwise fail after a claim or wait out its deadline. */
+function assertExecutableJob(job: z.infer<typeof createJobBodySchema>): void {
+  if (job.type !== "read") {
+    throw new ProjectJobInputError(`No released Worker can execute ${job.type} Jobs.`);
+  }
+  if (job.data_class !== "public" || job.placement.class !== "public") {
+    throw new ProjectJobInputError("No released Worker can execute non-public Jobs.");
+  }
+}
 const auditCursorSchema = z.object({
   occurred_at: z.string().datetime({ offset: true }),
   id: z.uuid(),
@@ -446,6 +456,7 @@ export class ProjectJobHttpApi {
       }
       const key = idempotencyKey(request);
       const parsed = createJobBodySchema.parse(request.body);
+      assertExecutableJob(parsed);
       // The service validates this dynamic envelope before hashing or persistence.
       const creationInput = {
         type: parsed.type,

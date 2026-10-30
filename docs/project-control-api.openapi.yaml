@@ -1366,12 +1366,13 @@ components:
       properties:
         type:
           type: string
-          enum: [read, inspect, map, crawl, search]
+          enum: [read]
+          description: Only Job types a released Worker can execute are accepted; others return 422 JOB_REQUEST_INVALID.
         input:
-          $ref: '#/components/schemas/JsonObject'
+          $ref: '#/components/schemas/ReadJobInput'
         data_class:
           type: string
-          enum: [public, authorized, intranet]
+          enum: [public]
         placement:
           type: object
           additionalProperties: false
@@ -1379,7 +1380,7 @@ components:
           properties:
             class:
               type: string
-              enum: [public, private]
+              enum: [public]
             pinned_worker_id:
               oneOf:
                 - $ref: '#/components/schemas/Uuid'
@@ -1430,23 +1431,6 @@ components:
         not_before:
           type: string
           format: date-time
-      allOf:
-        - oneOf:
-            - properties:
-                type: { const: read }
-                input: { $ref: '#/components/schemas/ReadJobInput' }
-            - properties:
-                type: { const: inspect }
-                input: { $ref: '#/components/schemas/ReadJobInput' }
-            - properties:
-                type: { const: map }
-                input: { $ref: '#/components/schemas/MapJobInput' }
-            - properties:
-                type: { const: crawl }
-                input: { $ref: '#/components/schemas/CrawlJobInput' }
-            - properties:
-                type: { const: search }
-                input: { $ref: '#/components/schemas/SearchJobInput' }
     Job:
       type: object
       additionalProperties: false

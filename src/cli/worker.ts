@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { createApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { logEvent } from "../log.js";
+import { workerCapabilities } from "../remote-worker/capabilities.js";
 import { RemoteWorkerClient } from "../remote-worker/client.js";
 import { loadOrCreateWorkerIdentity, loadWorkerId, storeWorkerId } from "../remote-worker/identity-store.js";
 import { RemoteWorkerOutbox } from "../remote-worker/outbox.js";
@@ -60,7 +61,7 @@ async function enroll(url: string): Promise<void> {
   if (await loadWorkerId(directory) !== null) throw new Error(`A Worker is already enrolled in ${directory}.`);
   const { identity } = await loadOrCreateWorkerIdentity(directory);
   const enrolled = await new RemoteWorkerClient(url).enroll({
-    enrollmentToken: token, identity, version: packageVersion(), capabilities: { http: true },
+    enrollmentToken: token, identity, version: packageVersion(), capabilities: workerCapabilities(loadConfig()),
   });
   await storeWorkerId(directory, enrolled.worker.id);
   process.stdout.write(`${JSON.stringify({ worker_id: enrolled.worker.id, project_id: enrolled.worker.projectId })}\n`);
