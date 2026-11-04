@@ -174,6 +174,20 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
     "PAGE_NOT_FOUND",
   );
 
+  // Readability can pick the server-rendered footer when the real content renders client-side.
+  const lead = candidate.markdown.split("\n")
+    .map((line) => line.replace(/!?\[[^\]]*\]\([^)]*\)/gu, " ").replace(/[#*_>`|-]/gu, " ")
+      .replace(/\s+/gu, " ").trim())
+    .find((line) => line.length >= 40)?.slice(0, 120);
+  const footerText = [...(gateBody?.querySelectorAll("footer, [role='contentinfo' i]") ?? [])]
+    .map((node) => (node.textContent ?? "").replace(/\s+/gu, " ")).join(" ");
+  required(
+    "BOILERPLATE_ONLY",
+    lead === undefined || !footerText.includes(lead),
+    "The candidate must start with page content, not the site footer.",
+    "INCOMPLETE_CONTENT",
+  );
+
   const discovery = intent.completion.type === "discovery";
   const structured = new Set([
     "json", "json-ld", "rss", "atom", "sitemap", "pdf",

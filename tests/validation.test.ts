@@ -197,6 +197,31 @@ describe("ValidatorRegistry", () => {
     }
   });
 
+  it("rejects a candidate whose content is the page footer", () => {
+    // Zillow home page over HTTP: the app renders client-side and Readability picked the footer.
+    const statement = "Zillow Group is committed to ensuring digital accessibility for individuals with " +
+      "disabilities. We are continuously working to improve the accessibility of our web experience for " +
+      "everyone, and we welcome feedback and accommodation requests. If you wish to report an issue or seek " +
+      "an accommodation, please let us know. Zillow, Inc. holds real estate brokerage licenses in multiple " +
+      "states. A list of our real estate licenses is available on the licenses page.";
+    const body = `<html><head><title>Zillow: Real Estate, Apartments, Mortgages &amp; Home Values</title></head>` +
+      `<body><div id="__next"><h1>Agents. Tours. Loans. Homes.</h1>` +
+      `<footer class="site-footer"><div><p>${statement}</p></div></footer></div></body></html>`;
+    const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+
+    expect(validate(page, extracted({ markdown: statement, contentCharacters: statement.length })))
+      .toMatchObject({
+        outcome: "invalid",
+        checks: expect.arrayContaining([
+          expect.objectContaining({ code: "BOILERPLATE_ONLY", passed: false }),
+        ]),
+        terminalError: { code: "INCOMPLETE_CONTENT" },
+      });
+    const article = `${"The listing describes a three bedroom house with a large garden. ".repeat(8)}\n\n${statement}`;
+    expect(validate(page, extracted({ markdown: article, contentCharacters: article.length })))
+      .toMatchObject({ outcome: "valid", terminalError: null });
+  });
+
   it("keeps an article that discusses missing pages", () => {
     const markdown = "No results found is a common empty state. " +
       "Designers should explain why a search returned nothing and offer the next step. ".repeat(6);

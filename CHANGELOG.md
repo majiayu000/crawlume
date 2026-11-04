@@ -42,6 +42,8 @@ All notable changes to this project are documented here. The format follows
   "No such item.", "This video isn't available") fail with `PAGE_NOT_FOUND` instead of succeeding.
 - Shell detection measures visible text without inline scripts, so a page such as a YouTube watch
   page over HTTP, whose bootstrap data hid an empty body, is no longer accepted as content.
+- A candidate whose content starts with the site footer, as when Readability picks a server-rendered
+  footer on a client-rendered page, fails with `INCOMPLETE_CONTENT` and escalates instead of succeeding.
 - `robots.txt` responses that are not rule documents (soft 404 HTML, JSON errors, challenge pages) now fail closed with `ROBOTS_UNAVAILABLE` instead of allowing every page.
 
 ## [0.17.0]
