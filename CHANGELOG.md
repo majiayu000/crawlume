@@ -17,6 +17,8 @@ All notable changes to this project are documented here. The format follows
 - `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
 - Operations manual (`docs/operations.md`).
 - `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
+- Scheduled `Nightly` workflow running `pnpm bench -- --mode nightly` with reports kept as artifacts;
+  the 10 public Canary cases were re-reviewed against live sites on 2026-11-05.
 - TypeScript SDK for the Project Control API (`crawlume/sdk`).
 - Control-plane Project quotas (`DIAOYAN_QUOTA_*`) returning HTTP 429 `QUOTA_EXCEEDED`.
 - `crawlume-worker` Remote Worker command (enroll/run) with durable outbox delivery, heartbeats, fenced-lease handling and optional cloud Artifact uploads.

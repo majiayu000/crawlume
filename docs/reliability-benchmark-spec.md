@@ -407,6 +407,11 @@ version/hash、Git SHA、Node/Chrome/OS、脱敏配置 Hash 和 repeat。聚合�
 Artifact 率、假成功、uncertain、Browser Uplift、Retry Recovery/Waste、有效延迟和资源向量形式的
 Cost per Valid Artifact；没有部署单价时不虚构货币成本。
 
+`.github/workflows/nightly.yml` 每天 03:17 UTC 在 `main` 上运行 Nightly，也可手动触发；三份报告作为
+`nightly-benchmark-<sha>` 产物保留 90 天，Gate 未通过时 Job 失败。公开 Canary 的有效期为 30 天，
+过期后 Nightly 会失败，需要重新运行 `pnpm bench:case -- --case <file>` 核对真值后再更新
+`reviewedAt` 与 `expiresAt`，不得只改日期。
+
 Release comparison 输出配对 outcome、有效率与 Cost per Valid 变化，以及 latency delta 的
 median/p95/max 和确定性 95% bootstrap CI。当前仓库只有 10 个公开 Canary，没有私有 30-Case、
 授权 WCXB/CleanEval 副本或生产 rollout 证据，因此机器 Gate 可以达到 `canary-ready`，但不得标成

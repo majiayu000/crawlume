@@ -1,0 +1,41 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: nightly benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # Controlled cases plus the public live Canary cases, each repeated 5 times against real Chrome.
+      # Expired Canary cases fail as harness errors before any network call, so re-review them on expiry.
+      - run: pnpm bench -- --mode nightly
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-benchmark-${{ github.sha }}
+          path: |
+            benchmarks/reports/nightly-latest.json
+            benchmarks/reports/nightly-latest.jsonl
+            benchmarks/reports/nightly-gate.json
+          if-no-files-found: error
+          retention-days: 90
