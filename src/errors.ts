@@ -12,6 +12,7 @@ export const errorCodes = [
   "AUTH_REQUIRED",
   "PAYMENT_REQUIRED",
   "ACCESS_DENIED",
+  "PAGE_NOT_FOUND",
   "RATE_LIMITED",
   "UPSTREAM_ERROR",
   "FETCH_TIMEOUT",
@@ -132,6 +133,9 @@ export function errorForHttpStatus(
   }
   if (status === 403) {
     return new ReadError("ACCESS_DENIED", "The site denied access to the page.", { details });
+  }
+  if (status === 404 || status === 410) {
+    return new ReadError("PAGE_NOT_FOUND", `The page returned HTTP ${status}.`, { details });
   }
   if (status === 429) {
     return new ReadError("RATE_LIMITED", "The site rate-limited the request.", {

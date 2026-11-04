@@ -19,7 +19,7 @@
   "truth": {
     "required": [
       { "type": "outcome_equals", "value": "failed" },
-      { "type": "error_code_equals", "value": "ACCESS_DENIED" }
+      { "type": "error_code_equals", "value": "PAGE_NOT_FOUND" }
     ],
     "forbidden": []
   },

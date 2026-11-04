@@ -166,6 +166,7 @@ describe("benchmark runner outcome mapping", () => {
     ["HUMAN_VERIFICATION_REQUIRED", "policy_stop"],
     ["UNSUPPORTED_CONTENT_TYPE", "unsupported"],
     ["FETCH_TIMEOUT", "failed"],
+    ["PAGE_NOT_FOUND", "failed"],
   ] as const)("maps %s to %s", (errorCode, expected) => {
     expect(benchmarkOutcomeForErrorCode(errorCode)).toBe(expected);
   });

@@ -7,6 +7,9 @@ describe("HTTP error mapping", () => {
     [401, "AUTH_REQUIRED", false],
     [402, "PAYMENT_REQUIRED", false],
     [403, "ACCESS_DENIED", false],
+    [404, "PAGE_NOT_FOUND", false],
+    [410, "PAGE_NOT_FOUND", false],
+    [405, "ACCESS_DENIED", false],
     [429, "RATE_LIMITED", true],
     [500, "UPSTREAM_ERROR", true],
   ] as const)("maps HTTP %i to %s", (status, code, retryable) => {
