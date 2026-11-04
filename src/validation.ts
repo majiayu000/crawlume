@@ -157,6 +157,22 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
     "INCOMPLETE_CONTENT",
   );
 
+  // Link and image text is navigation; what remains is what the page itself says.
+  const prose = candidate.markdown
+    .replace(/!?\[[^\]]*\]\([^)]*\)/gu, " ")
+    .replace(/^\s*(?:#{1,6}|[-*+]|\d+\.)\s+/gmu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const softNotFound = prose.length < 240 &&
+    /\b(?:not found|no(?: \w+){0,2} found|no such \w+|(?:is not|isn't|no longer) available|(?:does not|doesn't) exist)\b/iu
+      .test(prose);
+  required(
+    "SOFT_NOT_FOUND",
+    !softNotFound,
+    "The candidate must not be a not-found page served with a success status.",
+    "PAGE_NOT_FOUND",
+  );
+
   const discovery = intent.completion.type === "discovery";
   const structured = new Set([
     "json", "json-ld", "rss", "atom", "sitemap", "pdf",

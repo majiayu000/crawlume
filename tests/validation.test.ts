@@ -149,6 +149,43 @@ describe("ValidatorRegistry", () => {
     });
   });
 
+  it.each([
+    "No quotes found!",
+    "No such item.",
+    "This video isn't available anymore",
+  ])("rejects a soft not-found page whose only prose is %j", async (message) => {
+    // Shape of quotes.toscrape.com/page/9999/, which answers HTTP 200.
+    const tags = ["love", "inspirational", "life", "humor", "books", "reading", "friendship", "truth"]
+      .map((tag) => `<span class="tag-item"><a class="tag" href="/tag/${tag}/">${tag}</a></span>`).join("");
+    const body = `<html><head><title>Quotes to Scrape</title></head><body><div class="container">` +
+      `<div class="row header-box"><div class="col-md-8"><h1><a href="/">Quotes to Scrape</a></h1></div>` +
+      `<div class="col-md-4"><p><a href="/login">Login</a></p></div></div>` +
+      `<div class="row"><div class="col-md-8">${message}<nav><ul class="pager"><li class="previous">` +
+      `<a href="/page/9998/">Previous</a></li></ul></nav></div>` +
+      `<div class="col-md-4 tags-box"><h2>Top Ten tags</h2>${tags}</div></div></div>` +
+      `<footer class="footer"><p>Quotes by: <a href="https://www.goodreads.com/quotes">GoodReads.com</a></p></footer>` +
+      `</body></html>`;
+    const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+    const batch = await extractors.extract(page);
+
+    for (const candidate of batch.candidates) {
+      expect(validate(page, candidate.artifact)).toMatchObject({
+        outcome: "invalid",
+        checks: expect.arrayContaining([
+          expect.objectContaining({ code: "SOFT_NOT_FOUND", passed: false }),
+        ]),
+        terminalError: { code: "PAGE_NOT_FOUND" },
+      });
+    }
+  });
+
+  it("keeps an article that discusses missing pages", () => {
+    const markdown = "No results found is a common empty state. " +
+      "Designers should explain why a search returned nothing and offer the next step. ".repeat(6);
+    expect(validate(rawPage(), extracted({ markdown, contentCharacters: markdown.length })))
+      .toMatchObject({ outcome: "valid", terminalError: null });
+  });
+
   it("does not claim a generic candidate satisfies a requested schema", () => {
     expect(defaultValidatorRegistry.validate({
       intent: { ...intent, output: { format: "json", schemaId: "article-v1" } },
