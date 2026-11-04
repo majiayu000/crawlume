@@ -40,6 +40,8 @@ All notable changes to this project are documented here. The format follows
   no longer reported as a policy stop.
 - Pages served with HTTP 200 whose only prose says the item is missing ("No quotes found!",
   "No such item.", "This video isn't available") fail with `PAGE_NOT_FOUND` instead of succeeding.
+- Shell detection measures visible text without inline scripts, so a page such as a YouTube watch
+  page over HTTP, whose bootstrap data hid an empty body, is no longer accepted as content.
 - `robots.txt` responses that are not rule documents (soft 404 HTML, JSON errors, challenge pages) now fail closed with `ROBOTS_UNAVAILABLE` instead of allowing every page.
 
 ## [0.17.0]

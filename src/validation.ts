@@ -137,9 +137,10 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
     "PAYMENT_REQUIRED",
   );
 
+  // Measure visible text: inline bootstrap data can make an empty shell look large.
   const shell = html && (
-    /enable javascript|javascript is disabled|loading(?:\.{3}|…)|something went wrong/iu.test(bodyText) ||
-    (bodyText.length < 240 && (document?.querySelectorAll("script").length ?? 0) > 3)
+    /enable javascript|javascript is disabled|loading(?:\.{3}|…)|something went wrong/iu.test(gateText) ||
+    (gateText.length < 240 && (document?.querySelectorAll("script").length ?? 0) > 3)
   ) && candidate.markdown.length < 2_000;
   required(
     "SHELL_ONLY",

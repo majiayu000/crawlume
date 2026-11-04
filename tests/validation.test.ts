@@ -92,6 +92,24 @@ describe("ValidatorRegistry", () => {
     });
   });
 
+  it("measures a shell by its visible text, not by inline script payloads", async () => {
+    // Shape of a YouTube watch page over plain HTTP: large bootstrap data, only footer links visible.
+    const payload = `<script>var ytInitialData = ${JSON.stringify({ text: "x".repeat(20_000) })};</script>`;
+    const links = ["About", "Press", "Copyright", "Contact us", "Creators", "Advertise", "Developers"]
+      .map((label) => `<a href="/about/${label.toLowerCase().replace(" ", "-")}/">${label}</a>`).join("");
+    const body = `<html><head><title>- YouTube</title></head><body>${payload.repeat(4)}` +
+      `<div id="footer">${links}</div></body></html>`;
+    const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+    const batch = await extractors.extract(page);
+
+    for (const candidate of batch.candidates) {
+      expect(validate(page, candidate.artifact)).toMatchObject({
+        outcome: "invalid",
+        terminalError: { code: "SHELL_ONLY" },
+      });
+    }
+  });
+
   it.each([
     [
       "<html><title>Checking your browser</title><body>Verify you are human. CAPTCHA required.</body></html>",
