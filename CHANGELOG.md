@@ -17,6 +17,8 @@ All notable changes to this project are documented here. The format follows
 - `crawlume backup` and `crawlume restore` CLI commands for verified SQLite backups.
 - Operations manual (`docs/operations.md`).
 - `pnpm bench:soak` soak/capacity runner and a manually triggered `Soak` workflow.
+- npm package metadata, a `Release` workflow that publishes on `v*` tags, and a README quick start for
+  installing the MCP server with `npx -y -p crawlume crawlume-mcp`.
 - Scheduled `Nightly` workflow running `pnpm bench -- --mode nightly` with reports kept as artifacts;
   the 10 public Canary cases were re-reviewed against live sites on 2026-11-05.
 - TypeScript SDK for the Project Control API (`crawlume/sdk`).

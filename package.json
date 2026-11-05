@@ -1,10 +1,25 @@
 {
   "name": "crawlume",
   "version": "0.17.0",
-  "private": true,
   "type": "module",
   "description": "Resumable web crawling and retrieval for AI agents",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/majiayu000/crawlume.git"
+  },
+  "homepage": "https://github.com/majiayu000/crawlume#readme",
+  "bugs": {
+    "url": "https://github.com/majiayu000/crawlume/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "crawler",
+    "web-scraping",
+    "ai-agents",
+    "markdown"
+  ],
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=24.15.0"
@@ -25,6 +40,11 @@
     "crawlume-auth": "./dist/cli/auth.js",
     "crawlume-worker": "./dist/cli/worker.js"
   },
+  "files": [
+    "dist",
+    "migrations",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -45,7 +65,8 @@
     "bench:soak": "tsx benchmarks/soak/runner.ts",
     "cli": "tsx src/cli/main.ts",
     "smoke": "tsx src/cli/smoke.ts",
-    "trial:docs": "node benchmarks/docs-trial/run.mjs"
+    "trial:docs": "node benchmarks/docs-trial/run.mjs",
+    "prepack": "rm -rf dist && pnpm build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1147.0",

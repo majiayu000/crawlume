@@ -14,6 +14,44 @@ Architecture, reliability, benchmark, product, and implementation documents are 
 public contract is [`docs/spec.md`](docs/spec.md), while conditional cluster, managed-provider, and
 search-engine extensions remain separate future decisions.
 
+## Quick start
+
+You need Node.js 24.15 or newer. Google Chrome is used for pages that need JavaScript; plain pages
+work without it.
+
+Claude Code:
+
+```bash
+claude mcp add crawlume -- npx -y -p crawlume crawlume-mcp
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.crawlume]
+command = "npx"
+args = ["-y", "-p", "crawlume", "crawlume-mcp"]
+```
+
+Cursor, Claude Desktop and other clients that take JSON:
+
+```json
+{
+  "mcpServers": {
+    "crawlume": { "command": "npx", "args": ["-y", "-p", "crawlume", "crawlume-mcp"] }
+  }
+}
+```
+
+Then ask the agent to read a page, for example "read https://quotes.toscrape.com/ with crawlume".
+The first start downloads dependencies and can take about half a minute.
+
+If every read fails with `SSRF_BLOCKED`, your DNS runs in Fake-IP mode (Clash, Surge or another
+TUN proxy). Add `CRAWLUME_ALLOW_DNS_FAKE_IP=1` to the server environment, for example
+`claude mcp add crawlume -e CRAWLUME_ALLOW_DNS_FAKE_IP=1 -- npx -y -p crawlume crawlume-mcp`.
+
+The command line works the same way: `npx -y crawlume read https://example.com/ --markdown`.
+
 ## Requirements
 
 - Node.js 24 LTS (24.15 or newer) or Node.js 26
@@ -100,7 +138,8 @@ hostname, and forward the public hostname's HTTPS traffic. Migrations run at sta
 
 ## MCP configuration
 
-Build the project, then add the server to an MCP client:
+To run from a source checkout instead of the published package, build the project, then add the
+server to an MCP client:
 
 ```toml
 [mcp_servers.crawlume]

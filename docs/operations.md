@@ -283,6 +283,17 @@ Human access-token 和 Worker session 各自匹配、且两组互异的 Ed25519 
 
 回滚：停止新版本，使用升级前的备份恢复到新路径，再启动旧版本。
 
+### 发布新版本
+
+功能和修复提交不改版本号，只在发布时统一更新：
+
+1. 在 `CHANGELOG.md` 把 `[Unreleased]` 改为新版本号与日期，并更新 `package.json` 的 `version`，单独提交。
+2. 本地先运行 `pnpm pack` 并检查包内容；`prepack` 会清空 `dist` 后重新构建。
+3. 推送与版本号一致的标签，例如 `git tag v0.18.0 && git push origin v0.18.0`。
+
+`.github/workflows/release.yml` 会校验标签与 `package.json` 一致，运行 check/build/test 后用仓库 Secret
+`NPM_TOKEN` 发布到 npm，并创建 GitHub Release。任一步失败都不会发布。
+
 ## 8. 常见问题
 
 | 现象 | 原因 | 处理 |
