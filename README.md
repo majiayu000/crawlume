@@ -52,6 +52,30 @@ TUN proxy). Add `CRAWLUME_ALLOW_DNS_FAKE_IP=1` to the server environment, for ex
 
 The command line works the same way: `npx -y crawlume read https://example.com/ --markdown`.
 
+## Report a bad read
+
+If a page fails, or crawlume returns the wrong content as a success, run:
+
+```bash
+npx -y crawlume report https://example.com/the-page
+```
+
+It reads the page again without the cache and prints the error code, the stages it tried, versions,
+and the start of the extracted text. The query string is removed from the URL. Nothing is sent: the
+last line is a link that opens a prefilled GitHub issue for you to review and submit.
+
+You can also opt in to anonymous statistics with `CRAWLUME_TELEMETRY=1`. Each finished read then
+sends one event to PostHog with the outcome, error code, HTTP or browser, the stages that ran,
+attempt count, content length, duration, and the crawlume, Node.js and OS versions. It never sends
+the URL, the host, page content, or request identifiers. A random install id in
+`<data-dir>/telemetry-id` groups events from one machine; delete the file to reset it. Telemetry is
+off unless you set the variable.
+
+To tell us how crawlume works over time, open a
+[usage feedback](https://github.com/majiayu000/crawlume/issues/new?template=usage-feedback.yml)
+issue with the output of `npx -y crawlume stats --days 30`. It holds daily counts and error codes,
+no URLs or page content.
+
 ## Requirements
 
 - Node.js 24 LTS (24.15 or newer) or Node.js 26
@@ -245,6 +269,7 @@ CRAWLUME_SEARXNG_URL=http://127.0.0.1:8080 pnpm cli search MiniMax H3 推理优�
 pnpm cli crawl https://example.com/docs --max-pages 20
 pnpm cli search inference optimization --source local
 pnpm cli stats --days 7
+pnpm cli report https://example.com/broken-page
 ```
 
 After installing or linking the package, use `crawlume search`, `crawlume read`, `crawlume extract`,
@@ -361,6 +386,9 @@ production-rollout, or competitor superiority evidence.
 | `CRAWLUME_LOCAL_INDEX_ENABLED` | `false` | Optionally index successful public pages in SQLite FTS5 |
 | `CRAWLUME_PROXY_URLS` | unset | Comma-separated administrator-controlled HTTP(S) proxy URLs |
 | `CRAWLUME_SEARXNG_URL` | unset | Trusted SearXNG instance base URL used by `search_web` |
+| `CRAWLUME_TELEMETRY` | `false` | Opt in to anonymous read statistics (see below) |
+| `CRAWLUME_TELEMETRY_KEY` | unset | PostHog project key; required when telemetry is on |
+| `CRAWLUME_TELEMETRY_HOST` | `https://us.i.posthog.com` | PostHog ingestion host |
 
 If Clash or another TUN resolver maps public domains into `198.18.0.0/15`, start the reader with
 `CRAWLUME_ALLOW_DNS_FAKE_IP=1`. This applies only to DNS answers; a URL containing a literal

@@ -38,6 +38,7 @@ export type AppConfig = {
   localIndexEnabled: boolean;
   proxyEndpoints: ProxyEndpoint[];
   searxngUrl: string | null;
+  telemetry: { apiKey: string; host: string; installIdPath: string } | null;
 };
 
 export const rslUsages = ["ai-train", "ai-input", "ai-index", "search"] as const;
@@ -157,6 +158,19 @@ function booleanFlag(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be 1, 0, true, or false.`);
 }
 
+function telemetry(dataDir: string): AppConfig["telemetry"] {
+  if (!booleanFlag("CRAWLUME_TELEMETRY", false)) return null;
+  const apiKey = process.env.CRAWLUME_TELEMETRY_KEY;
+  if (apiKey === undefined || apiKey === "") {
+    throw new Error("CRAWLUME_TELEMETRY_KEY is required when CRAWLUME_TELEMETRY is enabled.");
+  }
+  return {
+    apiKey,
+    host: process.env.CRAWLUME_TELEMETRY_HOST ?? "https://us.i.posthog.com",
+    installIdPath: join(dataDir, "telemetry-id"),
+  };
+}
+
 function integerInRange(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = process.env[name];
   if (raw === undefined) {
@@ -246,5 +260,6 @@ export function loadConfig(): AppConfig {
     localIndexEnabled: booleanFlag("CRAWLUME_LOCAL_INDEX_ENABLED", false),
     proxyEndpoints: parseProxyEndpoints(process.env.CRAWLUME_PROXY_URLS),
     searxngUrl: process.env.CRAWLUME_SEARXNG_URL ?? null,
+    telemetry: telemetry(dataDir),
   };
 }

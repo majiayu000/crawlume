@@ -1,0 +1,23 @@
+name: Usage feedback
+description: Tell us how crawlume works for you over a week or more of use.
+labels: ["usage-feedback"]
+body:
+  - type: textarea
+    id: usage
+    attributes:
+      label: What do you use it for?
+      description: Which agent or client, and what kinds of pages (docs, news, shops, forums...).
+    validations:
+      required: true
+  - type: textarea
+    id: stats
+    attributes:
+      label: Statistics
+      description: |
+        Paste the output of `npx -y crawlume stats --days 30`, or ask your agent to call
+        `get_crawler_stats`. It holds daily counts and error codes only, no URLs or page content.
+      render: json
+  - type: textarea
+    id: missing
+    attributes:
+      label: What is missing or annoying?

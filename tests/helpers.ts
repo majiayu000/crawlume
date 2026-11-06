@@ -39,6 +39,7 @@ export function testConfig(): AppConfig {
     localIndexEnabled: false,
     proxyEndpoints: [],
     searxngUrl: null,
+    telemetry: null,
   };
 }
 

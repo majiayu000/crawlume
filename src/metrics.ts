@@ -12,6 +12,7 @@ import type {
   ResourceUsage,
   StageResult,
 } from "./types.js";
+import type { ReadTelemetry } from "./telemetry.js";
 
 type CacheStatus = keyof CrawlerStatsResult["cache"];
 
@@ -170,7 +171,11 @@ function executedTransitions(execution: AccessPlanEvidence | null): AccessPlanEv
 export class CrawlerMetrics {
   private readonly database: DatabaseSync;
 
-  constructor(path: string, private readonly now: () => number = () => Date.now()) {
+  constructor(
+    path: string,
+    private readonly now: () => number = () => Date.now(),
+    private readonly onRecord: ((read: ReadTelemetry) => void) | null = null,
+  ) {
     this.database = new DatabaseSync(path, { timeout: 5_000 });
     this.database.exec(`
       PRAGMA journal_mode = WAL;
@@ -516,6 +521,20 @@ export class CrawlerMetrics {
       this.database.exec("ROLLBACK");
       throw error;
     }
+    this.onRecord?.({
+      outcome: values.outcome,
+      errorCode: values.errorCode,
+      fetchMethod: values.fetchMethod,
+      cacheStatus: values.cacheStatus ?? "",
+      finalState: values.finalState,
+      plannerVersion: values.plannerVersion,
+      extractorVersion: values.extractorVersion,
+      validatorVersion: values.validatorVersion,
+      executedStages: values.execution?.executedStages ?? [],
+      attempts: values.attempts,
+      contentCharacters: values.contentCharacters,
+      durationMs: values.durationMs,
+    });
   }
 
   private readTransitions(sinceDay: string, throughDay: string): CrawlerStatsResult["transitions"] {

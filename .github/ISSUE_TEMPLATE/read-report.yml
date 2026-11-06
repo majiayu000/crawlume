@@ -1,0 +1,24 @@
+name: A page read went wrong
+description: crawlume failed on a page, or returned the wrong content as a success.
+labels: ["read-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The fastest way to fill this in is `npx -y crawlume report <url>`. It reads the page again
+        without the cache, prints the report and a link that opens this form prefilled.
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: For example "the article text", or "an error instead of the login page".
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: Paste the output of `crawlume report <url>`. Remove anything you do not want to share.
+      render: markdown
+    validations:
+      required: true

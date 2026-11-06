@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `crawlume report <url>` reads a page again without the cache and prints a shareable report with a
+  prefilled GitHub issue link; issue templates for read reports and usage feedback.
+- Opt-in anonymous read statistics sent to PostHog (`CRAWLUME_TELEMETRY=1`), without URLs or content.
 - Apache-2.0 license.
 - GitHub Actions CI: typecheck, build and tests on Node 24 and 26, the PostgreSQL control-plane gate,
   and a Docker image build.

@@ -7,7 +7,9 @@ import { LocalPageIndex } from "./index.js";
 import { FrontierStore } from "./frontier-store.js";
 import { AttemptLedger } from "./jobs.js";
 import { CrawlerMetrics } from "./metrics.js";
+import { packageManifest } from "./package-manifest.js";
 import { SearchServingMetrics } from "./search-metrics.js";
+import { Telemetry } from "./telemetry.js";
 import { PageMonitorService, PageMonitorStore } from "./monitors.js";
 import { ProxyPool } from "./proxy.js";
 import { ProfileManager } from "./profiles.js";
@@ -57,7 +59,14 @@ export function createApp(
   const rsl = new RslPolicy(config, transport);
   const profiles = new ProfileManager(config);
   const cache = new PageCache(config.cachePath);
-  const metrics = new CrawlerMetrics(config.cachePath);
+  const telemetry = config.telemetry === null
+    ? null
+    : new Telemetry({ ...config.telemetry, version: packageManifest().version });
+  const metrics = new CrawlerMetrics(
+    config.cachePath,
+    undefined,
+    telemetry === null ? null : (read) => telemetry.captureRead(read),
+  );
   const searchMetrics = new SearchServingMetrics(config.cachePath);
   const rslAudit = new RslAccessAudit(config.cachePath, config.rslUsage);
   const attemptLedger = new AttemptLedger(config.cachePath);
@@ -133,6 +142,7 @@ export function createApp(
       await captureClose(() => verticalSearch?.close(), failures);
       await captureClose(() => localIndex?.close(), failures);
       await captureClose(() => metrics.close(), failures);
+      await captureClose(async () => telemetry?.close(), failures);
       await captureClose(() => searchMetrics.close(), failures);
       await captureClose(() => rslAudit.close(), failures);
       await captureClose(() => attemptLedger.close(), failures);

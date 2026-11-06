@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createApp, type CrawlumeApp } from "../app.js";
 import { loadConfig } from "../config.js";
 import { normalizeError, ReadError } from "../errors.js";
+import { packageManifest } from "../package-manifest.js";
+import { buildReadReport, type ReportOutcome } from "./report.js";
 import {
   createSqliteBackup,
   restoreSqliteBackup,
@@ -25,6 +27,7 @@ import {
 
 const usage = `Usage:
   crawlume read <url> [options]
+  crawlume report <url> [options]
   crawlume extract <url> [options]
   crawlume map <url> [options]
   crawlume crawl <url> [options]
@@ -59,6 +62,7 @@ Options:
 export type CliAction =
   | { kind: "help" }
   | { kind: "read"; options: ReadPageOptions; markdown: boolean }
+  | { kind: "report"; options: ReadPageOptions }
   | { kind: "extract"; options: ReadPageOptions }
   | { kind: "map"; options: import("../types.js").MapSiteOptions }
   | { kind: "crawl"; options: import("../types.js").CrawlSiteOptions }
@@ -255,6 +259,7 @@ export function parseCli(argv: string[]): CliAction {
   const command = argv[0];
   if (
     command !== "read" &&
+    command !== "report" &&
     command !== "extract" &&
     command !== "map" &&
     command !== "crawl" &&
@@ -266,7 +271,7 @@ export function parseCli(argv: string[]): CliAction {
   ) {
     throw new ReadError(
       "INVALID_ARGUMENT",
-      "Supported commands are read, extract, map, crawl, search, stats, rsl-audit, backup, and restore.",
+      "Supported commands are read, report, extract, map, crawl, search, stats, rsl-audit, backup, and restore.",
       { details: { command: argv[0] ?? null } },
     );
   }
@@ -373,7 +378,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--max-pages") {
-      if (command === "read" || command === "extract") {
+      if (command === "read" || command === "report" || command === "extract") {
         throw new ReadError("INVALID_ARGUMENT", "--max-pages is available only for map or crawl.");
       }
       const value = nextValue(argv, index, argument);
@@ -390,7 +395,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--max-depth") {
-      if (command === "read" || command === "extract") {
+      if (command === "read" || command === "report" || command === "extract") {
         throw new ReadError("INVALID_ARGUMENT", "--max-depth is available only for map or crawl.");
       }
       const value = nextValue(argv, index, argument);
@@ -404,7 +409,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--include-subdomains") {
-      if (command === "read" || command === "extract") {
+      if (command === "read" || command === "report" || command === "extract") {
         throw new ReadError(
           "INVALID_ARGUMENT",
           "--include-subdomains is available only for map or crawl.",
@@ -414,7 +419,7 @@ export function parseCli(argv: string[]): CliAction {
       continue;
     }
     if (argument === "--keep-query") {
-      if (command === "read" || command === "extract") {
+      if (command === "read" || command === "report" || command === "extract") {
         throw new ReadError("INVALID_ARGUMENT", "--keep-query is available only for map or crawl.");
       }
       ignoreQueryParameters = false;
@@ -480,6 +485,10 @@ export function parseCli(argv: string[]): CliAction {
   }
   if (command === "extract") {
     return { kind: "extract", options };
+  }
+  if (command === "report") {
+    // A report reproduces the problem now, so it never answers from the cache.
+    return { kind: "report", options: { ...options, cacheMode: "live" } };
   }
   return { kind: "read", options, markdown };
 }
@@ -560,6 +569,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         action.markdown
           ? `${result.contentMarkdown}\n`
           : `${JSON.stringify(result, null, 2)}\n`,
+      );
+    } else if (action.kind === "report") {
+      let outcome: ReportOutcome;
+      try {
+        outcome = { result: await app.reader.readPage(action.options) };
+      } catch (error) {
+        outcome = { error: normalizeError(error) };
+      }
+      const report = buildReadReport(action.options.url, outcome, packageManifest());
+      process.stdout.write(
+        `${report.body}\nReview the report above, then open this link to file it (nothing is sent until you submit):\n${report.issueUrl}\n`,
       );
     } else if (action.kind === "extract") {
       process.stdout.write(`${JSON.stringify(await app.reader.extractPage(action.options), null, 2)}\n`);
