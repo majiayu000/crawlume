@@ -12,13 +12,16 @@ import {
 import type { AddressInfo } from "node:net";
 
 import type { WorkerHttpApi, WorkerHttpRequest, WorkerHttpResponse } from "./organization-service.js";
+import { defaultKeyValueRecordMaxBytes } from "./project-storage.js";
+import { rawBodyRoutePattern } from "./router-contract.js";
 
 // HTTP(S) transport for the control-plane API: bounded JSON bodies, query allow-list and listener lifecycle.
+// Key-value record writes read raw bytes instead; a Buffer response body is written as-is.
 
 const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
-const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries))$/u;
+const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries|datasets|datasets\/[^/]+\/(?:items|export)|key-value-stores|key-value-stores\/[^/]+\/records))$/u;
 
 type WorkerTlsConfig = Readonly<{
   key: NonNullable<HttpsServerOptions["key"]>;
@@ -30,6 +33,8 @@ export type WorkerControlServerConfig = Readonly<{
   host: string;
   port: number;
   tls: WorkerTlsConfig | null;
+  /** Upper bound for raw key-value record bodies; defaults to the key-value record limit. */
+  maxRawBodyBytes?: number;
 }>;
 
 export type WorkerControlListener = Readonly<{
@@ -100,10 +105,11 @@ function isJsonContent(headers: IncomingHttpHeaders): boolean {
     "application/json";
 }
 
-async function readWorkerJson(
+async function readWorkerBody(
   request: IncomingMessage,
   headers: IncomingHttpHeaders,
-): Promise<unknown> {
+  limitBytes: number,
+): Promise<Buffer> {
   const encoding = singleHeader(headers, "content-encoding");
   if (encoding !== null && encoding.trim().toLowerCase() !== "identity") {
     throw new WorkerTransportError(
@@ -112,7 +118,7 @@ async function readWorkerJson(
       "Compressed control-plane request bodies are not accepted.",
     );
   }
-  if ((declaredBodyLength(headers) ?? 0) > workerBodyLimitBytes) {
+  if ((declaredBodyLength(headers) ?? 0) > limitBytes) {
     request.resume();
     throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
   }
@@ -121,14 +127,22 @@ async function readWorkerJson(
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     received += bytes.byteLength;
-    if (received > workerBodyLimitBytes) {
+    if (received > limitBytes) {
       request.resume();
       throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
     }
     chunks.push(bytes);
   }
+  return Buffer.concat(chunks);
+}
+
+async function readWorkerJson(
+  request: IncomingMessage,
+  headers: IncomingHttpHeaders,
+): Promise<unknown> {
+  const body = await readWorkerBody(request, headers, workerBodyLimitBytes);
   try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(body);
     return JSON.parse(text) as unknown;
   } catch (error) {
     throw new WorkerTransportError(400, "JSON_INVALID", "The request body is not valid UTF-8 JSON.", {
@@ -174,7 +188,9 @@ function writeWorkerResponse(
   directTls: boolean,
 ): void {
   if (response.destroyed || response.writableEnded) return;
-  const payload = result.body === null ? null : Buffer.from(JSON.stringify(result.body));
+  const payload = result.body === null ? null
+    : Buffer.isBuffer(result.body) ? result.body
+    : Buffer.from(JSON.stringify(result.body));
   response.writeHead(result.status, {
     ...result.headers,
     "cache-control": "no-store",
@@ -189,6 +205,7 @@ function workerRequestListener(
   api: Pick<WorkerHttpApi, "handle">,
   controllers: Set<AbortController>,
   directTls: boolean,
+  maxRawBodyBytes: number,
 ): RequestListener {
   return (request, response) => {
     const controller = new AbortController();
@@ -210,12 +227,14 @@ function workerRequestListener(
         if (target.search !== "" && !controlPlaneQueryPath.test(target.pathname)) {
           throw new WorkerTransportError(400, "QUERY_UNSUPPORTED", "Control-plane API routes do not accept query parameters.");
         }
-        if ((declaredBodyLength(headers) ?? 0) > workerBodyLimitBytes) {
+        const raw = request.method === "PUT" && rawBodyRoutePattern.test(target.pathname);
+        if ((declaredBodyLength(headers) ?? 0) > (raw ? maxRawBodyBytes : workerBodyLimitBytes)) {
           request.resume();
           throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
         }
-        const body = isJsonContent(headers) ? await readWorkerJson(request, headers) : null;
-        if (!isJsonContent(headers)) request.resume();
+        const body = raw ? await readWorkerBody(request, headers, maxRawBodyBytes)
+          : isJsonContent(headers) ? await readWorkerJson(request, headers) : null;
+        if (!raw && !isJsonContent(headers)) request.resume();
         const result = await api.handle({
           method: request.method ?? "",
           path: target.pathname,
@@ -247,7 +266,9 @@ export async function startWorkerControlServer(
 ): Promise<WorkerControlListener> {
   validateWorkerListener(config);
   const controllers = new Set<AbortController>();
-  const listener = workerRequestListener(api, controllers, config.tls !== null);
+  const listener = workerRequestListener(
+    api, controllers, config.tls !== null, config.maxRawBodyBytes ?? defaultKeyValueRecordMaxBytes,
+  );
   const server = config.tls === null
     ? createHttpServer({ maxHeaderSize: workerHeaderLimitBytes }, listener)
     : createHttpsServer({

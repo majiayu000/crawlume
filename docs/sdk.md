@@ -46,6 +46,27 @@ for await (const publication of client.publications(job.id)) {
 `waitForJob` 的总超时包含 fetch、响应读取、重试等待与轮询等待，超时会中止在途请求。
 重试等待取指数退避与 `Retry-After` 的较大值；服务端要求超过 30 秒时直接返回该错误，不提前重试。
 
+## Dataset、Key-Value Store 与定时任务
+
+```ts
+await client.appendDatasetItems("products", [{ sku: "a1", price: 3 }]);
+for await (const item of client.datasetItems("products")) console.log(item);
+const csv = await client.exportDataset("products", { format: "csv" });
+
+await client.putKeyValueRecord("state", "cursor", JSON.stringify({ page: 2 }), "application/json");
+const record = await client.getKeyValueRecord("state", "cursor");
+
+const schedule = await client.createSchedule({
+  name: "nightly-docs", cron: "0 3 * * *", job: { ...request, dataset: "nightly-docs" },
+});
+await client.disableSchedule(schedule.id);
+```
+
+- `appendDatasetItems`、`createSchedule`、`deleteKeyValueRecord`、`deleteSchedule` 不自动重试：重放会重复追加条目，
+  或把已成功的操作报告为 409/404。
+- `exportDataset` 返回文本（JSON 数组、JSON Lines 或 CSV），`getKeyValueRecord` 返回原始字节和 Content-Type。
+- 读接口需要 `results:read`，写接口需要 `tasks:write`。
+
 ## Webhook 验签
 
 投递使用 [Standard Webhooks](https://www.standardwebhooks.com/) 签名：`webhook-id`、`webhook-timestamp`、

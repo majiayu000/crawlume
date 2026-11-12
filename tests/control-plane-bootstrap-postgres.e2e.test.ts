@@ -521,6 +521,30 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         });
         await expect(runner.runOnce(new AbortController().signal)).resolves.toBe("executed");
         await expect(runner.runOnce(new AbortController().signal)).resolves.toBe("idle");
+
+        // A cron schedule fires through the runtime's scheduler; the completed Job fills its dataset.
+        const schedule = await sdk.createSchedule({
+          name: "bootstrap-nightly", cron: "0 3 * * *", job: { ...sdkRequest, dataset: "bootstrap-results" },
+        });
+        await inspectionPool.query(
+          "UPDATE job_schedules SET next_fire_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+          [schedule.id],
+        );
+        await expect.poll(async () => (await sdk.getSchedule(schedule.id)).last_job_id, {
+          timeout: 10_000, interval: 100,
+        }).not.toBeNull();
+        const fired = await sdk.getSchedule(schedule.id);
+        expect(fired).toMatchObject({ enabled: true, last_error_code: null });
+        expect(Date.parse(fired.next_fire_at)).toBeGreaterThan(Date.now());
+        await expect(runner.runOnce(new AbortController().signal)).resolves.toBe("executed");
+        await expect(sdk.waitForJob(fired.last_job_id!, { timeoutMs: 5_000, intervalMs: 50 }))
+          .resolves.toMatchObject({ status: "completed", dataset_id: expect.any(String) });
+        const exported = JSON.parse(await sdk.exportDataset("bootstrap-results")) as unknown[];
+        expect(exported).toEqual([expect.objectContaining({
+          job_id: fired.last_job_id, url: "https://example.com/", http_status: 200,
+        })]);
+        expect((await sdk.exportDataset("bootstrap-results", { format: "csv" })).split("\r\n")[0])
+          .toBe("url,type,job_id,artifact,http_status,completed_at,result_completeness");
       } finally {
         outbox.close();
         await rm(workerDirectory, { recursive: true, force: true });
@@ -542,7 +566,7 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
         SELECT count(*)::integer AS count, max(version)::integer AS version
         FROM control_plane_schema_migrations
       `);
-      expect(migrations.rows[0]).toEqual({ count: 12, version: 12 });
+      expect(migrations.rows[0]).toEqual({ count: 13, version: 13 });
       const storedKey = await inspectionPool.query<{ key_hash: Buffer; project_id: string }>(`
         SELECT key_hash, project_id FROM api_keys WHERE id = $1
       `, [apiKey.api_key.id]);
@@ -557,5 +581,5 @@ describeWithPostgres("empty-database control-plane bootstrap", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-  }, 20_000);
+  }, 30_000);
 });

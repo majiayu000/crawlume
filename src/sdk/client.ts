@@ -25,9 +25,12 @@ export type CreateJobRequest = ControlPlaneJobRequest & {
   upload_private_artifact: boolean;
   priority?: number;
   not_before?: string;
+  /** Project dataset that receives one result item when the Job completes. */
+  dataset?: string;
 };
 
-type JobResponse<Request> = Request extends CreateJobRequest ? Omit<Request, "priority" | "not_before"> & {
+type JobResponse<Request> = Request extends CreateJobRequest
+  ? Omit<Request, "priority" | "not_before" | "dataset"> & {
   id: string;
   priority: number;
   not_before: string;
@@ -35,6 +38,7 @@ type JobResponse<Request> = Request extends CreateJobRequest ? Omit<Request, "pr
   status: JobStatus;
   result_completeness: "complete" | "partial" | null;
   error_code: string | null;
+  dataset_id: string | null;
 } : never;
 
 export type Job = JobResponse<CreateJobRequest>;
@@ -63,6 +67,66 @@ export type Publication = {
 export type PublicationPage = {
   publications: Publication[];
   pagination: { next_sequence: number | null; has_more: boolean; limit: number };
+};
+
+export type CursorPagination = { next_cursor: string | null; has_more: boolean; limit: number };
+
+export type Dataset = {
+  id: string;
+  name: string;
+  item_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DatasetItemPage = {
+  items: Array<Record<string, unknown>>;
+  pagination: { offset: number; limit: number; total: number; next_offset: number; has_more: boolean };
+};
+
+export type DatasetExportFormat = "json" | "jsonl" | "csv";
+
+export type KeyValueStore = { id: string; name: string; created_at: string };
+
+export type KeyValueRecordMetadata = {
+  key: string;
+  content_type: string;
+  byte_count: number;
+  updated_at: string;
+};
+
+export type KeyValueRecord = { contentType: string; value: Uint8Array };
+
+export type JobSchedule = {
+  id: string;
+  name: string;
+  cron: string;
+  timezone: "UTC";
+  job: CreateJobRequest;
+  enabled: boolean;
+  next_fire_at: string;
+  last_fired_at: string | null;
+  last_job_id: string | null;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateJobScheduleRequest = {
+  name: string;
+  /** Five-field cron expression evaluated in UTC. */
+  cron: string;
+  job: CreateJobRequest;
+  enabled?: boolean;
+};
+
+type RequestOptions = {
+  body?: unknown;
+  rawBody?: { bytes: Uint8Array<ArrayBuffer> | string; contentType: string };
+  idempotencyKey?: string;
+  signal?: AbortSignal;
+  /** False for writes that would duplicate data when replayed, such as dataset appends. */
+  retry?: boolean;
 };
 
 export type ProblemDetails = {
@@ -108,6 +172,14 @@ export type CrawlumeClientOptions = {
 
 const terminalStatuses: ReadonlySet<JobStatus> = new Set(["completed", "failed", "cancelled"]);
 const maxRetryDelayMs = 30_000;
+
+function query(options: Readonly<Record<string, string | number | undefined>>): string {
+  const parameters = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined) parameters.set(key, String(value));
+  }
+  return parameters.size === 0 ? "" : `?${parameters}`;
+}
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolveDelay, reject) => {
@@ -239,22 +311,161 @@ export class CrawlumeClient {
     }
   }
 
+  async listDatasets(options: { cursor?: string; limit?: number } = {}): Promise<{
+    datasets: Dataset[];
+    pagination: CursorPagination;
+  }> {
+    return this.request("GET", `${this.projectPath}/datasets${query(options)}`);
+  }
+
+  async getDataset(name: string): Promise<Dataset> {
+    return (await this.request<{ dataset: Dataset }>("GET", this.datasetPath(name))).dataset;
+  }
+
+  /** Appends items in order, creating the dataset on first use. Not retried, to avoid duplicates. */
+  async appendDatasetItems(
+    name: string,
+    items: Array<Record<string, unknown>>,
+  ): Promise<{ dataset: Dataset; appended: number }> {
+    const body = await this.request<{ dataset: Dataset; appended: number }>(
+      "POST", `${this.datasetPath(name)}/items`, { body: { items }, retry: false },
+    );
+    return { dataset: body.dataset, appended: body.appended };
+  }
+
+  async listDatasetItems(name: string, options: { offset?: number; limit?: number } = {}): Promise<DatasetItemPage> {
+    const body = await this.request<DatasetItemPage>("GET", `${this.datasetPath(name)}/items${query(options)}`);
+    return { items: body.items, pagination: body.pagination };
+  }
+
+  /** Yields every dataset item in append order. */
+  async *datasetItems(name: string, options: { limit?: number } = {}): AsyncGenerator<Record<string, unknown>> {
+    let offset = 0;
+    for (;;) {
+      const page = await this.listDatasetItems(name, { ...options, offset });
+      yield* page.items;
+      if (!page.pagination.has_more || page.items.length === 0) return;
+      offset = page.pagination.next_offset;
+    }
+  }
+
+  /** Returns up to 10000 items encoded as JSON, JSON Lines or CSV. */
+  async exportDataset(
+    name: string,
+    options: { format?: DatasetExportFormat; offset?: number; limit?: number } = {},
+  ): Promise<string> {
+    const response = await this.send("GET", `${this.datasetPath(name)}/export${query(options)}`);
+    return response.text();
+  }
+
+  async listKeyValueStores(options: { cursor?: string; limit?: number } = {}): Promise<{
+    key_value_stores: KeyValueStore[];
+    pagination: CursorPagination;
+  }> {
+    return this.request("GET", `${this.projectPath}/key-value-stores${query(options)}`);
+  }
+
+  async listKeyValueRecords(store: string, options: { cursor?: string; limit?: number } = {}): Promise<{
+    records: KeyValueRecordMetadata[];
+    pagination: CursorPagination;
+  }> {
+    return this.request("GET", `${this.storePath(store)}/records${query(options)}`);
+  }
+
+  async getKeyValueRecord(store: string, key: string): Promise<KeyValueRecord> {
+    const response = await this.send("GET", this.recordPath(store, key));
+    return {
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+      value: new Uint8Array(await response.arrayBuffer()),
+    };
+  }
+
+  /** Stores bytes or text under the key, creating the store on first use. */
+  async putKeyValueRecord(
+    store: string,
+    key: string,
+    value: Uint8Array<ArrayBuffer> | string,
+    contentType = typeof value === "string" ? "text/plain; charset=utf-8" : "application/octet-stream",
+  ): Promise<KeyValueRecordMetadata> {
+    const body = await this.request<{ record: KeyValueRecordMetadata }>(
+      "PUT", this.recordPath(store, key), { rawBody: { bytes: value, contentType } },
+    );
+    return body.record;
+  }
+
+  async deleteKeyValueRecord(store: string, key: string): Promise<void> {
+    await this.request("DELETE", this.recordPath(store, key), { retry: false });
+  }
+
+  async createSchedule(request: CreateJobScheduleRequest): Promise<JobSchedule> {
+    return (await this.request<{ schedule: JobSchedule }>(
+      "POST", `${this.projectPath}/schedules`, { body: request, retry: false },
+    )).schedule;
+  }
+
+  async listSchedules(): Promise<JobSchedule[]> {
+    return (await this.request<{ schedules: JobSchedule[] }>("GET", `${this.projectPath}/schedules`)).schedules;
+  }
+
+  async getSchedule(scheduleId: string): Promise<JobSchedule> {
+    return (await this.request<{ schedule: JobSchedule }>("GET", this.schedulePath(scheduleId))).schedule;
+  }
+
+  async enableSchedule(scheduleId: string): Promise<JobSchedule> {
+    return (await this.request<{ schedule: JobSchedule }>(
+      "POST", `${this.schedulePath(scheduleId)}/enable`, { body: {} },
+    )).schedule;
+  }
+
+  async disableSchedule(scheduleId: string): Promise<JobSchedule> {
+    return (await this.request<{ schedule: JobSchedule }>(
+      "POST", `${this.schedulePath(scheduleId)}/disable`, { body: {} },
+    )).schedule;
+  }
+
+  async deleteSchedule(scheduleId: string): Promise<void> {
+    await this.request("DELETE", this.schedulePath(scheduleId), { retry: false });
+  }
+
   private jobPath(jobId: string): string {
     return `${this.projectPath}/jobs/${encodeURIComponent(jobId)}`;
   }
 
-  private async request<T>(
-    method: "GET" | "POST",
-    path: string,
-    options: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal } = {},
-  ): Promise<T> {
+  private datasetPath(name: string): string {
+    return `${this.projectPath}/datasets/${encodeURIComponent(name)}`;
+  }
+
+  private storePath(store: string): string {
+    return `${this.projectPath}/key-value-stores/${encodeURIComponent(store)}`;
+  }
+
+  private recordPath(store: string, key: string): string {
+    return `${this.storePath(store)}/records/${encodeURIComponent(key)}`;
+  }
+
+  private schedulePath(scheduleId: string): string {
+    return `${this.projectPath}/schedules/${encodeURIComponent(scheduleId)}`;
+  }
+
+  private async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
+    const response = await this.send(method, path, options);
+    if (response.status === 204) return undefined as T;
+    const result = await response.json() as T;
+    options.signal?.throwIfAborted();
+    return result;
+  }
+
+  /** Sends the request, retrying retryable failures, and returns the successful response. */
+  private async send(method: string, path: string, options: RequestOptions = {}): Promise<Response> {
     const headers: Record<string, string> = {
       accept: "application/json",
       authorization: `Bearer ${this.apiKey}`,
     };
     if (options.body !== undefined) headers["content-type"] = "application/json";
+    if (options.rawBody !== undefined) headers["content-type"] = options.rawBody.contentType;
     if (options.idempotencyKey !== undefined) headers["idempotency-key"] = options.idempotencyKey;
-    const body = options.body === undefined ? undefined : JSON.stringify(options.body);
+    const body = options.rawBody !== undefined ? options.rawBody.bytes
+      : options.body === undefined ? undefined : JSON.stringify(options.body);
     for (let attempt = 0; ; attempt += 1) {
       options.signal?.throwIfAborted();
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -264,11 +475,7 @@ export class CrawlumeClient {
         ...(body === undefined ? {} : { body }),
       });
       options.signal?.throwIfAborted();
-      if (response.ok) {
-        const result = await response.json() as T;
-        options.signal?.throwIfAborted();
-        return result;
-      }
+      if (response.ok) return response;
       const text = await response.text();
       options.signal?.throwIfAborted();
       let problem: ProblemDetails | null = null;
@@ -282,8 +489,8 @@ export class CrawlumeClient {
         problem,
         `Control plane returned HTTP ${response.status}.`,
       );
-      // Every SDK request is idempotent: GETs, Idempotency-Key creates, and pause/resume/cancel.
-      if (!error.retryable || attempt >= this.maxRetries) throw error;
+      // Requests are idempotent (GETs, Idempotency-Key creates, controls, record PUTs) unless retry is false.
+      if (!error.retryable || options.retry === false || attempt >= this.maxRetries) throw error;
       const backoff = Math.min(maxRetryDelayMs, this.retryBaseMs * 2 ** attempt);
       const requiredDelay = Math.max(backoff, parseRetryAfterMs(response.headers.get("retry-after")) ?? 0);
       if (requiredDelay > maxRetryDelayMs) throw error;

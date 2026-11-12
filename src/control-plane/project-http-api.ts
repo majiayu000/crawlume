@@ -24,8 +24,7 @@ import {
   JobIdempotencyConflictError,
   JobNotFoundError,
   JobTransitionError,
-  controlPlaneJobTypes,
-  type CreateControlPlaneJobInput,
+  type ControlPlaneJob,
   type ControlPlaneJobService,
 } from "./project-scope.js";
 import {
@@ -33,6 +32,29 @@ import {
   ArtifactStorageDisabledError,
   type ArtifactStorageService,
 } from "./artifact-storage.js";
+import {
+  assertExecutableJob,
+  createJobBodySchema,
+  jobCreationInput,
+  ProjectJobInputError,
+} from "./job-request-wire.js";
+import { CronExpressionError } from "./cron.js";
+import { JobScheduleConflictError, JobScheduleNotFoundError } from "./job-schedules.js";
+import {
+  DatasetNotFoundError,
+  KeyValueRecordNotFoundError,
+  KeyValueRecordTooLargeError,
+  KeyValueStoreNotFoundError,
+  StorageInputError,
+} from "./project-storage.js";
+import { handleScheduleRoute, matchScheduleRoute, type ScheduleHttpServices } from "./schedule-http.js";
+import {
+  StorageQueryError,
+  handleStorageRoute,
+  matchStorageRoute,
+  type ProjectSubRouteResult,
+  type StorageHttpServices,
+} from "./storage-http.js";
 import { QuotaExceededError, type ApiRequestRateLimiter } from "./quotas.js";
 import {
   WebhookQueryError,
@@ -64,7 +86,22 @@ type ProjectJobHttpServices = Readonly<{
   ): Promise<readonly AuditEvent[]>;
   webhooks?: WebhookHttpServices;
   artifacts?: Pick<ArtifactStorageService, "downloadUrl">;
+  storage?: StorageHttpServices;
+  schedules?: ScheduleHttpServices;
 }>;
+
+type SubRouteMatch =
+  | Readonly<{ allow: string; projectId: string }>
+  | Readonly<{
+    projectId: string;
+    json: boolean;
+    run(identity: AuthenticatedProjectApiKey): Promise<ProjectSubRouteResult>;
+  }>;
+
+/** Project responses add the output dataset, which Worker claims do not carry. */
+function wireProjectJob(job: ControlPlaneJob): Record<string, unknown> {
+  return { ...wireJob(job), dataset_id: job.datasetId };
+}
 
 type ProjectJobHttpDependencies = Readonly<{
   requestId?: () => string;
@@ -99,14 +136,6 @@ class IdempotencyKeyRequiredError extends Error {
   }
 }
 
-class ProjectJobInputError extends Error {
-  readonly code = "JOB_REQUEST_INVALID";
-  constructor(message: string) {
-    super(message);
-    this.name = "ProjectJobInputError";
-  }
-}
-
 class ProjectQueryError extends Error {
   readonly code = "PROJECT_QUERY_INVALID";
   constructor() {
@@ -124,41 +153,8 @@ type ProjectJobRoute =
   | Readonly<{ kind: "publications"; method: "GET"; projectId: string; jobId: string }>
   | Readonly<{ kind: "artifact-download"; method: "GET"; projectId: string; artifactId: string }>
   | Readonly<{ kind: "audit"; method: "GET"; projectId: string }>;
-const jsonObjectSchema = z.record(z.string(), z.unknown());
-const safePositiveInteger = z.number().int().positive().safe();
-const safeNonnegativeInteger = z.number().int().nonnegative().safe();
-const createJobBodySchema = z.object({
-  type: z.enum(controlPlaneJobTypes),
-  input: jsonObjectSchema,
-  data_class: z.enum(["public", "authorized", "intranet"]),
-  placement: z.object({
-    class: z.enum(["public", "private"]),
-    pinned_worker_id: z.uuid().nullable(),
-  }).strict(),
-  required_capabilities: jsonObjectSchema,
-  budget: z.object({
-    deadline_ms: safePositiveInteger.max(86_400_000),
-    max_provider_attempts: safePositiveInteger.max(1_000_000),
-    max_document_bytes: safePositiveInteger.max(Number.MAX_SAFE_INTEGER),
-    max_browser_ms: safeNonnegativeInteger.max(86_400_000),
-    max_browser_contexts: safeNonnegativeInteger.max(100_000),
-  }).strict(),
-  policy_version: z.string().trim().min(1).max(256),
-  upload_private_artifact: z.boolean(),
-  priority: z.number().int().min(-100).max(100).optional(),
-  not_before: z.string().datetime({ offset: true }).optional(),
-}).strict();
 const controlJobBodySchema = z.object({}).strict();
 
-/** Rejects what no released Worker runs, which would otherwise fail after a claim or wait out its deadline. */
-function assertExecutableJob(job: z.infer<typeof createJobBodySchema>): void {
-  if (job.type !== "read") {
-    throw new ProjectJobInputError(`No released Worker can execute ${job.type} Jobs.`);
-  }
-  if (job.data_class !== "public" || job.placement.class !== "public") {
-    throw new ProjectJobInputError("No released Worker can execute non-public Jobs.");
-  }
-}
 const auditCursorSchema = z.object({
   occurred_at: z.string().datetime({ offset: true }),
   id: z.uuid(),
@@ -341,6 +337,8 @@ export class ProjectJobHttpApi {
     const webhookMatch = this.services.webhooks === undefined
       ? null
       : matchWebhookRoute(request.path, request.method);
+    const subRoute = webhookMatch === null ? this.matchSubRoute(request) : null;
+    if (subRoute !== null) return this.handleSubRoute(request, requestId, subRoute);
     const route = webhookMatch === null ? matchProjectJobRoute(request.path) : null;
     if (webhookMatch === null && route === null) {
       return projectProblem(request, requestId, 404, "PROJECT_ROUTE_NOT_FOUND", "Not Found",
@@ -387,7 +385,7 @@ export class ProjectJobHttpApi {
         const found = await this.services.getJob(identity, route.jobId);
         return projectResponse(200, requestId, {
           request_id: requestId,
-          job: wireJob(found),
+          job: wireProjectJob(found),
         });
       }
       if (route.kind === "artifact-download") {
@@ -446,7 +444,7 @@ export class ProjectJobHttpApi {
             : await this.services.cancelJob(identity, route.jobId);
         return projectResponse(200, requestId, {
           request_id: requestId,
-          job: wireJob(controlled),
+          job: wireProjectJob(controlled),
         });
       }
       requireProjectApiKeyScope(identity, "tasks:write");
@@ -457,28 +455,7 @@ export class ProjectJobHttpApi {
       const key = idempotencyKey(request);
       const parsed = createJobBodySchema.parse(request.body);
       assertExecutableJob(parsed);
-      // The service validates this dynamic envelope before hashing or persistence.
-      const creationInput = {
-        type: parsed.type,
-        input: parsed.input,
-        dataClass: parsed.data_class,
-        placement: {
-          class: parsed.placement.class,
-          pinnedWorkerId: parsed.placement.pinned_worker_id,
-        },
-        requiredCapabilities: parsed.required_capabilities,
-        budget: {
-          deadlineMs: parsed.budget.deadline_ms,
-          maxProviderAttempts: parsed.budget.max_provider_attempts,
-          maxDocumentBytes: parsed.budget.max_document_bytes,
-          maxBrowserMs: parsed.budget.max_browser_ms,
-          maxBrowserContexts: parsed.budget.max_browser_contexts,
-        },
-        policyVersion: parsed.policy_version,
-        uploadPrivateArtifact: parsed.upload_private_artifact,
-        ...(parsed.priority === undefined ? {} : { priority: parsed.priority }),
-        ...(parsed.not_before === undefined ? {} : { notBefore: new Date(parsed.not_before) }),
-      } as CreateControlPlaneJobInput;
+      const creationInput = jobCreationInput(parsed);
       let created;
       try {
         created = await this.services.createJob(identity, key, creationInput, context);
@@ -489,8 +466,71 @@ export class ProjectJobHttpApi {
       const location = `/v1/projects/${identity.projectId}/jobs/${created.id}`;
       return projectResponse(201, requestId, {
         request_id: requestId,
-        job: wireJob(created),
+        job: wireProjectJob(created),
       }, { location });
+    } catch (error) {
+      return this.errorResponse(request, requestId, error);
+    }
+  }
+
+  private matchSubRoute(request: WorkerHttpRequest): SubRouteMatch | null {
+    const { storage, schedules } = this.services;
+    const storageMatch = storage === undefined ? null : matchStorageRoute(request.path, request.method);
+    if (storageMatch !== null && storage !== undefined) {
+      return "allow" in storageMatch ? storageMatch : {
+        projectId: storageMatch.route.projectId,
+        json: storageMatch.route.kind !== "put-record",
+        run: (identity) => handleStorageRoute(storage, storageMatch.route, identity, request),
+      };
+    }
+    const scheduleMatch = schedules === undefined ? null : matchScheduleRoute(request.path, request.method);
+    if (scheduleMatch !== null && schedules !== undefined) {
+      return "allow" in scheduleMatch ? scheduleMatch : {
+        projectId: scheduleMatch.route.projectId,
+        json: true,
+        run: (identity) => handleScheduleRoute(schedules, scheduleMatch.route, identity, request),
+      };
+    }
+    return null;
+  }
+
+  /** Storage and schedule routes share authentication, rate limiting and error mapping with Jobs. */
+  private async handleSubRoute(
+    request: WorkerHttpRequest,
+    requestId: string,
+    match: SubRouteMatch,
+  ): Promise<WorkerHttpResponse> {
+    if ("allow" in match) {
+      const response = projectProblem(request, requestId, 405, "PROJECT_METHOD_NOT_ALLOWED",
+        "Method Not Allowed", "The Project API route does not accept this method.");
+      return { ...response, headers: { ...response.headers, allow: match.allow } };
+    }
+    try {
+      const context = { correlationId: requestId };
+      const identity = await this.services.authenticate(projectBearerKey(request), context);
+      this.rateLimiter?.take(identity.apiKeyId);
+      if (match.projectId.toLowerCase() !== identity.projectId.toLowerCase()) {
+        throw new ProjectPathIdentityMismatchError();
+      }
+      if (match.json && request.body !== undefined && request.body !== null &&
+          !isJsonControlPlaneRequest(request)) {
+        return projectProblem(request, requestId, 415, "PROJECT_MEDIA_TYPE_UNSUPPORTED",
+          "Unsupported Media Type", "Project requests must use application/json.");
+      }
+      const handled = await match.run(identity);
+      if (Buffer.isBuffer(handled.body)) {
+        return {
+          status: handled.status,
+          headers: Object.freeze({ ...handled.headers, "x-request-id": requestId }),
+          body: handled.body,
+        };
+      }
+      return projectResponse(
+        handled.status,
+        requestId,
+        handled.status === 204 ? null : { request_id: requestId, ...(handled.body as object) },
+        handled.headers,
+      );
     } catch (error) {
       return this.errorResponse(request, requestId, error);
     }
@@ -547,6 +587,30 @@ export class ProjectJobHttpApi {
     }
     if (error instanceof WebhookQueryError) {
       return projectProblem(request, requestId, 400, error.code, "Webhook Query Invalid", error.message);
+    }
+    if (error instanceof StorageQueryError) {
+      return projectProblem(request, requestId, 400, error.code, "Project Query Invalid", error.message);
+    }
+    if (error instanceof DatasetNotFoundError) {
+      return projectProblem(request, requestId, 404, error.code, "Dataset Not Found", error.message);
+    }
+    if (error instanceof KeyValueStoreNotFoundError) {
+      return projectProblem(request, requestId, 404, error.code, "Key-Value Store Not Found", error.message);
+    }
+    if (error instanceof KeyValueRecordNotFoundError) {
+      return projectProblem(request, requestId, 404, error.code, "Key-Value Record Not Found", error.message);
+    }
+    if (error instanceof KeyValueRecordTooLargeError) {
+      return projectProblem(request, requestId, 413, error.code, "Key-Value Record Too Large", error.message);
+    }
+    if (error instanceof StorageInputError || error instanceof CronExpressionError) {
+      return projectProblem(request, requestId, 422, error.code, "Storage Request Invalid", error.message);
+    }
+    if (error instanceof JobScheduleNotFoundError) {
+      return projectProblem(request, requestId, 404, error.code, "Job Schedule Not Found", error.message);
+    }
+    if (error instanceof JobScheduleConflictError) {
+      return projectProblem(request, requestId, 409, error.code, "Job Schedule Conflict", error.message);
     }
     if (error instanceof QuotaExceededError) {
       const response = projectProblem(request, requestId, 429, error.code, "Quota Exceeded",
