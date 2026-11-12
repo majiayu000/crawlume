@@ -654,13 +654,14 @@ describe("Project Job HTTP API", () => {
 });
 
 describe("control-plane HTTP routing", () => {
-  it("dispatches all 36 mounted operations to exactly one target handler", async () => {
+  it("dispatches all 40 mounted operations to exactly one target handler", async () => {
     const handlers = {
       humanAuth: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       projectAdmin: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       workerBootstrap: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       projects: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       workers: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
+      billing: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
     };
     const api = new ControlPlaneHttpApi(
       handlers.humanAuth,
@@ -668,6 +669,7 @@ describe("control-plane HTTP routing", () => {
       handlers.workerBootstrap,
       handlers.projects,
       handlers.workers,
+      handlers.billing,
     );
     const target = (operationId: string): keyof typeof handlers => {
       if (["beginHumanOidcLogin", "completeHumanOidcLogin", "refreshHumanSession",
@@ -678,11 +680,13 @@ describe("control-plane HTTP routing", () => {
       }
       if (["createWorkerEnrollment", "enrollWorker", "createWorkerSessionChallenge",
         "createWorkerSession", "disableProjectWorker"].includes(operationId)) return "workerBootstrap";
+      if (["getOrganizationBilling", "createCreditCheckoutSession",
+        "receiveStripeWebhook"].includes(operationId)) return "billing";
       if (operationId.includes("Project") || operationId.includes("Webhook")) return "projects";
       return "workers";
     };
 
-    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(36);
+    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(40);
     for (const operation of ControlPlaneHttpApi.routerOperations) {
       const before = Object.values(handlers).reduce((sum, handler) =>
         sum + handler.handle.mock.calls.length, 0);

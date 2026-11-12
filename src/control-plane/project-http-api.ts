@@ -35,6 +35,13 @@ import {
 } from "./artifact-storage.js";
 import { QuotaExceededError, type ApiRequestRateLimiter } from "./quotas.js";
 import {
+  BillingDisabledError,
+  CreditsExhaustedError,
+  usagePeriod,
+  type ProjectUsageSummary,
+  type UsagePeriod,
+} from "./billing.js";
+import {
   WebhookQueryError,
   handleWebhookRoute,
   matchWebhookRoute,
@@ -64,11 +71,13 @@ type ProjectJobHttpServices = Readonly<{
   ): Promise<readonly AuditEvent[]>;
   webhooks?: WebhookHttpServices;
   artifacts?: Pick<ArtifactStorageService, "downloadUrl">;
+  projectUsage?(projectId: string, period: UsagePeriod): Promise<ProjectUsageSummary>;
 }>;
 
 type ProjectJobHttpDependencies = Readonly<{
   requestId?: () => string;
   rateLimiter?: ApiRequestRateLimiter;
+  now?: () => Date;
 }>;
 
 type ProjectProblem = Readonly<{
@@ -123,7 +132,8 @@ type ProjectJobRoute =
   | Readonly<{ kind: "cancel"; method: "POST"; projectId: string; jobId: string }>
   | Readonly<{ kind: "publications"; method: "GET"; projectId: string; jobId: string }>
   | Readonly<{ kind: "artifact-download"; method: "GET"; projectId: string; artifactId: string }>
-  | Readonly<{ kind: "audit"; method: "GET"; projectId: string }>;
+  | Readonly<{ kind: "audit"; method: "GET"; projectId: string }>
+  | Readonly<{ kind: "usage"; method: "GET"; projectId: string }>;
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 const safePositiveInteger = z.number().int().positive().safe();
 const safeNonnegativeInteger = z.number().int().nonnegative().safe();
@@ -172,7 +182,7 @@ function matchProjectJobRoute(path: string): ProjectJobRoute | null {
     if (definition.kind === "create") {
       return { kind: definition.kind, method: definition.method, projectId };
     }
-    if (definition.kind === "audit") {
+    if (definition.kind === "audit" || definition.kind === "usage") {
       return { kind: definition.kind, method: definition.method, projectId };
     }
     const jobId = matched?.[2];
@@ -234,6 +244,36 @@ function auditQuery(query: string): { before: AuditCursor | null; limit: number 
     if (error instanceof ProjectQueryError) throw error;
     throw new ProjectQueryError();
   }
+}
+
+function usageMonth(query: string): string | null {
+  const parameters = new URLSearchParams(query);
+  for (const key of parameters.keys()) {
+    if (key !== "month") throw new ProjectQueryError();
+  }
+  const months = parameters.getAll("month");
+  if (months.length > 1) throw new ProjectQueryError();
+  if (months[0] !== undefined && !/^[0-9]{4}-(0[1-9]|1[0-2])$/u.test(months[0])) {
+    throw new ProjectQueryError();
+  }
+  return months[0] ?? null;
+}
+
+function wireUsage(summary: ProjectUsageSummary): Record<string, unknown> {
+  return {
+    usage: {
+      project_id: summary.projectId,
+      period_start: summary.period.start.toISOString(),
+      period_end: summary.period.end.toISOString(),
+      meters: summary.meters.map(({ meter, quantity, credits }) => ({ meter, quantity, credits })),
+      total_credits: summary.totalCredits,
+    },
+    credits: {
+      organization_id: summary.organizationId,
+      balance_credits: summary.balanceCredits,
+      billing_enabled: summary.billingEnabled,
+    },
+  };
 }
 
 function auditCursor(event: AuditEvent): string {
@@ -327,6 +367,7 @@ function projectProblem(
 export class ProjectJobHttpApi {
   private readonly requestId: () => string;
   private readonly rateLimiter: ApiRequestRateLimiter | null;
+  private readonly now: () => Date;
 
   constructor(
     private readonly services: ProjectJobHttpServices,
@@ -334,6 +375,7 @@ export class ProjectJobHttpApi {
   ) {
     this.requestId = dependencies.requestId ?? randomUUID;
     this.rateLimiter = dependencies.rateLimiter ?? null;
+    this.now = dependencies.now ?? (() => new Date());
   }
 
   async handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse> {
@@ -378,7 +420,7 @@ export class ProjectJobHttpApi {
         );
       }
       if (route === null) throw new Error("Project route resolution failed.");
-      if (route.kind !== "publications" && route.kind !== "audit" &&
+      if (route.kind !== "publications" && route.kind !== "audit" && route.kind !== "usage" &&
           (request.query ?? "") !== "") {
         throw new ProjectQueryError();
       }
@@ -412,6 +454,15 @@ export class ProjectJobHttpApi {
             limit: query.limit,
           },
         });
+      }
+      if (route.kind === "usage") {
+        requireProjectApiKeyScope(identity, "results:read");
+        const month = usageMonth(request.query ?? "");
+        if (this.services.projectUsage === undefined) throw new BillingDisabledError("Usage metering");
+        const summary = await this.services.projectUsage(
+          identity.projectId, usagePeriod(this.now(), month),
+        );
+        return projectResponse(200, requestId, { request_id: requestId, ...wireUsage(summary) });
       }
       if (route.kind === "audit") {
         requireProjectApiKeyScope(identity, "project:admin");
@@ -548,6 +599,12 @@ export class ProjectJobHttpApi {
     if (error instanceof WebhookQueryError) {
       return projectProblem(request, requestId, 400, error.code, "Webhook Query Invalid", error.message);
     }
+    if (error instanceof CreditsExhaustedError) {
+      return projectProblem(request, requestId, 402, error.code, "Credits Exhausted", error.message);
+    }
+    if (error instanceof BillingDisabledError) {
+      return projectProblem(request, requestId, 503, error.code, "Billing Disabled", error.message);
+    }
     if (error instanceof QuotaExceededError) {
       const response = projectProblem(request, requestId, 429, error.code, "Quota Exceeded",
         error.message);
@@ -593,12 +650,20 @@ export class ControlPlaneHttpApi {
     private readonly workers: Readonly<{
       handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse>;
     }>,
+    private readonly billing?: Readonly<{
+      handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse>;
+    }>,
   ) {}
 
   handle(request: WorkerHttpRequest): Promise<WorkerHttpResponse> {
     const { path } = request;
     if (path === "/v1/auth" || path.startsWith("/v1/auth/")) {
       return this.humanAuth.handle(request);
+    }
+    if (this.billing !== undefined && (
+      path.startsWith("/v1/billing/") || /^\/v1\/organizations\/[^/]+\/billing(?:\/|$)/u.test(path)
+    )) {
+      return this.billing.handle(request);
     }
     if (
       path === "/v1/organizations" || path.startsWith("/v1/organizations/") ||

@@ -18,7 +18,7 @@ import type { WorkerHttpApi, WorkerHttpRequest, WorkerHttpResponse } from "./org
 const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
-const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries))$/u;
+const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries|usage))$/u;
 
 type WorkerTlsConfig = Readonly<{
   key: NonNullable<HttpsServerOptions["key"]>;
@@ -103,7 +103,7 @@ function isJsonContent(headers: IncomingHttpHeaders): boolean {
 async function readWorkerJson(
   request: IncomingMessage,
   headers: IncomingHttpHeaders,
-): Promise<unknown> {
+): Promise<Readonly<{ json: unknown; raw: Buffer }>> {
   const encoding = singleHeader(headers, "content-encoding");
   if (encoding !== null && encoding.trim().toLowerCase() !== "identity") {
     throw new WorkerTransportError(
@@ -127,9 +127,10 @@ async function readWorkerJson(
     }
     chunks.push(bytes);
   }
+  const raw = Buffer.concat(chunks);
   try {
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-    return JSON.parse(text) as unknown;
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    return { json: JSON.parse(text) as unknown, raw };
   } catch (error) {
     throw new WorkerTransportError(400, "JSON_INVALID", "The request body is not valid UTF-8 JSON.", {
       cause: error,
@@ -221,7 +222,8 @@ function workerRequestListener(
           path: target.pathname,
           query: target.search,
           headers,
-          body,
+          body: body?.json ?? null,
+          ...(body === null ? {} : { rawBody: body.raw }),
           signal: controller.signal,
         });
         if (!controller.signal.aborted) writeWorkerResponse(response, result, directTls);

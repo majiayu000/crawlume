@@ -13,6 +13,7 @@ import {
   recordAuditEvent,
 } from "./organization-authorization.js";
 import { recoverExpiredJobLeases } from "./job-lease-recovery.js";
+import type { BillingService } from "./billing.js";
 import {
   enforceJobCreationQuotas,
   hasJobCreationQuotas,
@@ -365,13 +366,19 @@ function jobLease(row: JobLeaseRow): JobLease {
 export class ControlPlaneJobService {
   private readonly now: () => Date;
   private readonly quotas: ProjectQuotaLimits;
+  private readonly billing: Pick<BillingService, "assertJobCreditsAvailable" | "recordJobUsage"> | null;
 
   constructor(
     private readonly database: ControlPlaneDatabase,
-    dependencies: Readonly<{ now?: () => Date; quotas?: ProjectQuotaLimits }> = {},
+    dependencies: Readonly<{
+      now?: () => Date;
+      quotas?: ProjectQuotaLimits;
+      billing?: Pick<BillingService, "assertJobCreditsAvailable" | "recordJobUsage">;
+    }> = {},
   ) {
     this.now = dependencies.now ?? (() => new Date());
     this.quotas = dependencies.quotas ?? unlimitedProjectQuotas;
+    this.billing = dependencies.billing ?? null;
   }
 
   async createJob(
@@ -490,6 +497,9 @@ export class ControlPlaneJobService {
       if (hasJobCreationQuotas(this.quotas)) {
         await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
       }
+      await this.billing?.assertJobCreditsAvailable(
+        transaction, scope.projectId, normalizedKey, parsedCreation.type, input.budget,
+      );
       const result = await transaction.query<ControlPlaneJobRow>(`
       INSERT INTO jobs(
         id, project_id, idempotency_key, request_hash, created_by_user_id,
@@ -741,6 +751,11 @@ export class ControlPlaneJobService {
       ]);
       const job = finishedJob.rows[0];
       if (job === undefined) throw new LeaseFencedError();
+      if (job.status === "completed") {
+        await this.billing?.recordJobUsage(transaction, {
+          id: job.id, projectId: job.project_id, type: job.type,
+        }, leaseId, now);
+      }
       return controlPlaneJob(job);
     });
   }

@@ -155,6 +155,46 @@ crawlume-worker run --control-url https://control.example/v1
 
 配额在创建 Job 的事务内用 Project 级 advisory lock 检查；同一 `Idempotency-Key` 的重放不重复计入。
 
+### 用量计量与计费
+
+Control Plane 总是在 Job 以 `completed` 结束的同一事务内计量用量（`failed`/`cancelled` 不计）：read Job 每个
+`page.read` 事件按 provider 记为 `page_read` 或 `browser_read`，crawl Job 每页记 `crawl_page`，search Job 记一次
+`search_query`。Project API Key（`results:read`）通过 `GET /projects/{project_id}/usage?month=YYYY-MM` 查看当月
+（默认当前 UTC 月）各计量项与所属 Organization 的余额。
+
+设置 `DIAOYAN_BILLING_PRICES_PATH` 指向价格表 JSON 后启用预付费额度；未设置时用量按 0 credits 计量，不做余额检查。
+价格写在配置里，代码不含任何价格：
+
+```json
+{
+  "currency": "usd",
+  "meters": { "page_read": 1, "browser_read": 5, "crawl_page": 1, "search_query": 2 },
+  "credit_packs": [{ "id": "starter", "name": "10,000 credits", "credits": 10000, "amount": 1000 }]
+}
+```
+
+`meters` 是每单位扣多少 credits，四项都必须给出；`amount` 是 credit pack 的价格，单位为货币最小单位（美分）。
+余额按 Organization 记账（`organization_credit_balances` + 追加式 `credit_ledger_entries`）。新建 Job 时余额低于该
+Job 可能产生的最低费用（read 且 `max_browser_ms > 0` 时取 `page_read` 与 `browser_read` 中较大者）即返回 HTTP 402
+`CREDITS_EXHAUSTED`，Job 不入库；同一 `Idempotency-Key` 的重放不受影响。扣费发生在 Job 完成时，已在运行的
+Job 可能把余额扣成负数，之后的新 Job 会被拒绝直到充值。并发创建不预留额度，透支上限约为同时在途 Job 的费用。
+
+#### Stripe 充值（仅测试模式）
+
+| 变量 | 说明 |
+|---|---|
+| `DIAOYAN_STRIPE_SECRET_KEY` | 只接受 `sk_test_`/`rk_test_`，live key 启动失败 |
+| `DIAOYAN_STRIPE_WEBHOOK_SECRET` | Stripe webhook 签名密钥 `whsec_...` |
+| `DIAOYAN_BILLING_CHECKOUT_SUCCESS_URL` | Checkout 成功后的跳转地址（https） |
+| `DIAOYAN_BILLING_CHECKOUT_CANCEL_URL` | Checkout 取消后的跳转地址（https） |
+
+需要同时配置价格表。Organization owner/admin 调用
+`POST /organizations/{organization_id}/billing/checkout-sessions`（`{"pack_id": "starter"}`，需要
+`Idempotency-Key`）拿到 Stripe Checkout URL；Stripe 回调 `POST /v1/billing/stripe/webhook`（在 Stripe Dashboard
+登记该地址，订阅 `checkout.session.completed` 与 `checkout.session.async_payment_succeeded`）。Control Plane 校验
+`Stripe-Signature`（v1，300 秒容差），按事件 id 去重，只对本系统创建、金额与币种一致且 `payment_status=paid`
+的 Session 入账一次。`GET /organizations/{organization_id}/billing` 返回余额与价格表。
+
 ### Artifact 对象存储
 
 设置 `DIAOYAN_ARTIFACT_S3_BUCKET` 后启用云端 Artifact 存储（AWS S3 或兼容实现，如 Cloudflare R2）；未设置时

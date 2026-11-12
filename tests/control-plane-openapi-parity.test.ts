@@ -155,7 +155,7 @@ describe("control-plane OpenAPI Router parity", () => {
     const integratedIds = integrated.map(({ operationId }) => operationId);
     const integratedRoutes = integrated.map(routeKey);
     const integratedKeys = integrated.map(operationKey);
-    expect(integrated).toHaveLength(36);
+    expect(integrated).toHaveLength(40);
     expect(new Set(documentedIds).size, "OpenAPI operationId values must be globally unique")
       .toBe(documentedIds.length);
     expect(new Set(documentedRoutes).size, "OpenAPI method and path pairs must be globally unique")

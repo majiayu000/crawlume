@@ -334,6 +334,8 @@ export type WorkerHttpRequest = Readonly<{
   query?: string;
   headers: Readonly<Record<string, string | readonly string[] | undefined>>;
   body: unknown;
+  /** Exact JSON body bytes, for routes that verify a signature over the payload. */
+  rawBody?: Buffer;
   signal?: AbortSignal;
 }>;
 

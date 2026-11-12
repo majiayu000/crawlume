@@ -60,6 +60,17 @@ import {
   type ArtifactObjectStore,
 } from "./control-plane/artifact-storage.js";
 import {
+  BillingService,
+  billingPriceTableFromEnvironment,
+  type BillingPriceTable,
+} from "./control-plane/billing.js";
+import { BillingHttpApi } from "./control-plane/billing-http-api.js";
+import {
+  StripeClient,
+  stripeConfigFromEnvironment,
+  type StripeConfig,
+} from "./control-plane/stripe.js";
+import {
   ApiRequestRateLimiter,
   projectQuotasFromEnvironment,
   unlimitedProjectQuotas,
@@ -109,6 +120,8 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   artifactStore?: ArtifactObjectStore | null;
   artifactRetentionDays?: number | null;
   metrics?: MetricsListenerConfig | null;
+  billingPrices?: BillingPriceTable | null;
+  stripe?: StripeConfig | null;
 }>;
 
 export type ControlPlaneRuntime = Readonly<{
@@ -274,6 +287,8 @@ export async function loadControlPlaneRuntimeConfig(
     artifactStore: artifactObjectStoreFromEnvironment(environment),
     artifactRetentionDays: artifactRetentionDaysFromEnvironment(environment),
     metrics: metricsListenerFromEnvironment(environment),
+    billingPrices: await billingPriceTableFromEnvironment(environment),
+    stripe: stripeConfigFromEnvironment(environment),
   });
 }
 
@@ -355,7 +370,11 @@ export async function startControlPlaneRuntime(
     const identity = new WorkerIdentityService(database, config.identity);
     const humanIdentity = new OidcSessionService(database, config.humanIdentity);
     const quotas = config.quotas ?? unlimitedProjectQuotas;
-    const jobs = new ControlPlaneJobService(database, { quotas });
+    const billing = new BillingService(database, {
+      prices: config.billingPrices ?? null,
+      stripe: config.stripe == null ? null : new StripeClient(config.stripe),
+    });
+    const jobs = new ControlPlaneJobService(database, { quotas, billing });
     const results = new JobResultService(database);
     const humanAuthApi = new HumanAuthHttpApi({
       beginLogin: humanIdentity.beginLogin.bind(humanIdentity),
@@ -399,6 +418,7 @@ export async function startControlPlaneRuntime(
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
       webhooks,
       artifacts,
+      projectUsage: billing.projectUsage.bind(billing),
     }, quotas.apiRequestsPerMinute === null
       ? {}
       : { rateLimiter: new ApiRequestRateLimiter(quotas.apiRequestsPerMinute) });
@@ -407,7 +427,13 @@ export async function startControlPlaneRuntime(
     listener = await startWorkerControlServer(
       withHealthChecks(
         controlMetrics.instrument(
-          new ControlPlaneHttpApi(humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi),
+          new ControlPlaneHttpApi(
+            humanAuthApi, projectAdminApi, workerBootstrapApi, projectApi, workerApi,
+            new BillingHttpApi({
+              authenticateAccessToken: humanIdentity.verifyAccessToken.bind(humanIdentity),
+              billing,
+            }),
+          ),
         ),
         database,
       ),
