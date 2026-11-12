@@ -1,0 +1,101 @@
+[
+  {
+    "url": "/jobs",
+    "method": "POST",
+    "headers": {
+      "authorization": "Bearer {{connection.apiKey}}",
+      "idempotency-key": "{{uuid}}"
+    },
+    "body": {
+      "type": "read",
+      "input": {
+        "url": "{{parameters.url}}",
+        "cacheMode": "{{parameters.cacheMode}}",
+        "browserAllowed": "{{parameters.browserAllowed}}"
+      },
+      "data_class": "public",
+      "placement": {
+        "class": "public",
+        "pinned_worker_id": null
+      },
+      "required_capabilities": {
+        "http": true
+      },
+      "budget": {
+        "deadline_ms": 120000,
+        "max_provider_attempts": 3,
+        "max_document_bytes": 5000000,
+        "max_browser_ms": "{{if(parameters.browserAllowed; 120000; 0)}}",
+        "max_browser_contexts": "{{if(parameters.browserAllowed; 1; 0)}}"
+      },
+      "policy_version": "crawlume-make",
+      "upload_private_artifact": false
+    },
+    "response": {
+      "temp": {
+        "jobId": "{{body.job.id}}"
+      }
+    }
+  },
+  {
+    "url": "/jobs/{{temp.jobId}}",
+    "method": "GET",
+    "headers": {
+      "authorization": "Bearer {{connection.apiKey}}"
+    },
+    "repeat": {
+      "condition": "{{body.job.status != 'completed' && body.job.status != 'failed' && body.job.status != 'cancelled'}}",
+      "delay": 1000,
+      "limit": 150
+    },
+    "response": {
+      "valid": "{{body.job.status != 'failed' && body.job.status != 'cancelled'}}",
+      "error": {
+        "message": "Job {{body.job.id}} {{body.job.status}}: {{body.job.error_code}}"
+      },
+      "temp": {
+        "job": "{{body.job}}"
+      }
+    }
+  },
+  {
+    "url": "/jobs/{{temp.job.id}}/publications",
+    "method": "GET",
+    "headers": {
+      "authorization": "Bearer {{connection.apiKey}}"
+    },
+    "response": {
+      "temp": {
+        "publication": "{{first(body.publications)}}"
+      }
+    }
+  },
+  {
+    "url": "/artifacts/{{temp.publication.artifact.id}}/download",
+    "method": "GET",
+    "headers": {
+      "authorization": "Bearer {{connection.apiKey}}"
+    },
+    "response": {
+      "temp": {
+        "downloadUrl": "{{body.url}}"
+      }
+    }
+  },
+  {
+    "url": "{{temp.downloadUrl}}",
+    "method": "GET",
+    "response": {
+      "type": "json",
+      "output": {
+        "job_id": "{{temp.job.id}}",
+        "status": "{{temp.job.status}}",
+        "url": "{{temp.job.input.url}}",
+        "title": "{{body.result.title}}",
+        "markdown": "{{body.result.contentMarkdown}}",
+        "completeness": "{{temp.publication.completeness}}",
+        "artifact_id": "{{temp.publication.artifact.id}}"
+      }
+    }
+  }
+]

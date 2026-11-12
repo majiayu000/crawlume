@@ -1,0 +1,10 @@
+{
+  "url": "/jobs/{{parameters.jobId}}",
+  "method": "GET",
+  "headers": {
+    "authorization": "Bearer {{connection.apiKey}}"
+  },
+  "response": {
+    "output": "{{body.job}}"
+  }
+}

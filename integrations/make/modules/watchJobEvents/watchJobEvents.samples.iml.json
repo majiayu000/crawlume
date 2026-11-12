@@ -1,0 +1,12 @@
+{
+  "id": "6a3f1f0e-5a8e-4d58-9f0c-2c7d1f8b9e01",
+  "type": "job.completed",
+  "occurred_at": "2026-11-12T08:53:35.618Z",
+  "data": {
+    "job_id": "0aefbb60-6fff-451e-b923-5ab4de5fc804",
+    "project_id": "20e074b0-2460-4b7c-a970-2dec99c5d6bc",
+    "status": "completed",
+    "result_completeness": "complete",
+    "error_code": null
+  }
+}

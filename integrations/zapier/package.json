@@ -1,0 +1,18 @@
+{
+  "name": "crawlume-zapier",
+  "version": "0.1.0",
+  "description": "Zapier integration for the Crawlume Project Control API",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "scripts": {
+    "validate": "zapier-platform validate --without-style",
+    "test": "node --test test/local-control-plane.js"
+  },
+  "dependencies": {
+    "zapier-platform-core": "19.3.0"
+  },
+  "devDependencies": {
+    "zapier-platform-cli": "19.3.0"
+  }
+}

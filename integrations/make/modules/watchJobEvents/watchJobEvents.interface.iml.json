@@ -1,0 +1,49 @@
+[
+  {
+    "name": "id",
+    "label": "Event ID",
+    "type": "text"
+  },
+  {
+    "name": "type",
+    "label": "Event Type",
+    "type": "text"
+  },
+  {
+    "name": "occurred_at",
+    "label": "Occurred At",
+    "type": "date"
+  },
+  {
+    "name": "data",
+    "label": "Data",
+    "type": "collection",
+    "spec": [
+      {
+        "name": "job_id",
+        "label": "Job ID",
+        "type": "text"
+      },
+      {
+        "name": "project_id",
+        "label": "Project ID",
+        "type": "text"
+      },
+      {
+        "name": "status",
+        "label": "Status",
+        "type": "text"
+      },
+      {
+        "name": "result_completeness",
+        "label": "Result Completeness",
+        "type": "text"
+      },
+      {
+        "name": "error_code",
+        "label": "Error Code",
+        "type": "text"
+      }
+    ]
+  }
+]

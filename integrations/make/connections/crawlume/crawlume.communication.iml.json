@@ -1,0 +1,18 @@
+{
+  "url": "{{parameters.baseUrl}}/projects/{{parameters.projectId}}/jobs/00000000-0000-4000-8000-000000000000",
+  "method": "GET",
+  "headers": {
+    "authorization": "Bearer {{parameters.apiKey}}"
+  },
+  "response": {
+    "valid": "{{statusCode == 404}}",
+    "error": {
+      "message": "{{body.detail}}"
+    }
+  },
+  "log": {
+    "sanitize": [
+      "request.headers.authorization"
+    ]
+  }
+}
