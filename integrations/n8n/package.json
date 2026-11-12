@@ -1,0 +1,39 @@
+{
+  "name": "n8n-nodes-crawlume",
+  "version": "0.1.0",
+  "description": "n8n nodes for the Crawlume Project Control API: read pages, manage read Jobs and trigger on Job webhooks",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/majiayu000/crawlume.git",
+    "directory": "integrations/n8n"
+  },
+  "keywords": ["n8n-community-node-package", "crawlume", "crawler", "web-scraping", "markdown"],
+  "files": ["dist"],
+  "scripts": {
+    "build": "rm -rf dist && tsc && mkdir -p dist/icons && cp icons/crawlume.svg dist/icons/",
+    "check": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node --experimental-strip-types --test test/webhook-signature.mjs"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "strict": true,
+    "credentials": ["dist/credentials/CrawlumeApi.credentials.js"],
+    "nodes": [
+      "dist/nodes/Crawlume/Crawlume.node.js",
+      "dist/nodes/Crawlume/CrawlumeTrigger.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@n8n/eslint-plugin-community-nodes": "0.40.0",
+    "@types/node": "25.5.0",
+    "eslint": "9.29.0",
+    "n8n-workflow": "2.16.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

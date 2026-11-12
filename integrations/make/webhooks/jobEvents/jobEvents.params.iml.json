@@ -1,0 +1,26 @@
+[
+  {
+    "name": "eventTypes",
+    "label": "Events",
+    "type": "select",
+    "multiple": true,
+    "required": true,
+    "default": [
+      "job.completed"
+    ],
+    "options": [
+      {
+        "label": "Job completed",
+        "value": "job.completed"
+      },
+      {
+        "label": "Job failed",
+        "value": "job.failed"
+      },
+      {
+        "label": "Job cancelled",
+        "value": "job.cancelled"
+      }
+    ]
+  }
+]

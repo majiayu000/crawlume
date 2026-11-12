@@ -1,0 +1,13 @@
+{
+  "baseUrl": "{{connection.baseUrl}}/projects/{{connection.projectId}}",
+  "response": {
+    "error": {
+      "message": "[{{statusCode}}] {{body.code}}: {{body.detail}}"
+    }
+  },
+  "log": {
+    "sanitize": [
+      "request.headers.authorization"
+    ]
+  }
+}

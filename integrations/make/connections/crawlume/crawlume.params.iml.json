@@ -1,0 +1,22 @@
+[
+  {
+    "name": "baseUrl",
+    "label": "Control Plane URL",
+    "type": "url",
+    "required": true,
+    "help": "Base URL of the Project Control API including /v1, e.g. `https://control.example/v1`."
+  },
+  {
+    "name": "projectId",
+    "label": "Project ID",
+    "type": "text",
+    "required": true
+  },
+  {
+    "name": "apiKey",
+    "label": "API Key",
+    "type": "password",
+    "required": true,
+    "help": "Project API key with tasks:write and results:read; Watch Job Events also needs project:admin."
+  }
+]

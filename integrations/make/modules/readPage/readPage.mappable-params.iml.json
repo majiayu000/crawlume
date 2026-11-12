@@ -1,0 +1,37 @@
+[
+  {
+    "name": "url",
+    "label": "URL",
+    "type": "url",
+    "required": true,
+    "help": "Public http(s) page to read."
+  },
+  {
+    "name": "cacheMode",
+    "label": "Cache Mode",
+    "type": "select",
+    "required": true,
+    "default": "prefer-cache",
+    "options": [
+      {
+        "label": "Prefer cache",
+        "value": "prefer-cache"
+      },
+      {
+        "label": "Live",
+        "value": "live"
+      },
+      {
+        "label": "Cache only",
+        "value": "cache-only"
+      }
+    ]
+  },
+  {
+    "name": "browserAllowed",
+    "label": "Allow Browser",
+    "type": "boolean",
+    "default": false,
+    "required": true
+  }
+]

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "id",
+    "label": "Job ID",
+    "type": "text"
+  },
+  {
+    "name": "type",
+    "label": "Type",
+    "type": "text"
+  },
+  {
+    "name": "status",
+    "label": "Status",
+    "type": "text"
+  },
+  {
+    "name": "input",
+    "label": "Input",
+    "type": "collection",
+    "spec": [
+      {
+        "name": "url",
+        "label": "URL",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "name": "result_completeness",
+    "label": "Result Completeness",
+    "type": "text"
+  },
+  {
+    "name": "error_code",
+    "label": "Error Code",
+    "type": "text"
+  },
+  {
+    "name": "deadline_at",
+    "label": "Deadline",
+    "type": "date"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "url": "/jobs/{{parameters.jobId}}/cancel",
+  "method": "POST",
+  "headers": {
+    "authorization": "Bearer {{connection.apiKey}}"
+  },
+  "body": {},
+  "response": {
+    "output": "{{body.job}}"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "url": "{{connection.baseUrl}}/projects/{{connection.projectId}}/webhook-endpoints",
+  "method": "POST",
+  "headers": {
+    "authorization": "Bearer {{connection.apiKey}}"
+  },
+  "body": {
+    "url": "{{webhook.url}}",
+    "event_types": "{{parameters.eventTypes}}"
+  },
+  "response": {
+    "data": {
+      "externalHookId": "{{body.endpoint.id}}"
+    }
+  },
+  "log": {
+    "sanitize": [
+      "request.headers.authorization",
+      "response.body.secret"
+    ]
+  }
+}

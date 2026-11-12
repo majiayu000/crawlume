@@ -1,0 +1,37 @@
+[
+  {
+    "name": "job_id",
+    "label": "Job ID",
+    "type": "text"
+  },
+  {
+    "name": "status",
+    "label": "Status",
+    "type": "text"
+  },
+  {
+    "name": "url",
+    "label": "URL",
+    "type": "url"
+  },
+  {
+    "name": "title",
+    "label": "Title",
+    "type": "text"
+  },
+  {
+    "name": "markdown",
+    "label": "Markdown",
+    "type": "text"
+  },
+  {
+    "name": "completeness",
+    "label": "Completeness",
+    "type": "text"
+  },
+  {
+    "name": "artifact_id",
+    "label": "Artifact ID",
+    "type": "text"
+  }
+]

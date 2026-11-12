@@ -1,0 +1,15 @@
+{
+  "name": "crawlume-make",
+  "version": "0.1.0",
+  "description": "Make custom app for the Crawlume Project Control API",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "validate": "node validate.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
+  }
+}

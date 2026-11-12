@@ -1,0 +1,36 @@
+{
+  "url": "/jobs",
+  "method": "POST",
+  "headers": {
+    "authorization": "Bearer {{connection.apiKey}}",
+    "idempotency-key": "{{uuid}}"
+  },
+  "body": {
+    "type": "read",
+    "input": {
+      "url": "{{parameters.url}}",
+      "cacheMode": "{{parameters.cacheMode}}",
+      "browserAllowed": "{{parameters.browserAllowed}}"
+    },
+    "data_class": "public",
+    "placement": {
+      "class": "public",
+      "pinned_worker_id": null
+    },
+    "required_capabilities": {
+      "http": true
+    },
+    "budget": {
+      "deadline_ms": 120000,
+      "max_provider_attempts": 3,
+      "max_document_bytes": 5000000,
+      "max_browser_ms": "{{if(parameters.browserAllowed; 120000; 0)}}",
+      "max_browser_contexts": "{{if(parameters.browserAllowed; 1; 0)}}"
+    },
+    "policy_version": "crawlume-make",
+    "upload_private_artifact": false
+  },
+  "response": {
+    "output": "{{body.job}}"
+  }
+}

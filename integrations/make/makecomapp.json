@@ -1,0 +1,127 @@
+{
+  "fileVersion": 1,
+  "generalCodeFiles": {
+    "base": "general/base.iml.json",
+    "common": null,
+    "groups": null,
+    "readme": null
+  },
+  "components": {
+    "connection": {
+      "crawlume": {
+        "label": "Crawlume",
+        "connectionType": "basic",
+        "codeFiles": {
+          "communication": "connections/crawlume/crawlume.communication.iml.json",
+          "params": "connections/crawlume/crawlume.params.iml.json"
+        }
+      }
+    },
+    "webhook": {
+      "jobEvents": {
+        "label": "Job events",
+        "webhookType": "web",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "webhooks/jobEvents/jobEvents.communication.iml.json",
+          "params": "webhooks/jobEvents/jobEvents.params.iml.json",
+          "attach": "webhooks/jobEvents/jobEvents.attach.iml.json",
+          "detach": "webhooks/jobEvents/jobEvents.detach.iml.json"
+        }
+      }
+    },
+    "module": {
+      "readPage": {
+        "label": "Read a page",
+        "description": "Reads a URL and waits for its Markdown.",
+        "moduleType": "action",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "modules/readPage/readPage.communication.iml.json",
+          "mappableParams": "modules/readPage/readPage.mappable-params.iml.json",
+          "interface": "modules/readPage/readPage.interface.iml.json"
+        },
+        "actionCrud": "read"
+      },
+      "startReadJob": {
+        "label": "Start a read Job",
+        "description": "Queues a read Job without waiting.",
+        "moduleType": "action",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "modules/startReadJob/startReadJob.communication.iml.json",
+          "mappableParams": "modules/startReadJob/startReadJob.mappable-params.iml.json",
+          "interface": "modules/startReadJob/startReadJob.interface.iml.json"
+        },
+        "actionCrud": "create"
+      },
+      "getJob": {
+        "label": "Get a Job",
+        "description": "Returns a Job's status.",
+        "moduleType": "action",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "modules/getJob/getJob.communication.iml.json",
+          "mappableParams": "modules/getJob/getJob.mappable-params.iml.json",
+          "interface": "modules/getJob/getJob.interface.iml.json"
+        },
+        "actionCrud": "read"
+      },
+      "getJobResult": {
+        "label": "Get a Job result",
+        "description": "Waits for a Job and returns its Markdown.",
+        "moduleType": "action",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "modules/getJobResult/getJobResult.communication.iml.json",
+          "mappableParams": "modules/getJobResult/getJobResult.mappable-params.iml.json",
+          "interface": "modules/getJobResult/getJobResult.interface.iml.json"
+        },
+        "actionCrud": "read"
+      },
+      "cancelJob": {
+        "label": "Cancel a Job",
+        "description": "Cancels a Job that has not finished.",
+        "moduleType": "action",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "modules/cancelJob/cancelJob.communication.iml.json",
+          "mappableParams": "modules/cancelJob/cancelJob.mappable-params.iml.json",
+          "interface": "modules/cancelJob/cancelJob.interface.iml.json"
+        },
+        "actionCrud": "update"
+      },
+      "watchJobEvents": {
+        "label": "Watch Job events",
+        "description": "Triggers when a Job completes, fails or is cancelled.",
+        "moduleType": "instant_trigger",
+        "connection": "crawlume",
+        "altConnection": null,
+        "codeFiles": {
+          "communication": "modules/watchJobEvents/watchJobEvents.communication.iml.json",
+          "interface": "modules/watchJobEvents/watchJobEvents.interface.iml.json",
+          "samples": "modules/watchJobEvents/watchJobEvents.samples.iml.json"
+        },
+        "webhook": "jobEvents"
+      }
+    },
+    "rpc": {},
+    "function": {},
+    "endpoint": {}
+  },
+  "origins": [
+    {
+      "label": "Make EU1 (set appId and apikeyFile before deploying)",
+      "baseUrl": "https://eu1.make.com/api",
+      "appId": "crawlume",
+      "appVersion": 1,
+      "apikeyFile": ".secrets/make-apikey"
+    }
+  ]
+}

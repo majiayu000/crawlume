@@ -1,0 +1,12 @@
+{
+  "url": "{{connection.baseUrl}}/projects/{{connection.projectId}}/webhook-endpoints/{{webhook.externalHookId}}",
+  "method": "DELETE",
+  "headers": {
+    "authorization": "Bearer {{connection.apiKey}}"
+  },
+  "log": {
+    "sanitize": [
+      "request.headers.authorization"
+    ]
+  }
+}
