@@ -280,6 +280,8 @@ paths:
           $ref: '#/components/responses/PayloadTooLarge'
         '415':
           $ref: '#/components/responses/UnsupportedMediaType'
+        '402':
+          $ref: '#/components/responses/CreditsExhausted'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '429':
@@ -1563,6 +1565,165 @@ paths:
         '422': { $ref: '#/components/responses/StorageValidationFailed' }
         '429': { $ref: '#/components/responses/QuotaExceeded' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/usage:
+    get:
+      operationId: getProjectUsage
+      summary: Summarize metered usage for one Project and its Organization credit balance
+      description: >-
+        Usage is metered when a Job completes: page_read and browser_read per page a read Job
+        fetched over HTTP or a browser, crawl_page per page of a crawl Job, and search_query per
+        search Job. Credits are priced from the control plane's configured price table at
+        completion time; without a price table usage is still metered at zero credits.
+        Requires the results:read scope.
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Uuid' }
+        - name: month
+          in: query
+          required: false
+          description: UTC calendar month to summarize. Defaults to the current month.
+          schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+      responses:
+        '200':
+          description: Per-meter usage totals and the current Organization credit balance
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, usage, credits]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  usage: { $ref: '#/components/schemas/ProjectUsage' }
+                  credits:
+                    type: object
+                    additionalProperties: false
+                    required: [organization_id, balance_credits, billing_enabled]
+                    properties:
+                      organization_id: { $ref: '#/components/schemas/Uuid' }
+                      balance_credits: { type: integer }
+                      billing_enabled: { type: boolean }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/BillingDisabled' }
+  /organizations/{organization_id}/billing:
+    get:
+      operationId: getOrganizationBilling
+      summary: Read the Organization credit balance, price table and checkout availability
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+      responses:
+        '200':
+          description: Organization billing state visible to any member
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, billing]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  billing: { $ref: '#/components/schemas/OrganizationBilling' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '404': { $ref: '#/components/responses/OrganizationNotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /organizations/{organization_id}/billing/checkout-sessions:
+    post:
+      operationId: createCreditCheckoutSession
+      summary: Start a Stripe Checkout Session that buys one configured credit pack
+      description: >-
+        Owners and admins only. Credits are added when Stripe reports the session paid through
+        the webhook, not when this call returns. The control plane accepts Stripe test-mode keys only.
+      security:
+        - HumanAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationId'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [pack_id]
+              properties:
+                pack_id: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        '201':
+          description: The Stripe-hosted Checkout URL to send the buyer to
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, checkout_session]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  checkout_session: { $ref: '#/components/schemas/CreditCheckoutSession' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/HumanUnauthorized' }
+        '403': { $ref: '#/components/responses/HumanOrganizationForbidden' }
+        '404': { $ref: '#/components/responses/OrganizationNotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/BillingValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502': { $ref: '#/components/responses/PaymentProviderError' }
+        '503': { $ref: '#/components/responses/BillingDisabled' }
+  /billing/stripe/webhook:
+    post:
+      operationId: receiveStripeWebhook
+      summary: Receive Stripe webhook events that credit paid Checkout Sessions
+      description: >-
+        Authenticated by the Stripe-Signature header (v1 HMAC-SHA256, 300 second tolerance).
+        Each event id is applied at most once; redeliveries return duplicate true. Only
+        checkout.session.completed and checkout.session.async_payment_succeeded with
+        payment_status paid credit the Organization that created the session.
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JsonObject' }
+      responses:
+        '200':
+          description: The event was verified and applied, ignored, or recognized as a duplicate
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [received, duplicate, credited_credits]
+                properties:
+                  received: { type: boolean, const: true }
+                  duplicate: { type: boolean }
+                  credited_credits: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BillingValidationFailed' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/BillingDisabled' }
 components:
   securitySchemes:
     ProjectApiKey:
@@ -2226,6 +2387,82 @@ components:
       properties:
         request_id: { $ref: '#/components/schemas/Uuid' }
         schedule: { $ref: '#/components/schemas/JobSchedule' }
+    BillingMeter:
+      type: string
+      enum: [page_read, browser_read, crawl_page, search_query]
+    ProjectUsage:
+      type: object
+      additionalProperties: false
+      required: [project_id, period_start, period_end, meters, total_credits]
+      properties:
+        project_id: { $ref: '#/components/schemas/Uuid' }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        meters:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [meter, quantity, credits]
+            properties:
+              meter: { $ref: '#/components/schemas/BillingMeter' }
+              quantity: { type: integer, minimum: 0 }
+              credits: { type: integer, minimum: 0 }
+        total_credits: { type: integer, minimum: 0 }
+    BillingPriceTable:
+      type: object
+      additionalProperties: false
+      required: [currency, meters, credit_packs]
+      properties:
+        currency: { type: string, pattern: '^[a-z]{3}$' }
+        meters:
+          type: object
+          additionalProperties: false
+          required: [page_read, browser_read, crawl_page, search_query]
+          properties:
+            page_read: { type: integer, minimum: 0 }
+            browser_read: { type: integer, minimum: 0 }
+            crawl_page: { type: integer, minimum: 0 }
+            search_query: { type: integer, minimum: 0 }
+        credit_packs:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, name, credits, amount]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              credits: { type: integer, minimum: 1 }
+              amount:
+                type: integer
+                minimum: 1
+                description: Price in the currency's minor unit, for example cents.
+    OrganizationBilling:
+      type: object
+      additionalProperties: false
+      required: [organization_id, balance_credits, checkout_enabled, prices]
+      properties:
+        organization_id: { $ref: '#/components/schemas/Uuid' }
+        balance_credits:
+          type: integer
+          description: Prepaid credits. Usage of Jobs already running may take it below zero.
+        checkout_enabled: { type: boolean }
+        prices:
+          oneOf:
+            - $ref: '#/components/schemas/BillingPriceTable'
+            - type: 'null'
+    CreditCheckoutSession:
+      type: object
+      additionalProperties: false
+      required: [id, url, pack_id, credits, amount, currency]
+      properties:
+        id: { type: string, pattern: '^cs_' }
+        url: { type: string, format: uri }
+        pack_id: { type: string }
+        credits: { type: integer, minimum: 1 }
+        amount: { type: integer, minimum: 1 }
+        currency: { type: string }
     Problem:
       type: object
       additionalProperties: false
@@ -2455,6 +2692,28 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     ScheduleConflict:
       description: A schedule with this name already exists in the Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    CreditsExhausted:
+      description: >-
+        The Organization's prepaid credit balance cannot cover the minimum charge of this Job
+        (code CREDITS_EXHAUSTED). Buy credits, then retry with the same Idempotency-Key.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    BillingDisabled:
+      description: Usage metering, a price table, or Stripe checkout is not configured on this control plane
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    BillingValidationFailed:
+      description: The credit pack is unknown, or a paid Checkout Session does not match its recorded price
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PaymentProviderError:
+      description: Stripe rejected or failed the Checkout Session request
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

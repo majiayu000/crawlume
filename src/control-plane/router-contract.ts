@@ -58,6 +58,13 @@ export const projectJobRouteDefinitions = [
     operationId: "listProjectAuditEvents",
     pattern: new RegExp(`^/v1/projects/${uuidPath}/audit-events$`, "u"),
   },
+  {
+    kind: "usage",
+    method: "GET",
+    path: "/projects/{project_id}/usage",
+    operationId: "getProjectUsage",
+    pattern: new RegExp(`^/v1/projects/${uuidPath}/usage$`, "u"),
+  },
 ] as const;
 
 export const projectJobRouterOperations = projectJobRouteDefinitions.map(
@@ -197,6 +204,28 @@ export const scheduleRouteDefinitions = [
 ] as const;
 
 export const scheduleRouterOperations = scheduleRouteDefinitions.map(
+  ({ method, operationId, path }) => ({ method, operationId, path }),
+);
+
+export const billingRouteDefinitions = [
+  {
+    kind: "organization-billing", method: "GET", path: "/organizations/{organization_id}/billing",
+    operationId: "getOrganizationBilling",
+    pattern: new RegExp(`^/v1/organizations/${uuidPath}/billing$`, "u"),
+  },
+  {
+    kind: "checkout", method: "POST",
+    path: "/organizations/{organization_id}/billing/checkout-sessions",
+    operationId: "createCreditCheckoutSession",
+    pattern: new RegExp(`^/v1/organizations/${uuidPath}/billing/checkout-sessions$`, "u"),
+  },
+  {
+    kind: "stripe-webhook", method: "POST", path: "/billing/stripe/webhook",
+    operationId: "receiveStripeWebhook", pattern: /^\/v1\/billing\/stripe\/webhook$/u,
+  },
+] as const;
+
+export const billingRouterOperations = billingRouteDefinitions.map(
   ({ method, operationId, path }) => ({ method, operationId, path }),
 );
 
@@ -377,5 +406,6 @@ export const controlPlaneRouterOperations = Object.freeze([
   ...webhookRouterOperations,
   ...storageRouterOperations,
   ...scheduleRouterOperations,
+  ...billingRouterOperations,
   ...workerRouterOperations,
 ]);

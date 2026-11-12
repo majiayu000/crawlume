@@ -21,7 +21,7 @@ import { rawBodyRoutePattern } from "./router-contract.js";
 const workerBodyLimitBytes = 64 * 1024;
 const workerHeaderLimitBytes = 16 * 1024;
 const workerReceiveTimeoutMs = 10_000;
-const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries|datasets|datasets\/[^/]+\/(?:items|export)|key-value-stores|key-value-stores\/[^/]+\/records))$/u;
+const controlPlaneQueryPath = /^(?:\/v1\/auth\/oidc\/callback|\/v1\/organizations|\/v1\/organizations\/[^/]+\/projects|\/v1\/projects\/[^/]+\/(?:api-keys|jobs\/[^/]+\/publications|audit-events|webhook-deliveries|datasets|datasets\/[^/]+\/(?:items|export)|key-value-stores|key-value-stores\/[^/]+\/records|usage))$/u;
 
 type WorkerTlsConfig = Readonly<{
   key: NonNullable<HttpsServerOptions["key"]>;
@@ -139,11 +139,11 @@ async function readWorkerBody(
 async function readWorkerJson(
   request: IncomingMessage,
   headers: IncomingHttpHeaders,
-): Promise<unknown> {
+): Promise<Readonly<{ json: unknown; raw: Buffer }>> {
   const body = await readWorkerBody(request, headers, workerBodyLimitBytes);
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(body);
-    return JSON.parse(text) as unknown;
+    return { json: JSON.parse(text) as unknown, raw: body };
   } catch (error) {
     throw new WorkerTransportError(400, "JSON_INVALID", "The request body is not valid UTF-8 JSON.", {
       cause: error,
@@ -232,15 +232,18 @@ function workerRequestListener(
           request.resume();
           throw new WorkerTransportError(413, "REQUEST_BODY_TOO_LARGE", "The request body is too large.");
         }
-        const body = raw ? await readWorkerBody(request, headers, maxRawBodyBytes)
-          : isJsonContent(headers) ? await readWorkerJson(request, headers) : null;
-        if (!raw && !isJsonContent(headers)) request.resume();
+        let body: unknown = null;
+        let rawBody: Buffer | undefined;
+        if (raw) body = await readWorkerBody(request, headers, maxRawBodyBytes);
+        else if (isJsonContent(headers)) ({ json: body, raw: rawBody } = await readWorkerJson(request, headers));
+        else request.resume();
         const result = await api.handle({
           method: request.method ?? "",
           path: target.pathname,
           query: target.search,
           headers,
           body,
+          ...(rawBody === undefined ? {} : { rawBody }),
           signal: controller.signal,
         });
         if (!controller.signal.aborted) writeWorkerResponse(response, result, directTls);

@@ -336,6 +336,7 @@ describeWithPostgres("control-plane migrations on PostgreSQL", () => {
       { version: 11, name: "0011_artifact_uploads.sql" },
       { version: 12, name: "0012_artifact_retention.sql" },
       { version: 13, name: "0013_project_storage_and_schedules.sql" },
+      { version: 14, name: "0014_billing.sql" },
     ]);
   });
 

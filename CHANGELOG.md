@@ -10,6 +10,11 @@ All notable changes to this project are documented here. The format follows
 - Project-scoped datasets (append, page, export as JSON/JSON Lines/CSV), key-value stores (raw bytes
   with content type, `DIAOYAN_KV_MAX_RECORD_BYTES`) and cron Job schedules that fire once per slot
   across control-plane instances; Jobs can name an output dataset. Exposed in the API and SDK.
+- Control-plane usage metering and prepaid credits: completed Jobs record `page_read`, `browser_read`,
+  `crawl_page` and `search_query` usage, `GET /projects/{project_id}/usage` summarizes it, a price table
+  from `DIAOYAN_BILLING_PRICES_PATH` debits an Organization credit balance, and Job creation returns
+  402 `CREDITS_EXHAUSTED` when the balance cannot cover it. Credits are bought through Stripe Checkout
+  (test-mode keys only) and credited once by a signature-verified webhook.
 - `crawlume report <url>` reads a page again without the cache and prints a shareable report with a
   prefilled GitHub issue link; issue templates for read reports and usage feedback.
 - Opt-in anonymous read statistics sent to PostHog (`CRAWLUME_TELEMETRY=1`), without URLs or content.
