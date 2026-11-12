@@ -18,3 +18,6 @@ cache.sqlite*
 # Local Compose deployment secrets
 deploy/compose/.secrets/
 deploy/compose/.env
+
+# Console build output
+console/public/js/

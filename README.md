@@ -160,6 +160,42 @@ This binds TLS inside the container and publishes it only on the host loopback i
 a host reverse proxy at `https://127.0.0.1:8787`, configure certificate verification for the API
 hostname, and forward the public hostname's HTTPS traffic. Migrations run at startup.
 
+## Web console
+
+`console/` is a small browser console for the control plane: sign in with OIDC, list and create
+Projects, create, rotate and revoke API keys (the secret is shown once), create read Jobs and follow
+them to their results, download cloud Artifacts, manage webhook endpoints and deliveries, and see
+which quotas apply. It only calls the control-plane HTTP API.
+
+`console/server.mjs` serves the console and forwards `/v1/*` to the control plane, so the OIDC state
+and refresh cookies stay on the console's origin. The control plane requires an HTTPS redirect URI,
+so serve the console over TLS and register `https://<console host>/callback` as the redirect URI:
+
+```dotenv
+# control plane
+DIAOYAN_OIDC_REDIRECT_URI=https://localhost:5173/callback
+```
+
+```bash
+pnpm build
+pnpm start:control-plane          # with the DIAOYAN_* settings above; plain HTTP is allowed on 127.0.0.1
+CRAWLUME_CONSOLE_CONTROL_URL=http://127.0.0.1:8787 \
+CRAWLUME_CONSOLE_TLS_CERT_PATH=./localhost.crt CRAWLUME_CONSOLE_TLS_KEY_PATH=./localhost.key \
+  pnpm console:start               # https://127.0.0.1:5173
+```
+
+Open `https://localhost:5173` and sign in. The certificate must be trusted by your browser (for
+example one issued by `mkcert`). For local work, `deploy/compose/setup.sh` creates a throwaway CA
+with a `localhost` certificate (`control.crt`) and the Compose file shows a test OIDC provider
+(`mock-oauth2-server`); start the control plane with `NODE_EXTRA_CA_CERTS` pointing at that CA so it
+can reach the provider. `CRAWLUME_CONSOLE_HOST` and `CRAWLUME_CONSOLE_PORT` change the listener.
+
+The human session's Access Token stays in memory and is renewed through the HttpOnly refresh
+cookie. Job and webhook routes take a Project API key, not a human session: create one on the API
+keys tab and choose **Use in this tab**, or paste an existing secret. It is kept in that tab's
+`sessionStorage` until you sign out or choose **Forget key**. The API has no Job listing route yet,
+so the Jobs tab lists the Jobs created or opened from this browser.
+
 ## MCP configuration
 
 To run from a source checkout instead of the published package, build the project, then add the
