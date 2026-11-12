@@ -201,6 +201,19 @@ openssl rand -out /etc/diaoyan/webhook.key 32 && chmod 600 /etc/diaoyan/webhook.
   `webhook_delivery_attempts`。
 - 请求体只含事件 ID、类型和 Job 状态，不含正文。签名格式见 [`sdk.md`](./sdk.md)。
 
+### Dataset、Key-Value Store 与定时任务
+
+均按 Project 隔离，存放在控制面 PostgreSQL 中（迁移 `0013_project_storage_and_schedules.sql`）。
+
+- Dataset：只追加的 JSON 对象集合，首次写入时按名称创建，条目按追加顺序编号。创建 Job 时传 `dataset` 名称，
+  Job 完成时在同一事务内追加一条结果（URL、HTTP 状态、最新 Artifact 引用，不含正文）。导出支持
+  `json`、`jsonl`、`csv`，单次最多 10000 条，用 `offset` 分页。
+- Key-Value Store：按名称存取任意字节和 Content-Type，单条上限 `DIAOYAN_KV_MAX_RECORD_BYTES`（默认 1048576，
+  最大 67108864）。这个上限同时是 HTTP PUT 请求体上限。
+- 定时任务：5 段 cron 表达式（UTC），每 5 秒扫描一次到期计划。每次触发锁定计划行（`FOR UPDATE SKIP LOCKED`），
+  用 `schedule:<id>:<时间槽>` 作为 Idempotency-Key 创建 Job 并推进 `next_fire_at`，多实例并发运行也不会重复触发；
+  停机或停用期间错过的时间槽直接跳过。Job 创建失败（如配额耗尽）记入 `last_error_code`，计划保持启用。
+
 ## 5. 可观测性
 
 - 日志：MCP 与 Control Plane 进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。

@@ -13,6 +13,7 @@ import {
   recordAuditEvent,
 } from "./organization-authorization.js";
 import { recoverExpiredJobLeases } from "./job-lease-recovery.js";
+import { appendJobResultItem, ensureDataset, requireStorageName } from "./project-storage.js";
 import {
   enforceJobCreationQuotas,
   hasJobCreationQuotas,
@@ -60,6 +61,11 @@ export type ProjectScope = Readonly<{
   role: OrganizationRole;
   [projectScopeBrand]: true;
 }>;
+
+/** Who a Job is created for: a human scope, an API Key, or a schedule acting for its creator. */
+export type JobCreatorScope =
+  | Readonly<{ userId: string; projectId: string; organizationId: string }>
+  | AuthenticatedProjectApiKey;
 
 export type ProjectRecord = Readonly<{
   id: string;
@@ -190,6 +196,8 @@ type ControlPlaneJobCreationEnvelope = Readonly<{
   uploadPrivateArtifact: boolean;
   priority?: number | undefined;
   notBefore?: Date | undefined;
+  /** Name of a Project dataset (created on demand) that receives one item when the Job completes. */
+  dataset?: string | undefined;
 }>;
 export type CreateControlPlaneJobInput = ControlPlaneJobCreationEnvelope &
   ControlPlaneJobRequest & Readonly<{
@@ -215,6 +223,7 @@ type ControlPlaneJobProjection = Readonly<{
   createdAt: Date;
   updatedAt: Date;
   completedAt: Date | null;
+  datasetId: string | null;
 }>;
 export type ControlPlaneJob = ControlPlaneJobProjection & ControlPlaneJobRequest;
 export type JobLease = Readonly<{
@@ -255,6 +264,7 @@ type ControlPlaneJobRow = {
   created_at: Date;
   updated_at: Date;
   completed_at: Date | null;
+  dataset_id: string | null;
 };
 type JobLeaseRow = {
   id: string;
@@ -343,6 +353,7 @@ function controlPlaneJob(row: ControlPlaneJobRow): ControlPlaneJob {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
+    datasetId: row.dataset_id,
   }) as ControlPlaneJob;
 }
 
@@ -380,6 +391,29 @@ export class ControlPlaneJobService {
     input: CreateControlPlaneJobInput,
     auditContext: AuditContext,
   ): Promise<ControlPlaneJob> {
+    const prepared = this.prepareJob(scope, idempotencyKey, input);
+    return this.database.transaction((transaction) =>
+      this.insertJob(transaction, scope, prepared, input, auditContext)
+    );
+  }
+
+  /** Creates a Job inside a caller-owned transaction, e.g. a schedule firing. */
+  async createJobInTransaction(
+    transaction: ControlPlaneQuery,
+    scope: JobCreatorScope,
+    idempotencyKey: string,
+    input: CreateControlPlaneJobInput,
+    auditContext: AuditContext,
+  ): Promise<ControlPlaneJob> {
+    const prepared = this.prepareJob(scope, idempotencyKey, input);
+    return this.insertJob(transaction, scope, prepared, input, auditContext);
+  }
+
+  private prepareJob(
+    scope: JobCreatorScope,
+    idempotencyKey: string,
+    input: CreateControlPlaneJobInput,
+  ) {
     const apiKeyId = "apiKeyId" in scope ? scope.apiKeyId : null;
     const createdByUserId = "apiKeyId" in scope ? scope.createdByUserId : scope.userId;
     const normalizedKey = idempotencyKey.trim();
@@ -430,113 +464,132 @@ export class ControlPlaneJobService {
     if (input.placement.pinnedWorkerId !== null) {
       requireIdentifier(input.placement.pinnedWorkerId, "input.placement.pinnedWorkerId");
     }
+    if (input.dataset !== undefined) requireStorageName(input.dataset, "input.dataset");
+    return {
+      apiKeyId, createdByUserId, normalizedKey, parsedCreation, jobInput, capabilities,
+      policyVersion, priority,
+    };
+  }
 
-    return this.database.transaction(async (transaction) => {
-      let now = this.now();
-      if (hasJobCreationQuotas(this.quotas)) {
-        await transaction.query(
-          "SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
-          [scope.projectId],
-        );
-        const clock = await transaction.query<{ now: Date }>("SELECT clock_timestamp() AS now", []);
-        const databaseNow = clock.rows[0]?.now;
-        if (!(databaseNow instanceof Date)) throw new Error("Project quota clock query returned no timestamp.");
-        now = databaseNow;
-      }
-      if (input.notBefore !== undefined &&
-          (!(input.notBefore instanceof Date) || !Number.isFinite(input.notBefore.getTime()))) {
-        throw new TypeError("input.notBefore must be a valid date at or after creation.");
-      }
+  private async insertJob(
+    transaction: ControlPlaneQuery,
+    scope: JobCreatorScope,
+    prepared: ReturnType<ControlPlaneJobService["prepareJob"]>,
+    input: CreateControlPlaneJobInput,
+    auditContext: AuditContext,
+  ): Promise<ControlPlaneJob> {
+    const {
+      apiKeyId, createdByUserId, normalizedKey, parsedCreation, jobInput, capabilities,
+      policyVersion, priority,
+    } = prepared;
+    let now = this.now();
+    if (hasJobCreationQuotas(this.quotas)) {
+      await transaction.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('diaoyan-project-quota:' || $1::text, 0))",
+        [scope.projectId],
+      );
+      const clock = await transaction.query<{ now: Date }>("SELECT clock_timestamp() AS now", []);
+      const databaseNow = clock.rows[0]?.now;
+      if (!(databaseNow instanceof Date)) throw new Error("Project quota clock query returned no timestamp.");
+      now = databaseNow;
+    }
+    if (input.notBefore !== undefined &&
+        (!(input.notBefore instanceof Date) || !Number.isFinite(input.notBefore.getTime()))) {
+      throw new TypeError("input.notBefore must be a valid date at or after creation.");
+    }
 
-      const request = {
-        type: parsedCreation.type,
-        input: jobInput.value,
-        dataClass: input.dataClass,
-        placement: input.placement,
-        requiredCapabilities: capabilities.value,
-        budget: input.budget,
-        policyVersion,
-        uploadPrivateArtifact: input.uploadPrivateArtifact,
-        priority,
-        notBefore: input.notBefore?.toISOString() ?? null,
-      };
-      const requestHash = jobHash(request);
-      if (hasJobCreationQuotas(this.quotas)) {
-        const replay = await transaction.query<ControlPlaneJobRow & { request_hash: Buffer }>(
-          "SELECT * FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
-          [scope.projectId, normalizedKey],
-        );
-        const existing = replay.rows[0];
-        if (existing !== undefined) {
-          if (!existing.request_hash.equals(requestHash)) throw new JobIdempotencyConflictError();
-          return controlPlaneJob(existing);
-        }
+    const request = {
+      type: parsedCreation.type,
+      input: jobInput.value,
+      dataClass: input.dataClass,
+      placement: input.placement,
+      requiredCapabilities: capabilities.value,
+      budget: input.budget,
+      policyVersion,
+      uploadPrivateArtifact: input.uploadPrivateArtifact,
+      priority,
+      notBefore: input.notBefore?.toISOString() ?? null,
+      ...(input.dataset === undefined ? {} : { dataset: input.dataset }),
+    };
+    const requestHash = jobHash(request);
+    if (hasJobCreationQuotas(this.quotas)) {
+      const replay = await transaction.query<ControlPlaneJobRow & { request_hash: Buffer }>(
+        "SELECT * FROM jobs WHERE project_id = $1 AND idempotency_key = $2",
+        [scope.projectId, normalizedKey],
+      );
+      const existing = replay.rows[0];
+      if (existing !== undefined) {
+        if (!existing.request_hash.equals(requestHash)) throw new JobIdempotencyConflictError();
+        return controlPlaneJob(existing);
       }
-      const notBefore = input.notBefore ?? now;
-      if (notBefore < now) {
-        throw new TypeError("input.notBefore must be a valid date at or after creation.");
-      }
-      const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
-      if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
-        throw new TypeError("The Job deadline must be after notBefore.");
-      }
-      const id = randomUUID();
-      const envelopeHash = jobHash({
-        id,
-        projectId: scope.projectId,
-        requestHash: requestHash.toString("base64url"),
-        createdAt: now.toISOString(),
-      });
-      if (hasJobCreationQuotas(this.quotas)) {
-        await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
-      }
-      const result = await transaction.query<ControlPlaneJobRow>(`
-      INSERT INTO jobs(
-        id, project_id, idempotency_key, request_hash, created_by_user_id,
-        type, input, data_class, placement_class, pinned_worker_id,
-        required_capabilities, budget_deadline_ms, budget_max_provider_attempts,
-        budget_max_document_bytes, budget_max_browser_ms, budget_max_browser_contexts,
-        policy_version, upload_private_artifact, priority, not_before, deadline_at,
-        envelope_hash, status, created_at, updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10,
-        $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
-        $22, 'queued', $23, $23
-      )
-      ON CONFLICT (project_id, idempotency_key) DO UPDATE
-        SET idempotency_key = EXCLUDED.idempotency_key
-        WHERE jobs.request_hash = EXCLUDED.request_hash
-      RETURNING *
-    `, [
-      id, scope.projectId, normalizedKey, requestHash, createdByUserId, parsedCreation.type,
-      jobInput.json, input.dataClass, input.placement.class, input.placement.pinnedWorkerId,
-      capabilities.json, input.budget.deadlineMs, input.budget.maxProviderAttempts,
-      input.budget.maxDocumentBytes, input.budget.maxBrowserMs,
-      input.budget.maxBrowserContexts, policyVersion, input.uploadPrivateArtifact,
-      priority, notBefore, deadlineAt, envelopeHash, now,
-    ]);
-      const row = result.rows[0];
-      if (row === undefined) throw new JobIdempotencyConflictError();
-      if (row.id === id && input.dataClass !== "public") {
-        await recordAuditEvent(transaction, {
-          organizationId: scope.organizationId, projectId: scope.projectId,
-          actorType: apiKeyId === null ? "user" : "api_key",
-          actorId: apiKeyId ?? createdByUserId, action: "private_job.created",
-          targetType: "job", targetId: row.id, outcome: "succeeded",
-          correlationId: auditContext.correlationId,
-        });
-      }
-      if (row.id === id && input.uploadPrivateArtifact) {
-        await recordAuditEvent(transaction, {
-          organizationId: scope.organizationId, projectId: scope.projectId,
-          actorType: apiKeyId === null ? "user" : "api_key",
-          actorId: apiKeyId ?? createdByUserId,
-          action: "private_artifact_upload.approved", targetType: "job",
-          targetId: row.id, outcome: "succeeded", correlationId: auditContext.correlationId,
-        });
-      }
-      return controlPlaneJob(row);
+    }
+    const notBefore = input.notBefore ?? now;
+    if (notBefore < now) {
+      throw new TypeError("input.notBefore must be a valid date at or after creation.");
+    }
+    const deadlineAt = new Date(now.getTime() + input.budget.deadlineMs);
+    if (!Number.isFinite(deadlineAt.getTime()) || deadlineAt <= notBefore) {
+      throw new TypeError("The Job deadline must be after notBefore.");
+    }
+    const id = randomUUID();
+    const envelopeHash = jobHash({
+      id,
+      projectId: scope.projectId,
+      requestHash: requestHash.toString("base64url"),
+      createdAt: now.toISOString(),
     });
+    if (hasJobCreationQuotas(this.quotas)) {
+      await enforceJobCreationQuotas(transaction, scope.projectId, input.budget, this.quotas, now);
+    }
+    const datasetId = input.dataset === undefined
+      ? null
+      : await ensureDataset(transaction, scope.projectId, input.dataset);
+    const result = await transaction.query<ControlPlaneJobRow>(`
+    INSERT INTO jobs(
+      id, project_id, idempotency_key, request_hash, created_by_user_id,
+      type, input, data_class, placement_class, pinned_worker_id,
+      required_capabilities, budget_deadline_ms, budget_max_provider_attempts,
+      budget_max_document_bytes, budget_max_browser_ms, budget_max_browser_contexts,
+      policy_version, upload_private_artifact, priority, not_before, deadline_at,
+      envelope_hash, status, created_at, updated_at, dataset_id
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10,
+      $11::jsonb, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+      $22, 'queued', $23, $23, $24
+    )
+    ON CONFLICT (project_id, idempotency_key) DO UPDATE
+      SET idempotency_key = EXCLUDED.idempotency_key
+      WHERE jobs.request_hash = EXCLUDED.request_hash
+    RETURNING *
+  `, [
+    id, scope.projectId, normalizedKey, requestHash, createdByUserId, parsedCreation.type,
+    jobInput.json, input.dataClass, input.placement.class, input.placement.pinnedWorkerId,
+    capabilities.json, input.budget.deadlineMs, input.budget.maxProviderAttempts,
+    input.budget.maxDocumentBytes, input.budget.maxBrowserMs,
+    input.budget.maxBrowserContexts, policyVersion, input.uploadPrivateArtifact,
+    priority, notBefore, deadlineAt, envelopeHash, now, datasetId,
+  ]);
+    const row = result.rows[0];
+    if (row === undefined) throw new JobIdempotencyConflictError();
+    if (row.id === id && input.dataClass !== "public") {
+      await recordAuditEvent(transaction, {
+        organizationId: scope.organizationId, projectId: scope.projectId,
+        actorType: apiKeyId === null ? "user" : "api_key",
+        actorId: apiKeyId ?? createdByUserId, action: "private_job.created",
+        targetType: "job", targetId: row.id, outcome: "succeeded",
+        correlationId: auditContext.correlationId,
+      });
+    }
+    if (row.id === id && input.uploadPrivateArtifact) {
+      await recordAuditEvent(transaction, {
+        organizationId: scope.organizationId, projectId: scope.projectId,
+        actorType: apiKeyId === null ? "user" : "api_key",
+        actorId: apiKeyId ?? createdByUserId,
+        action: "private_artifact_upload.approved", targetType: "job",
+        targetId: row.id, outcome: "succeeded", correlationId: auditContext.correlationId,
+      });
+    }
+    return controlPlaneJob(row);
   }
 
   async getJob(scope: Pick<ProjectScope, "projectId">, jobId: string): Promise<ControlPlaneJob> {
@@ -741,6 +794,9 @@ export class ControlPlaneJobService {
       ]);
       const job = finishedJob.rows[0];
       if (job === undefined) throw new LeaseFencedError();
+      if (job.status === "completed" && job.dataset_id != null) {
+        await appendJobResultItem(transaction, job.project_id, job.dataset_id, job.id, lease.id);
+      }
       return controlPlaneJob(job);
     });
   }

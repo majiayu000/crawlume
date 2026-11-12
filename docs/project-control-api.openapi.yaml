@@ -1099,6 +1099,470 @@ paths:
         '403': { $ref: '#/components/responses/HumanForbidden' }
         '404': { $ref: '#/components/responses/ApiKeyNotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/datasets:
+    get:
+      operationId: listDatasets
+      summary: List the Project's datasets by name (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/NameCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Datasets in name order
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, datasets, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  datasets:
+                    type: array
+                    items: { $ref: '#/components/schemas/Dataset' }
+                  pagination: { $ref: '#/components/schemas/CursorPagination' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/datasets/{dataset_name}:
+    get:
+      operationId: getDataset
+      summary: Read one dataset's metadata (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/DatasetName'
+      responses:
+        '200':
+          description: The dataset
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, dataset]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  dataset: { $ref: '#/components/schemas/Dataset' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/StorageNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/datasets/{dataset_name}/items:
+    post:
+      operationId: appendDatasetItems
+      summary: Append JSON objects to a dataset, creating it on first use (requires tasks:write)
+      description: >-
+        Items are append-only and numbered 1..item_count in append order. A Job created with a
+        dataset name also appends one result item to that dataset when it completes.
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/DatasetName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items: { $ref: '#/components/schemas/JsonObject' }
+      responses:
+        '201':
+          description: The dataset after the append
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, dataset, appended]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  dataset: { $ref: '#/components/schemas/Dataset' }
+                  appended: { type: integer, minimum: 1 }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StorageValidationFailed' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: listDatasetItems
+      summary: Page through dataset items in append order (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/DatasetName'
+        - $ref: '#/components/parameters/ItemOffset'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      responses:
+        '200':
+          description: Items after offset
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, items, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/JsonObject' }
+                  pagination:
+                    type: object
+                    additionalProperties: false
+                    required: [offset, limit, total, next_offset, has_more]
+                    properties:
+                      offset: { type: integer, minimum: 0 }
+                      limit: { type: integer, minimum: 1 }
+                      total: { type: integer, minimum: 0 }
+                      next_offset: { type: integer, minimum: 0 }
+                      has_more: { type: boolean }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/StorageNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/datasets/{dataset_name}/export:
+    get:
+      operationId: exportDatasetItems
+      summary: Export up to 10000 dataset items as JSON, JSON Lines or CSV (requires results:read)
+      description: >-
+        CSV has one column per top-level key in first-seen order; nested values are JSON-encoded.
+        Page larger datasets with offset; X-Total-Count carries the dataset's item count.
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/DatasetName'
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [json, jsonl, csv], default: json }
+        - $ref: '#/components/parameters/ItemOffset'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 10000, default: 10000 }
+      responses:
+        '200':
+          description: The exported items as an attachment
+          headers:
+            X-Total-Count:
+              schema: { type: integer, minimum: 0 }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/JsonObject' }
+            application/x-ndjson:
+              schema: { type: string }
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/StorageNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/key-value-stores:
+    get:
+      operationId: listKeyValueStores
+      summary: List the Project's key-value stores by name (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/NameCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Stores in name order
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, key_value_stores, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  key_value_stores:
+                    type: array
+                    items: { $ref: '#/components/schemas/KeyValueStore' }
+                  pagination: { $ref: '#/components/schemas/CursorPagination' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/key-value-stores/{store_name}/records:
+    get:
+      operationId: listKeyValueRecords
+      summary: List record keys and metadata in key order (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/NameCursor'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      responses:
+        '200':
+          description: Record metadata without values
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, records, pagination]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  records:
+                    type: array
+                    items: { $ref: '#/components/schemas/KeyValueRecord' }
+                  pagination: { $ref: '#/components/schemas/CursorPagination' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/StorageNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/key-value-stores/{store_name}/records/{record_key}:
+    get:
+      operationId: getKeyValueRecord
+      summary: Read a record's raw bytes with its stored Content-Type (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/RecordKey'
+      responses:
+        '200':
+          description: The record value
+          headers:
+            Last-Modified:
+              schema: { type: string }
+          content:
+            '*/*':
+              schema: { type: string, contentMediaType: application/octet-stream }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/StorageNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: putKeyValueRecord
+      summary: Store raw bytes under a key, creating the store on first use (requires tasks:write)
+      description: >-
+        The body is stored verbatim with the request Content-Type (application/octet-stream when
+        absent). Records are limited by DIAOYAN_KV_MAX_RECORD_BYTES (default 1048576).
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/RecordKey'
+      requestBody:
+        required: true
+        content:
+          '*/*':
+            schema: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        '200':
+          description: The stored record's metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, record]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  record: { $ref: '#/components/schemas/KeyValueRecord' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/RecordTooLarge' }
+        '422': { $ref: '#/components/responses/StorageValidationFailed' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: deleteKeyValueRecord
+      summary: Delete one record (requires tasks:write)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/RecordKey'
+      responses:
+        '204':
+          description: The record was deleted
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/StorageNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/schedules:
+    post:
+      operationId: createJobSchedule
+      summary: Create a cron schedule that creates a Job from a stored request (requires tasks:write)
+      description: >-
+        cron is a five-field expression (minute hour day-of-month month day-of-week) evaluated in
+        UTC. Each firing creates one Job with Idempotency-Key schedule:<id>:<slot>, so a slot fires
+        at most once across control-plane instances; slots missed while down or disabled are skipped.
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, cron, job]
+              properties:
+                name: { $ref: '#/components/schemas/StorageName' }
+                cron: { type: string, minLength: 1, maxLength: 128, examples: ['*/15 * * * *'] }
+                job: { $ref: '#/components/schemas/CreateJobRequest' }
+                enabled: { type: boolean, default: true }
+      responses:
+        '201':
+          description: The new schedule
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobScheduleResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/ScheduleConflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StorageValidationFailed' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: listJobSchedules
+      summary: List the Project's schedules by name (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: All schedules in the Project
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [request_id, schedules]
+                properties:
+                  request_id: { $ref: '#/components/schemas/Uuid' }
+                  schedules:
+                    type: array
+                    items: { $ref: '#/components/schemas/JobSchedule' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/schedules/{schedule_id}:
+    get:
+      operationId: getJobSchedule
+      summary: Read one schedule, including its last firing (requires results:read)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/ScheduleId'
+      responses:
+        '200':
+          description: The schedule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobScheduleResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ScheduleNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: deleteJobSchedule
+      summary: Delete a schedule; Jobs it already created are kept (requires tasks:write)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/ScheduleId'
+      responses:
+        '204':
+          description: The schedule was deleted
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ScheduleNotFound' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/schedules/{schedule_id}/enable:
+    post:
+      operationId: enableJobSchedule
+      summary: Enable a schedule from its next future slot (requires tasks:write)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/ScheduleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200':
+          description: The enabled schedule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobScheduleResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ScheduleNotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StorageValidationFailed' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /projects/{project_id}/schedules/{schedule_id}/disable:
+    post:
+      operationId: disableJobSchedule
+      summary: Stop a schedule from firing (requires tasks:write)
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/ScheduleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200':
+          description: The disabled schedule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobScheduleResponse' }
+        '400': { $ref: '#/components/responses/MalformedRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/ScheduleNotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/StorageValidationFailed' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+        '500': { $ref: '#/components/responses/InternalError' }
 components:
   securitySchemes:
     ProjectApiKey:
@@ -1122,6 +1586,43 @@ components:
       in: path
       required: true
       schema: { $ref: '#/components/schemas/Uuid' }
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    DatasetName:
+      name: dataset_name
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/StorageName' }
+    StoreName:
+      name: store_name
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/StorageName' }
+    RecordKey:
+      name: record_key
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9!._'()*-]{1,256}$" }
+    ScheduleId:
+      name: schedule_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Uuid' }
+    NameCursor:
+      name: cursor
+      in: query
+      required: false
+      description: The next_cursor of the previous page (the last name or key it returned).
+      schema: { type: string, minLength: 1, maxLength: 256 }
+    ItemOffset:
+      name: offset
+      in: query
+      required: false
+      description: Number of items to skip; items are numbered 1..item_count in append order.
+      schema: { type: integer, minimum: 0, default: 0 }
     OpaqueCursor:
       name: cursor
       in: query
@@ -1431,6 +1932,11 @@ components:
         not_before:
           type: string
           format: date-time
+        dataset:
+          $ref: '#/components/schemas/StorageName'
+          description: >-
+            Project dataset (created on demand) that receives one result item with the Job URL,
+            HTTP status and Artifact reference when the Job completes.
     Job:
       type: object
       additionalProperties: false
@@ -1450,6 +1956,7 @@ components:
         - status
         - result_completeness
         - error_code
+        - dataset_id
       properties:
         id:
           $ref: '#/components/schemas/Uuid'
@@ -1513,6 +2020,11 @@ components:
         error_code:
           oneOf:
             - type: string
+            - type: 'null'
+        dataset_id:
+          description: Output dataset of the Job, if any.
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
             - type: 'null'
       allOf:
         - oneOf:
@@ -1638,6 +2150,82 @@ components:
             - type: string
             - type: 'null'
         created_at: { type: string, format: date-time }
+    StorageName:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9-]{0,62}$'
+    Dataset:
+      type: object
+      additionalProperties: false
+      required: [id, name, item_count, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        name: { $ref: '#/components/schemas/StorageName' }
+        item_count: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    KeyValueStore:
+      type: object
+      additionalProperties: false
+      required: [id, name, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        name: { $ref: '#/components/schemas/StorageName' }
+        created_at: { type: string, format: date-time }
+    KeyValueRecord:
+      type: object
+      additionalProperties: false
+      required: [key, content_type, byte_count, updated_at]
+      properties:
+        key: { type: string }
+        content_type: { type: string }
+        byte_count: { type: integer, minimum: 0 }
+        updated_at: { type: string, format: date-time }
+    JobSchedule:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - cron
+        - timezone
+        - job
+        - enabled
+        - next_fire_at
+        - last_fired_at
+        - last_job_id
+        - last_error_code
+        - created_at
+        - updated_at
+      properties:
+        id: { $ref: '#/components/schemas/Uuid' }
+        name: { $ref: '#/components/schemas/StorageName' }
+        cron: { type: string }
+        timezone: { type: string, const: UTC }
+        job: { $ref: '#/components/schemas/CreateJobRequest' }
+        enabled: { type: boolean }
+        next_fire_at: { type: string, format: date-time }
+        last_fired_at:
+          oneOf:
+            - { type: string, format: date-time }
+            - type: 'null'
+        last_job_id:
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        last_error_code:
+          description: Problem code of the last firing that could not create a Job, such as QUOTA_EXCEEDED.
+          oneOf:
+            - type: string
+            - type: 'null'
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    JobScheduleResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id, schedule]
+      properties:
+        request_id: { $ref: '#/components/schemas/Uuid' }
+        schedule: { $ref: '#/components/schemas/JobSchedule' }
     Problem:
       type: object
       additionalProperties: false
@@ -1842,6 +2430,31 @@ components:
         retryable is true only when the limit resets with time.
       headers:
         Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    StorageNotFound:
+      description: The dataset, key-value store or record does not exist in this Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    StorageValidationFailed:
+      description: The storage or schedule request violates the contract
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RecordTooLarge:
+      description: The record exceeds the configured key-value record limit
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ScheduleNotFound:
+      description: The schedule does not exist in this Project
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ScheduleConflict:
+      description: A schedule with this name already exists in the Project
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

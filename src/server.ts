@@ -71,6 +71,12 @@ import {
   WebhookService,
 } from "./control-plane/webhooks.js";
 import { WorkerBootstrapHttpApi } from "./control-plane/worker-bootstrap-http-api.js";
+import { JobScheduleService } from "./control-plane/job-schedules.js";
+import {
+  DatasetService,
+  KeyValueStoreService,
+  keyValueRecordMaxBytesFromEnvironment,
+} from "./control-plane/project-storage.js";
 import { logEvent } from "./log.js";
 import { ControlPlaneMetrics } from "./control-plane/control-metrics.js";
 import { PostgresControlPlaneDatabase } from "./control-plane/postgres-database.js";
@@ -91,6 +97,7 @@ import {
 const jobLeaseSweepIntervalMs = 30_000;
 const webhookDeliveryIntervalMs = 1_000;
 const artifactRetentionIntervalMs = 60 * 60 * 1_000;
+const jobScheduleIntervalMs = 5_000;
 
 export { PostgresControlPlaneDatabase };
 export {
@@ -108,6 +115,7 @@ export type ControlPlaneRuntimeConfig = Readonly<{
   webhookCipher?: WebhookSecretCipher | null;
   artifactStore?: ArtifactObjectStore | null;
   artifactRetentionDays?: number | null;
+  keyValueRecordMaxBytes?: number;
   metrics?: MetricsListenerConfig | null;
 }>;
 
@@ -273,6 +281,7 @@ export async function loadControlPlaneRuntimeConfig(
       : await WebhookSecretCipher.fromFile(environment.DIAOYAN_WEBHOOK_ENCRYPTION_KEY_PATH),
     artifactStore: artifactObjectStoreFromEnvironment(environment),
     artifactRetentionDays: artifactRetentionDaysFromEnvironment(environment),
+    keyValueRecordMaxBytes: keyValueRecordMaxBytesFromEnvironment(environment),
     metrics: metricsListenerFromEnvironment(environment),
   });
 }
@@ -284,6 +293,7 @@ export async function startControlPlaneRuntime(
   let sweepRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let webhookRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let retentionRunner: ControlPlaneJobLeaseSweepRunner | undefined;
+  let scheduleRunner: ControlPlaneJobLeaseSweepRunner | undefined;
   let listener: WorkerControlListener | undefined;
   let controlMetricsListener: MetricsListener | undefined;
   let resolveFinished!: () => void;
@@ -357,6 +367,26 @@ export async function startControlPlaneRuntime(
     const quotas = config.quotas ?? unlimitedProjectQuotas;
     const jobs = new ControlPlaneJobService(database, { quotas });
     const results = new JobResultService(database);
+    const schedules = new JobScheduleService(database, jobs);
+    scheduleRunner = new ControlPlaneJobLeaseSweepRunner(schedules, {
+      intervalMs: jobScheduleIntervalMs,
+      onFatalError: (error) => {
+        if (runtimeReady) rejectFinished(error);
+        else {
+          pendingFatalError = error;
+          hasPendingFatalError = true;
+        }
+      },
+    });
+    await scheduleRunner.start();
+    if (hasPendingFatalError) throw pendingFatalError;
+    const keyValueRecordMaxBytes = config.keyValueRecordMaxBytes;
+    const storage = {
+      datasets: new DatasetService(database),
+      keyValueStores: new KeyValueStoreService(database, keyValueRecordMaxBytes === undefined
+        ? {}
+        : { maxRecordBytes: keyValueRecordMaxBytes }),
+    };
     const humanAuthApi = new HumanAuthHttpApi({
       beginLogin: humanIdentity.beginLogin.bind(humanIdentity),
       completeLogin: humanIdentity.completeLogin.bind(humanIdentity),
@@ -399,6 +429,8 @@ export async function startControlPlaneRuntime(
       listAuditEvents: (scope, input) => listProjectAuditEvents(database, scope, input),
       webhooks,
       artifacts,
+      storage,
+      schedules,
     }, quotas.apiRequestsPerMinute === null
       ? {}
       : { rateLimiter: new ApiRequestRateLimiter(quotas.apiRequestsPerMinute) });
@@ -411,7 +443,7 @@ export async function startControlPlaneRuntime(
         ),
         database,
       ),
-      config.listener,
+      { ...config.listener, maxRawBodyBytes: storage.keyValueStores.maxRecordBytes },
     );
     if (config.metrics != null) {
       controlMetricsListener = await startMetricsListener(controlMetrics, config.metrics);
@@ -429,6 +461,7 @@ export async function startControlPlaneRuntime(
         () => controlMetricsListener?.close(),
         () => webhookRunner?.close(),
         () => retentionRunner?.close(),
+        () => scheduleRunner?.close(),
         () => sweepRunner?.close(),
         () => database.close(),
       ]) {
@@ -463,7 +496,7 @@ export async function startControlPlaneRuntime(
         cleanupErrors.push(listenerCloseError);
       }
     }
-    for (const runner of [webhookRunner, retentionRunner]) {
+    for (const runner of [webhookRunner, retentionRunner, scheduleRunner]) {
       try {
         await runner?.close();
       } catch (runnerCloseError) {

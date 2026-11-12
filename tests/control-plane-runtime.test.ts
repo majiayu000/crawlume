@@ -255,14 +255,16 @@ describe("control-plane runtime startup", () => {
     mocks.fatalHandler?.(undefined);
 
     await expect(running).rejects.toBeUndefined();
-    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+    expect(mocks.events.slice(-4)).toEqual(["listener", "sweeper", "sweeper", "database"]);
   });
 
   it("starts sweeping before listening and closes listener, sweeper, then database", async () => {
     const runtime = await startControlPlaneRuntime(await runtimeConfig());
-    expect(mocks.events.slice(0, 4)).toEqual([
+    // Job lease recovery and the Job schedule sweep both start before the listener.
+    expect(mocks.events.slice(0, 5)).toEqual([
       "migrations",
       "readiness",
+      "sweep-start",
       "sweep-start",
       "listener-start",
     ]);
@@ -271,7 +273,7 @@ describe("control-plane runtime startup", () => {
     await runtime.close();
 
     await expect(finished).resolves.toBeUndefined();
-    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+    expect(mocks.events.slice(-4)).toEqual(["listener", "sweeper", "sweeper", "database"]);
   });
 
   it("starts the listener with every fixed control-plane API mounted", async () => {
@@ -334,7 +336,7 @@ describe("control-plane runtime startup", () => {
     await expect(closing).rejects.toMatchObject({
       errors: [listenerError, sweepError, databaseError],
     });
-    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+    expect(mocks.events.slice(-4)).toEqual(["listener", "sweeper", "sweeper", "database"]);
   });
 
   it("handles a signal by closing and resolving the main runtime", async () => {
@@ -347,7 +349,7 @@ describe("control-plane runtime startup", () => {
     Reflect.apply(signalHandler!, process, []);
 
     await expect(running).resolves.toBeUndefined();
-    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+    expect(mocks.events.slice(-4)).toEqual(["listener", "sweeper", "sweeper", "database"]);
   });
 
   it("preserves both a periodic fatal error and a shutdown failure", async () => {
@@ -373,7 +375,7 @@ describe("control-plane runtime startup", () => {
     finishListening();
 
     await expect(starting).rejects.toBeUndefined();
-    expect(mocks.events.slice(-3)).toEqual(["listener", "sweeper", "database"]);
+    expect(mocks.events.slice(-4)).toEqual(["listener", "sweeper", "sweeper", "database"]);
   });
 
   it("reports listener failures through the runtime fatal channel", async () => {

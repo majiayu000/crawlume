@@ -602,6 +602,7 @@ const httpJob: ControlPlaneJob = Object.freeze({
   createdAt: new Date("2026-09-02T00:00:00.000Z"),
   updatedAt: new Date("2026-09-02T00:00:00.000Z"),
   completedAt: null,
+  datasetId: null,
 });
 
 function httpRequest(path: string, body: unknown, method = "POST") {

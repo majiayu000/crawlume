@@ -32,6 +32,7 @@ function job(status: Job["status"]): Job {
     status,
     result_completeness: null,
     error_code: null,
+    dataset_id: null,
   };
 }
 

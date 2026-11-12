@@ -104,6 +104,102 @@ export const webhookRouterOperations = webhookRouteDefinitions.map(
   ({ method, operationId, path }) => ({ method, operationId, path }),
 );
 
+const storageNamePath = "([a-z0-9][a-z0-9-]{0,62})";
+const recordKeyPath = "([A-Za-z0-9!._'()*-]{1,256})";
+const datasetsPath = `^/v1/projects/${uuidPath}/datasets`;
+const storesPath = `^/v1/projects/${uuidPath}/key-value-stores`;
+
+export const storageRouteDefinitions = [
+  {
+    kind: "list-datasets", method: "GET", path: "/projects/{project_id}/datasets",
+    operationId: "listDatasets", pattern: new RegExp(`${datasetsPath}$`, "u"),
+  },
+  {
+    kind: "get-dataset", method: "GET", path: "/projects/{project_id}/datasets/{dataset_name}",
+    operationId: "getDataset", pattern: new RegExp(`${datasetsPath}/${storageNamePath}$`, "u"),
+  },
+  {
+    kind: "append-items", method: "POST", path: "/projects/{project_id}/datasets/{dataset_name}/items",
+    operationId: "appendDatasetItems", pattern: new RegExp(`${datasetsPath}/${storageNamePath}/items$`, "u"),
+  },
+  {
+    kind: "list-items", method: "GET", path: "/projects/{project_id}/datasets/{dataset_name}/items",
+    operationId: "listDatasetItems", pattern: new RegExp(`${datasetsPath}/${storageNamePath}/items$`, "u"),
+  },
+  {
+    kind: "export-items", method: "GET", path: "/projects/{project_id}/datasets/{dataset_name}/export",
+    operationId: "exportDatasetItems", pattern: new RegExp(`${datasetsPath}/${storageNamePath}/export$`, "u"),
+  },
+  {
+    kind: "list-stores", method: "GET", path: "/projects/{project_id}/key-value-stores",
+    operationId: "listKeyValueStores", pattern: new RegExp(`${storesPath}$`, "u"),
+  },
+  {
+    kind: "list-records", method: "GET", path: "/projects/{project_id}/key-value-stores/{store_name}/records",
+    operationId: "listKeyValueRecords", pattern: new RegExp(`${storesPath}/${storageNamePath}/records$`, "u"),
+  },
+  {
+    kind: "get-record", method: "GET",
+    path: "/projects/{project_id}/key-value-stores/{store_name}/records/{record_key}",
+    operationId: "getKeyValueRecord",
+    pattern: new RegExp(`${storesPath}/${storageNamePath}/records/${recordKeyPath}$`, "u"),
+  },
+  {
+    kind: "put-record", method: "PUT",
+    path: "/projects/{project_id}/key-value-stores/{store_name}/records/{record_key}",
+    operationId: "putKeyValueRecord",
+    pattern: new RegExp(`${storesPath}/${storageNamePath}/records/${recordKeyPath}$`, "u"),
+  },
+  {
+    kind: "delete-record", method: "DELETE",
+    path: "/projects/{project_id}/key-value-stores/{store_name}/records/{record_key}",
+    operationId: "deleteKeyValueRecord",
+    pattern: new RegExp(`${storesPath}/${storageNamePath}/records/${recordKeyPath}$`, "u"),
+  },
+] as const;
+
+export const storageRouterOperations = storageRouteDefinitions.map(
+  ({ method, operationId, path }) => ({ method, operationId, path }),
+);
+
+/** Key-value record writes carry raw bytes of any media type instead of a JSON body. */
+export const rawBodyRoutePattern = new RegExp(
+  `${storesPath}/${storageNamePath}/records/${recordKeyPath}$`, "u",
+);
+
+const schedulesPath = `^/v1/projects/${uuidPath}/schedules`;
+
+export const scheduleRouteDefinitions = [
+  {
+    kind: "create", method: "POST", path: "/projects/{project_id}/schedules",
+    operationId: "createJobSchedule", pattern: new RegExp(`${schedulesPath}$`, "u"),
+  },
+  {
+    kind: "list", method: "GET", path: "/projects/{project_id}/schedules",
+    operationId: "listJobSchedules", pattern: new RegExp(`${schedulesPath}$`, "u"),
+  },
+  {
+    kind: "get", method: "GET", path: "/projects/{project_id}/schedules/{schedule_id}",
+    operationId: "getJobSchedule", pattern: new RegExp(`${schedulesPath}/${uuidPath}$`, "u"),
+  },
+  {
+    kind: "delete", method: "DELETE", path: "/projects/{project_id}/schedules/{schedule_id}",
+    operationId: "deleteJobSchedule", pattern: new RegExp(`${schedulesPath}/${uuidPath}$`, "u"),
+  },
+  {
+    kind: "enable", method: "POST", path: "/projects/{project_id}/schedules/{schedule_id}/enable",
+    operationId: "enableJobSchedule", pattern: new RegExp(`${schedulesPath}/${uuidPath}/enable$`, "u"),
+  },
+  {
+    kind: "disable", method: "POST", path: "/projects/{project_id}/schedules/{schedule_id}/disable",
+    operationId: "disableJobSchedule", pattern: new RegExp(`${schedulesPath}/${uuidPath}/disable$`, "u"),
+  },
+] as const;
+
+export const scheduleRouterOperations = scheduleRouteDefinitions.map(
+  ({ method, operationId, path }) => ({ method, operationId, path }),
+);
+
 export const humanAuthRouteDefinitions = [
   {
     kind: "begin", method: "GET", path: "/auth/oidc/begin",
@@ -279,5 +375,7 @@ export const controlPlaneRouterOperations = Object.freeze([
   ...workerBootstrapRouterOperations,
   ...projectJobRouterOperations,
   ...webhookRouterOperations,
+  ...storageRouterOperations,
+  ...scheduleRouterOperations,
   ...workerRouterOperations,
 ]);

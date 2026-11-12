@@ -7,6 +7,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Project-scoped datasets (append, page, export as JSON/JSON Lines/CSV), key-value stores (raw bytes
+  with content type, `DIAOYAN_KV_MAX_RECORD_BYTES`) and cron Job schedules that fire once per slot
+  across control-plane instances; Jobs can name an output dataset. Exposed in the API and SDK.
 - `crawlume report <url>` reads a page again without the cache and prints a shareable report with a
   prefilled GitHub issue link; issue templates for read reports and usage feedback.
 - Opt-in anonymous read statistics sent to PostHog (`CRAWLUME_TELEMETRY=1`), without URLs or content.

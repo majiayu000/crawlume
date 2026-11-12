@@ -64,6 +64,7 @@ const job: ControlPlaneJob = Object.freeze({
   createdAt: now,
   updatedAt: now,
   completedAt: null,
+  datasetId: null,
 });
 const publication: JobPublication = Object.freeze({
   id: "55555555-5555-4555-8555-555555555555",
@@ -654,7 +655,7 @@ describe("Project Job HTTP API", () => {
 });
 
 describe("control-plane HTTP routing", () => {
-  it("dispatches all 36 mounted operations to exactly one target handler", async () => {
+  it("dispatches all 52 mounted operations to exactly one target handler", async () => {
     const handlers = {
       humanAuth: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
       projectAdmin: { handle: vi.fn(async () => ({ status: 200, headers: {}, body: null })) },
@@ -678,11 +679,11 @@ describe("control-plane HTTP routing", () => {
       }
       if (["createWorkerEnrollment", "enrollWorker", "createWorkerSessionChallenge",
         "createWorkerSession", "disableProjectWorker"].includes(operationId)) return "workerBootstrap";
-      if (operationId.includes("Project") || operationId.includes("Webhook")) return "projects";
+      if (/Project|Webhook|Dataset|KeyValue|JobSchedule/u.test(operationId)) return "projects";
       return "workers";
     };
 
-    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(36);
+    expect(ControlPlaneHttpApi.routerOperations).toHaveLength(52);
     for (const operation of ControlPlaneHttpApi.routerOperations) {
       const before = Object.values(handlers).reduce((sum, handler) =>
         sum + handler.handle.mock.calls.length, 0);
@@ -695,7 +696,11 @@ describe("control-plane HTTP routing", () => {
         .replaceAll("{lease_id}", jobId)
         .replaceAll("{endpoint_id}", jobId)
         .replaceAll("{event_id}", jobId)
-        .replaceAll("{artifact_id}", jobId);
+        .replaceAll("{artifact_id}", jobId)
+        .replaceAll("{schedule_id}", jobId)
+        .replaceAll("{dataset_name}", "results")
+        .replaceAll("{store_name}", "state")
+        .replaceAll("{record_key}", "INPUT");
 
       await api.handle(request({ method: operation.method, path }));
 

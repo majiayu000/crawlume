@@ -78,4 +78,7 @@ DIAOYAN_TEST_POSTGRES_URL="$test_database_url" PGCONNECT_TIMEOUT=5 \
   pnpm exec vitest run tests/control-plane-metrics-postgres.integration.test.ts --maxWorkers=1
 
 DIAOYAN_TEST_POSTGRES_URL="$test_database_url" PGCONNECT_TIMEOUT=5 \
+  pnpm exec vitest run tests/control-plane-storage-postgres.integration.test.ts --maxWorkers=1
+
+DIAOYAN_TEST_POSTGRES_URL="$test_database_url" PGCONNECT_TIMEOUT=5 \
   pnpm exec vitest run tests/control-plane-bootstrap-postgres.e2e.test.ts --maxWorkers=1
