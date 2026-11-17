@@ -12,7 +12,9 @@ All notable changes to this project are documented here. The format follows
   every firing fails with `JOB_CREATION_FAILED`.
 - Console "Sign out" refreshes an expired Access Token before calling `/v1/auth/logout` and reports a
   failed logout, so the refresh cookie no longer signs the user straight back in; tabs signed in by
-  the refresh cookie now show "Sign out" too.
+  the refresh cookie now show "Sign out" too. A tab whose session was already revoked (signed out in
+  another tab, a replayed refresh token, an admin) still signs out instead of showing
+  `ACCESS_TOKEN_INVALID`.
 - `crawlume report` also removes the query from URLs in the error details (the page URL, a redirect
   target) and strips a user name and password from every URL, so the prefilled issue no longer leaks
   tokens that the `- URL:` line hid.
