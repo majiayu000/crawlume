@@ -181,9 +181,19 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
     .find((line) => line.length >= 40)?.slice(0, 120);
   const footerText = [...(gateBody?.querySelectorAll("footer, [role='contentinfo' i]") ?? [])]
     .map((node) => (node.textContent ?? "").replace(/\s+/gu, " ")).join(" ");
+  // A footer widget can quote the page ("latest posts" excerpts), so most of the prose must be footer
+  // text too. Words without punctuation or link targets compare the Markdown with the DOM text.
+  const mostlyFooter = (): boolean => {
+    const words = (text: string): string =>
+      (text.replace(/\]\([^)]*\)/gu, " ").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join(" ");
+    const footerWords = words(footerText);
+    const lines = candidate.markdown.split("\n").map(words).filter((line) => line.length >= 40);
+    const length = (values: string[]): number => values.reduce((sum, line) => sum + line.length, 0);
+    return 2 * length(lines.filter((line) => footerWords.includes(line))) >= length(lines);
+  };
   required(
     "BOILERPLATE_ONLY",
-    lead === undefined || !footerText.includes(lead),
+    lead === undefined || !footerText.includes(lead) || !mostlyFooter(),
     "The candidate must start with page content, not the site footer.",
     "INCOMPLETE_CONTENT",
   );

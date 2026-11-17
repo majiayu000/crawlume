@@ -220,6 +220,40 @@ describe("ValidatorRegistry", () => {
     const article = `${"The listing describes a three bedroom house with a large garden. ".repeat(8)}\n\n${statement}`;
     expect(validate(page, extracted({ markdown: article, contentCharacters: article.length })))
       .toMatchObject({ outcome: "valid", terminalError: null });
+    // Footer paragraphs often link out; the link text still counts as footer text.
+    const linked = statement.replace("please let us know", "please [let us know](https://www.zillow.com/a11y)");
+    expect(validate(page, extracted({ markdown: linked, contentCharacters: statement.length })))
+      .toMatchObject({ outcome: "invalid", terminalError: { code: "INCOMPLETE_CONTENT" } });
+  });
+
+  it("keeps an article whose opening a footer widget quotes", async () => {
+    // A "latest posts" footer widget shows the newest article's title and the start of its text.
+    const title = "How we moved billing to PostgreSQL 17";
+    const paragraphs = [
+      "Last spring our billing service was still running on a ten year old MySQL cluster that nobody wanted to touch.",
+      "Every schema change needed a maintenance window, and the replicas fell hours behind during the invoice run.",
+      "We picked PostgreSQL 17 because logical replication let us copy the live tables while the old cluster served traffic.",
+      "The first week went to a checker that compared every invoice row between the two databases and flagged drift.",
+      "In the second week we moved reads behind a feature flag, one customer segment at a time, and watched the error budget.",
+      "Writes were the hard part: we froze the old tables for ninety seconds, let replication drain, and flipped the connection.",
+      "If you run a similar migration, budget time for the checker; it found two old rounding bugs before any customer did.",
+    ];
+    const body = `<html><head><title>${title} - Acme Engineering</title></head><body>` +
+      `<main><article><h1>${title}</h1>${paragraphs.map((text) => `<p>${text}</p>`).join("")}</article></main>` +
+      `<footer class="site-footer"><section class="widget"><h2>Latest from the blog</h2>` +
+      `<h3><a href="/post">${title}</a></h3><p>${paragraphs.join(" ").slice(0, 200)}…</p></section>` +
+      `<p>© 2026 Acme</p></footer></body></html>`;
+    const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+    const batch = await extractors.extract(page);
+    const candidate = batch.candidates.find((value) => value.extractorId === "article")?.artifact;
+    if (candidate === undefined) throw new Error("missing article candidate");
+
+    expect(candidate.markdown).toContain(paragraphs[0]);
+    expect(validate(page, candidate)).toMatchObject({
+      outcome: "valid",
+      checks: expect.arrayContaining([expect.objectContaining({ code: "BOILERPLATE_ONLY", passed: true })]),
+      terminalError: null,
+    });
   });
 
   it("keeps an article that discusses missing pages", () => {
