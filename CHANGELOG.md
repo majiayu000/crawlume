@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
 - The n8n, Zapier and Make connection tests pass only on 404 `JOB_NOT_FOUND`, so a Project ID that is
   not a UUID, a URL without `/v1` or a wrong key no longer shows "Connection successful" because
   routing answered 404 before the key was checked.
+- Cron schedules treat a day-of-month or day-of-week field that starts with `*`, such as `*/2`, as
+  unrestricted, as standard cron does: `0 9 */2 * 1` fires on odd days that are Mondays instead of on
+  every odd day and every Monday.
 
 ## [0.18.0] - 2026-11-19
 

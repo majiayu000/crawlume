@@ -78,8 +78,9 @@ export function parseCronExpression(expression: string): CronSchedule {
     days: parseField(day, 1, 31),
     months: parseField(month, 1, 12, monthNames),
     weekdays,
-    daysRestricted: day !== "*",
-    weekdaysRestricted: weekday !== "*",
+    // As in Vixie cron, a field that starts with * (including */n) is not a restriction.
+    daysRestricted: !day.startsWith("*"),
+    weekdaysRestricted: !weekday.startsWith("*"),
   });
 }
 
