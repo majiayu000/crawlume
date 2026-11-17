@@ -13,6 +13,9 @@ All notable changes to this project are documented here. The format follows
 - Console "Sign out" refreshes an expired Access Token before calling `/v1/auth/logout` and reports a
   failed logout, so the refresh cookie no longer signs the user straight back in; tabs signed in by
   the refresh cookie now show "Sign out" too.
+- `crawlume report` also removes the query from URLs in the error details (the page URL, a redirect
+  target) and strips a user name and password from every URL, so the prefilled issue no longer leaks
+  tokens that the `- URL:` line hid.
 
 ## [0.18.0] - 2026-11-19
 

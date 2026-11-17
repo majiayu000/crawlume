@@ -48,6 +48,37 @@ describe("crawlume report", () => {
     expect(link.searchParams.get("body")).toBe(report.body);
   });
 
+  it("drops credentials typed into the URL", () => {
+    expect(redactUrl("https://alice:s3cret@example.com/a")).toBe("https://example.com/a (credentials removed)");
+    expect(redactUrl("https://alice:s3cret@example.com/a?token=abc"))
+      .toBe("https://example.com/a (credentials and query removed)");
+
+    const error = new ReadError("INVALID_URL", "Credentials in URLs are not allowed.");
+    const report = buildReadReport("https://alice:s3cret@example.com/private", { error }, manifest);
+    expect(report.body).toContain("- URL: https://example.com/private (credentials removed)");
+    expect(report.body).not.toMatch(/alice|s3cret/u);
+    expect(decodeURIComponent(report.issueUrl)).not.toMatch(/alice|s3cret/u);
+  });
+
+  it("redacts URLs that the error details repeat", () => {
+    const error = new ReadError("ROBOTS_DISALLOWED", "robots.txt disallows this page for the reader.", {
+      details: {
+        url: "https://example.com/private?token=abc123",
+        robotsUrl: "https://example.com/robots.txt",
+        location: "https://example.com/next?session=xyz789#frag",
+        httpStatus: 404,
+      },
+    });
+    const report = buildReadReport("https://example.com/private?token=abc123", { error }, manifest);
+
+    expect(report.body).toContain('"url": "https://example.com/private (query removed)"');
+    expect(report.body).toContain('"robotsUrl": "https://example.com/robots.txt"');
+    expect(report.body).toContain('"location": "https://example.com/next (query removed)"');
+    expect(report.body).toContain('"httpStatus": 404');
+    expect(report.body).not.toMatch(/abc123|xyz789/u);
+    expect(decodeURIComponent(report.issueUrl)).not.toMatch(/abc123|xyz789/u);
+  });
+
   it("keeps the issue link within GitHub's length limit for long content", () => {
     const result = {
       fetchMethod: "http",

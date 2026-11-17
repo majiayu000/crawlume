@@ -1,4 +1,4 @@
-import type { ReadError } from "../errors.js";
+import type { ReadError, ReadErrorDetails } from "../errors.js";
 import type { PackageManifest as Manifest } from "../package-manifest.js";
 import type { ReadPageResult } from "../types.js";
 
@@ -6,15 +6,27 @@ import type { ReadPageResult } from "../types.js";
 const maxIssueUrlLength = 7_500;
 const previewCharacters = 400;
 
-/** Drops the query and fragment, which often carry tokens or session identifiers. */
+/** Drops credentials, the query and the fragment, which often carry tokens or session identifiers. */
 export function redactUrl(url: string): string {
   // An unparseable URL is reported as typed; the reader has already rejected it.
   const parsed = URL.parse(url);
   if (parsed === null) return url;
-  const redacted = parsed.search !== "" || parsed.hash !== "";
+  const removed: string[] = [];
+  if (parsed.username !== "" || parsed.password !== "") removed.push("credentials");
+  if (parsed.search !== "" || parsed.hash !== "") removed.push("query");
+  parsed.username = "";
+  parsed.password = "";
   parsed.search = "";
   parsed.hash = "";
-  return redacted ? `${parsed.toString()} (query removed)` : parsed.toString();
+  return removed.length === 0 ? parsed.toString() : `${parsed.toString()} (${removed.join(" and ")} removed)`;
+}
+
+/** Error details repeat the page URL, often the redirected one, so every URL in them is redacted too. */
+function redactDetails(details: ReadErrorDetails): ReadErrorDetails {
+  const isWebUrl = (value: string): boolean => ["http:", "https:"].includes(URL.parse(value)?.protocol ?? "");
+  return Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [key, typeof value === "string" && isWebUrl(value) ? redactUrl(value) : value]),
+  );
 }
 
 export type ReportOutcome = { result: ReadPageResult } | { error: ReadError };
@@ -47,7 +59,7 @@ export function buildReadReport(url: string, outcome: ReportOutcome, manifest: M
       "",
       "Error details:",
       "```json",
-      JSON.stringify(error.details, null, 2),
+      JSON.stringify(redactDetails(error.details), null, 2),
       "```",
     );
   } else {
