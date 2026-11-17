@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `POST /projects/{project_id}/schedules` returns 422 `JOB_REQUEST_INVALID` for a Job request that
+  `POST /jobs` would reject (for example a read without a URL), instead of storing a schedule whose
+  every firing fails with `JOB_CREATION_FAILED`.
+
 ## [0.18.0] - 2026-11-19
 
 ### Added
