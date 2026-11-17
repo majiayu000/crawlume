@@ -18,8 +18,9 @@ Job create/get/cancel, publications, Artifact download, and webhook endpoints.
   (`No released Worker can execute crawl Jobs`). No integration offers "start crawl" until a Worker
   runs them.
 - **No API-key route that just checks a key.** Every integration tests its connection by reading a
-  Job that cannot exist and treating 404 as success. A `GET /projects/{id}` (or a whoami route)
-  readable with `results:read` would replace that.
+  Job that cannot exist and treating 404 `JOB_NOT_FOUND` as success (other 404s come from routing,
+  before the key is checked). A `GET /projects/{id}` (or a whoami route) readable with
+  `results:read` would replace that.
 - **No list of Jobs or past webhook events.** Zapier's `performList` and the trigger samples in
   n8n and Make have to use fixed examples. `GET /projects/{id}/jobs` or a list of webhook events
   (with payloads) would give real samples and polling triggers.

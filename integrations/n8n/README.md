@@ -15,8 +15,9 @@ n8n community nodes for the Crawlume [Project Control API](../../docs/project-co
 | Project ID | The Project the key belongs to |
 | API Key | Project API key: `tasks:write` + `results:read`; the trigger also needs `project:admin` |
 
-The credential test reads a Job that cannot exist. A 404 means the key works for this Project, and
-401/403 return the control plane's own message.
+The credential test reads a Job that cannot exist. A 404 `JOB_NOT_FOUND` means the key works for this
+Project, and 401/403 return the control plane's own message. Any other 404 comes from routing before
+the key is checked: a Project ID that is not the Project's UUID, or a URL without `/v1`.
 
 ## Behaviour
 

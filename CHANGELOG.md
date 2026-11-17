@@ -16,6 +16,9 @@ All notable changes to this project are documented here. The format follows
 - `crawlume report` also removes the query from URLs in the error details (the page URL, a redirect
   target) and strips a user name and password from every URL, so the prefilled issue no longer leaks
   tokens that the `- URL:` line hid.
+- The n8n, Zapier and Make connection tests pass only on 404 `JOB_NOT_FOUND`, so a Project ID that is
+  not a UUID, a URL without `/v1` or a wrong key no longer shows "Connection successful" because
+  routing answered 404 before the key was checked.
 
 ## [0.18.0] - 2026-11-19
 
