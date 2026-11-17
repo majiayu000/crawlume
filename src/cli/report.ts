@@ -29,6 +29,13 @@ function redactDetails(details: ReadErrorDetails): ReadErrorDetails {
   );
 }
 
+/** Cuts at a UTF-16 length without leaving half of a surrogate pair, which encodeURIComponent rejects. */
+function head(text: string, length: number): string {
+  const cut = text.slice(0, length);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 export type ReportOutcome = { result: ReadPageResult } | { error: ReadError };
 
 export type ReadReport = { title: string; body: string; issueUrl: string };
@@ -74,7 +81,7 @@ export function buildReadReport(url: string, outcome: ReportOutcome, manifest: M
       "",
       `First ${previewCharacters} characters of the extracted Markdown:`,
       "```markdown",
-      result.contentMarkdown.slice(0, previewCharacters),
+      head(result.contentMarkdown, previewCharacters),
       "```",
     );
   }
@@ -101,7 +108,7 @@ function issueUrl(bugsUrl: string, title: string, body: string): string {
   let candidate = full;
   while (candidate.length > maxIssueUrlLength && cut > 0) {
     cut = Math.floor(cut * 0.9);
-    candidate = base + encodeURIComponent(body.slice(0, cut) + note);
+    candidate = base + encodeURIComponent(head(body, cut) + note);
   }
   return candidate;
 }

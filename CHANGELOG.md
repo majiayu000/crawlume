@@ -22,6 +22,9 @@ All notable changes to this project are documented here. The format follows
 - Cron schedules treat a day-of-month or day-of-week field that starts with `*`, such as `*/2`, as
   unrestricted, as standard cron does: `0 9 */2 * 1` fires on odd days that are Mondays instead of on
   every odd day and every Monday.
+- `crawlume report` no longer crashes with `URIError: URI malformed` when the 400-character Markdown
+  preview or the shortened issue link would end in the middle of an emoji or another character
+  outside the Basic Multilingual Plane.
 
 ## [0.18.0] - 2026-11-19
 

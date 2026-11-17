@@ -97,6 +97,36 @@ describe("crawlume report", () => {
     expect(new URL(report.issueUrl).searchParams.get("body")).toContain("Report truncated");
   });
 
+  it("never splits an emoji when it shortens the preview or the issue link", () => {
+    const report = (title: string, contentMarkdown: string) => buildReadReport("https://example.com/a", {
+      result: {
+        fetchMethod: "http",
+        completeness: "complete",
+        title,
+        contentMarkdown,
+        evidence: {
+          httpStatus: 200, contentType: "text/html", contentCharacters: contentMarkdown.length,
+          extractionMethod: "readability", extractorVersion: "e1", validatorVersion: "v1", accessPlan: plan,
+        },
+      } as never,
+    }, manifest);
+
+    // The 400th UTF-16 unit is the first half of an emoji.
+    const preview = report("Short", `${"x".repeat(399)}😀 and more text`);
+    expect(preview.body).toContain(`${"x".repeat(399)}\n\`\`\``);
+    expect(new URL(preview.issueUrl).searchParams.get("body")).toBe(preview.body);
+    // Each title length moves where the issue link cuts the body.
+    let truncated = 0;
+    for (let length = 300; length < 420; length += 1) {
+      const long = report("😀".repeat(length), "😀".repeat(200));
+      const body = new URL(long.issueUrl).searchParams.get("body") ?? "";
+      expect(long.issueUrl.length).toBeLessThanOrEqual(7_500);
+      expect(body).not.toContain("�");
+      if (body.includes("Report truncated")) truncated += 1;
+    }
+    expect(truncated).toBeGreaterThan(0);
+  });
+
   it("reads the version and issue tracker from package.json", () => {
     expect(packageManifest()).toEqual({
       version: expect.stringMatching(/^\d+\.\d+\.\d+/u),
