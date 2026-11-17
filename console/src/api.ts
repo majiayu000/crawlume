@@ -136,13 +136,22 @@ export async function ensureSession(): Promise<boolean> {
   return ok;
 }
 
+/** True while this tab holds an Access Token, even when the user profile was not stored here. */
+export function hasSession(): boolean {
+  return accessToken !== null;
+}
+
+/**
+ * Revokes the user's sessions. An expired Access Token is refreshed first: logout rejects it and
+ * would leave the refresh cookie valid, signing the user straight back in. Throws if logout fails.
+ */
 export async function logout(): Promise<void> {
-  if (accessToken !== null) {
-    await fetch("/v1/auth/logout", {
+  if (await ensureSession()) {
+    await parse<void>(await fetch("/v1/auth/logout", {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
       credentials: "same-origin",
-    });
+    }));
   }
   accessToken = null;
   storage("session")?.clear();
