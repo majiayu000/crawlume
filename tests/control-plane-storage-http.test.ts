@@ -96,6 +96,28 @@ describe("dataset export formats", () => {
 
     expect(await exported("xml")).toMatchObject({ status: 400, body: { code: "PROJECT_QUERY_INVALID" } });
   });
+
+  it("defaults exports to 1000 items and honors a larger explicit page", async () => {
+    const { api, storage } = harness();
+    await api.handle(request({ query: "?offset=20" }));
+    expect(storage.datasets.listItems).toHaveBeenLastCalledWith(expect.anything(), "results", { offset: 20, limit: 1000 });
+    await api.handle(request({ query: "?offset=20&limit=10000" }));
+    expect(storage.datasets.listItems).toHaveBeenLastCalledWith(expect.anything(), "results", { offset: 20, limit: 10000 });
+  });
+
+  it("rejects oversized encoded exports without returning a partial page", async () => {
+    const { api, storage } = harness();
+    storage.datasets.listItems.mockResolvedValueOnce({
+      dataset,
+      items: [{
+        sequence: 1,
+        item: { url: "https://a.example", title: "x".repeat(32 * 1024 * 1024), tags: [] },
+      }],
+    });
+    const response = await api.handle(request({ query: "?format=jsonl" }));
+    expect(response.status).toBe(413);
+    expect(response.body).toMatchObject({ code: "DATASET_EXPORT_TOO_LARGE" });
+  });
 });
 
 describe("storage HTTP routes", () => {
