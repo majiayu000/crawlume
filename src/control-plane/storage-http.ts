@@ -168,6 +168,9 @@ const exportFormats = {
   },
 } as const;
 
+const defaultDatasetExportItems = 1_000;
+const maxDatasetExportBytes = 32 * 1024 * 1024;
+
 // Raw bodies are user content; never let a browser run them on the control-plane origin.
 const rawContentSecurityPolicy = "sandbox; default-src 'none'";
 
@@ -232,11 +235,24 @@ export async function handleStorageRoute(
       if (!Object.hasOwn(exportFormats, format)) throw new StorageQueryError();
       const encoder = exportFormats[format as keyof typeof exportFormats];
       const offset = queryInteger(values, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
-      const limit = queryInteger(values, "limit", maxDatasetItemsPerRead, 1, maxDatasetItemsPerRead);
+      const limit = queryInteger(values, "limit", defaultDatasetExportItems, 1, maxDatasetItemsPerRead);
       const found = await services.datasets.listItems(identity, name, { offset, limit });
+      let body: Buffer | undefined;
+      try {
+        const text = encoder.encode(found.items.map(({ item }) => item));
+        if (Buffer.byteLength(text) <= maxDatasetExportBytes) body = Buffer.from(text);
+      } catch (error) {
+        if (!(error instanceof RangeError)) throw error;
+      }
+      if (!body) {
+        return {
+          status: 413,
+          body: { code: "DATASET_EXPORT_TOO_LARGE", message: "Export exceeds 32 MiB. Retry with a smaller limit." },
+        };
+      }
       return {
         status: 200,
-        body: Buffer.from(encoder.encode(found.items.map(({ item }) => item))),
+        body,
         headers: {
           "content-type": encoder.contentType,
           "content-disposition": `attachment; filename="${name}.${format}"`,
