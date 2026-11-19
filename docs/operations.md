@@ -254,6 +254,19 @@ openssl rand -out /etc/diaoyan/webhook.key 32 && chmod 600 /etc/diaoyan/webhook.
   用 `schedule:<id>:<时间槽>` 作为 Idempotency-Key 创建 Job 并推进 `next_fire_at`，多实例并发运行也不会重复触发；
   停机或停用期间错过的时间槽直接跳过。Job 创建失败（如配额耗尽）记入 `last_error_code`，计划保持启用。
 
+### 项目 API Key 泄露应急
+
+吊销 API Key 会阻止该 Key 发起新请求。已经保存的定时任务、Webhook 端点和已经创建的 Job 均需另外检查。
+
+1. 由项目所在组织的 Owner 或 Admin 使用人类访问令牌调用
+   `DELETE /v1/projects/{project_id}/api-keys/{key_id}`，并在项目审计记录中确认 `api_key.revoked`。
+2. 使用同项目的可信 Key，以 `results:read` 权限调用 `GET /v1/projects/{project_id}/schedules`。对可疑计划以
+   `tasks:write` 权限向 `/v1/projects/{project_id}/schedules/{schedule_id}/disable` 发空 JSON 对象。读回计划状态，
+   并检查它已创建的 Job；如需停止正在运行的 Job，单独取消。
+3. 如果泄露的 Key 有 `project:admin` 权限且启用了 Webhook，使用同项目的可信管理 Key 列出
+   `GET /v1/projects/{project_id}/webhook-endpoints`。用
+   `DELETE /v1/projects/{project_id}/webhook-endpoints/{endpoint_id}` 停用可疑端点，并读回端点状态。
+
 ## 5. 可观测性
 
 - 日志：MCP 与 Control Plane 进程事件以 JSON Lines 写到 stderr（`time`、`level`、`event` 和字段），stdout 只用于 MCP。
