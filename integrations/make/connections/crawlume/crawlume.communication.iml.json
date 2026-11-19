@@ -5,7 +5,7 @@
     "authorization": "Bearer {{parameters.apiKey}}"
   },
   "response": {
-    "valid": "{{statusCode == 404}}",
+    "valid": "{{statusCode == 404 && body.code == 'JOB_NOT_FOUND'}}",
     "error": {
       "message": "{{body.detail}}"
     }

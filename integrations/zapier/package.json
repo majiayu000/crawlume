@@ -7,7 +7,7 @@
   "main": "index.js",
   "scripts": {
     "validate": "zapier-platform validate --without-style",
-    "test": "node --test test/local-control-plane.js"
+    "test": "node --test test/authentication.js test/local-control-plane.js"
   },
   "dependencies": {
     "zapier-platform-core": "19.3.0"

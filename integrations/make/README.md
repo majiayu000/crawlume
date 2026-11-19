@@ -7,7 +7,7 @@ plus one IML JSON file per component part. It is built on the Crawlume
 
 | Component | Type | What it does |
 |---|---|---|
-| `crawlume` | connection | Control Plane URL (with `/v1`), Project ID, API key; verified by a 404 on a Job that cannot exist |
+| `crawlume` | connection | Control Plane URL (with `/v1`), Project ID, API key; verified by a 404 `JOB_NOT_FOUND` on a Job that cannot exist |
 | `readPage` | action | Creates a read Job, polls it (1 s, up to 150 times), downloads the first cloud Artifact, returns `title` and `markdown` |
 | `startReadJob` | action | Queues a read Job |
 | `getJob` | action | Returns a Job's status |
@@ -41,7 +41,7 @@ spots need a check in Make's scenario editor:
   `valid` turning a failed or cancelled Job into an error.
 - The absolute `{{temp.downloadUrl}}` request bypassing `base.baseUrl`, and `type: json` parsing the
   Artifact (served as `application/vnd.diaoyan.public-read-result+json`).
-- The connection treating the 404 probe as valid.
+- The connection treating only the 404 `JOB_NOT_FOUND` probe as valid.
 - Signature checks. The webhook does not verify `webhook-signature`, because IML has no clear way to
   do a keyed HMAC with a base64-decoded secret. Anyone who learns the Make webhook URL can post fake
   events. Treat events as hints and read the Job with `getJob` before acting on them.

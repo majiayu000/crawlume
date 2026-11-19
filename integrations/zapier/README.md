@@ -12,7 +12,8 @@ Crawlume [Project Control API](../../docs/project-control-api.openapi.yaml).
 | Trigger | `job_finished` | REST hook on `job.completed` / `job.failed` / `job.cancelled` |
 
 Authentication is custom: Control Plane URL (with `/v1`), Project ID and API key. The connection test
-reads a Job that cannot exist and treats 404 as success. The API key is only attached to
+reads a Job that cannot exist and treats 404 `JOB_NOT_FOUND` as success; any other 404 means a Project
+ID that is not a UUID or a URL without `/v1`. The API key is only attached to
 control-plane URLs, never to the presigned Artifact download.
 
 Zapier stops actions after 30 seconds, so `read_page` gives the Job a 25-second deadline. For slow

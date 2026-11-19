@@ -14,7 +14,7 @@
     "build": "rm -rf dist && tsc && mkdir -p dist/icons && cp icons/crawlume.svg dist/icons/",
     "check": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test test/webhook-signature.mjs"
+    "test": "node --experimental-strip-types --test test/webhook-signature.mjs test/credential-test.mjs"
   },
   "n8n": {
     "n8nNodesApiVersion": 1,

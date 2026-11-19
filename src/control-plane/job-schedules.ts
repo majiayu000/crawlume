@@ -7,6 +7,7 @@ import {
   assertExecutableJob,
   createJobBodySchema,
   jobCreationInput,
+  ProjectJobInputError,
   type CreateJobBody,
 } from "./job-request-wire.js";
 import type { ControlPlaneDatabase, ControlPlaneJobService, ControlPlaneQuery } from "./project-scope.js";
@@ -97,7 +98,7 @@ async function databaseNow(database: ControlPlaneQuery): Promise<Date> {
 export class JobScheduleService {
   constructor(
     private readonly database: ControlPlaneDatabase,
-    private readonly jobs: Pick<ControlPlaneJobService, "createJobInTransaction">,
+    private readonly jobs: Pick<ControlPlaneJobService, "createJobInTransaction" | "prepareJob">,
   ) {}
 
   async create(
@@ -109,6 +110,13 @@ export class JobScheduleService {
     assertExecutableJob(jobRequest);
     if (jobRequest.not_before !== undefined) {
       throw new StorageInputError("Scheduled Job requests cannot set not_before.");
+    }
+    // Apply the same request checks as POST /jobs now, so a request every firing would reject is not stored.
+    try {
+      this.jobs.prepareJob(identity, "schedule", jobCreationInput(jobRequest));
+    } catch (error) {
+      if (error instanceof TypeError) throw new ProjectJobInputError(error.message);
+      throw error;
     }
     const cron = input.cron.trim().split(/\s+/u).join(" ");
     const nextFireAt = nextFire(cron, await databaseNow(this.database));
