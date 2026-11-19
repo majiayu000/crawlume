@@ -82,6 +82,30 @@ function signOutButton(header: HTMLElement): HTMLButtonElement {
   return button;
 }
 
+// From Node 25 Node defines its own localStorage global, which does not work without
+// --localstorage-file and hides jsdom's. Give the console a working one in that case.
+function memoryStorage(): Storage {
+  const items = new Map<string, string>();
+  return {
+    get length() {
+      return items.size;
+    },
+    clear: () => items.clear(),
+    getItem: (key) => items.get(key) ?? null,
+    key: (index) => [...items.keys()][index] ?? null,
+    removeItem: (key) => {
+      items.delete(key);
+    },
+    setItem: (key, value) => {
+      items.set(key, String(value));
+    },
+  };
+}
+
+if (typeof window.localStorage?.clear !== "function") {
+  Object.defineProperty(window, "localStorage", { configurable: true, value: memoryStorage() });
+}
+
 beforeEach(() => {
   vi.resetModules();
   vi.useFakeTimers({ toFake: ["Date"] });
