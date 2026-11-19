@@ -220,6 +220,80 @@ describe("ValidatorRegistry", () => {
     const article = `${"The listing describes a three bedroom house with a large garden. ".repeat(8)}\n\n${statement}`;
     expect(validate(page, extracted({ markdown: article, contentCharacters: article.length })))
       .toMatchObject({ outcome: "valid", terminalError: null });
+    // Footer paragraphs often link out; the link text still counts as footer text.
+    const linked = statement.replace("please let us know", "please [let us know](https://www.zillow.com/a11y)");
+    expect(validate(page, extracted({ markdown: linked, contentCharacters: statement.length })))
+      .toMatchObject({ outcome: "invalid", terminalError: { code: "INCOMPLETE_CONTENT" } });
+  });
+
+  it("keeps an article whose opening a footer widget quotes", async () => {
+    // A "latest posts" footer widget shows the newest article's title and the start of its text.
+    const title = "How we moved billing to PostgreSQL 17";
+    const paragraphs = [
+      "Last spring our billing service was still running on a ten year old MySQL cluster that nobody wanted to touch.",
+      "Every schema change needed a maintenance window, and the replicas fell hours behind during the invoice run.",
+      "We picked PostgreSQL 17 because logical replication let us copy the live tables while the old cluster served traffic.",
+      "The first week went to a checker that compared every invoice row between the two databases and flagged drift.",
+      "In the second week we moved reads behind a feature flag, one customer segment at a time, and watched the error budget.",
+      "Writes were the hard part: we froze the old tables for ninety seconds, let replication drain, and flipped the connection.",
+      "If you run a similar migration, budget time for the checker; it found two old rounding bugs before any customer did.",
+    ];
+    const body = `<html><head><title>${title} - Acme Engineering</title></head><body>` +
+      `<main><article><h1>${title}</h1>${paragraphs.map((text) => `<p>${text}</p>`).join("")}</article></main>` +
+      `<footer class="site-footer"><section class="widget"><h2>Latest from the blog</h2>` +
+      `<h3><a href="/post">${title}</a></h3><p>${paragraphs.join(" ").slice(0, 200)}…</p></section>` +
+      `<p>© 2026 Acme</p></footer></body></html>`;
+    const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+    const batch = await extractors.extract(page);
+    const candidate = batch.candidates.find((value) => value.extractorId === "article")?.artifact;
+    if (candidate === undefined) throw new Error("missing article candidate");
+
+    expect(candidate.markdown).toContain(paragraphs[0]);
+    expect(validate(page, candidate)).toMatchObject({
+      outcome: "valid",
+      checks: expect.arrayContaining([expect.objectContaining({ code: "BOILERPLATE_ONLY", passed: true })]),
+      terminalError: null,
+    });
+  });
+
+  it("rejects footer candidates despite extraction differences", async () => {
+    // The DOM and extracted Markdown differ around adjacent links, image alt text,
+    // list numbers and form controls.
+    const licenses = "Acme, Inc. holds real estate brokerage licenses in multiple states. A list of our real " +
+      "estate licenses is available on the licenses page. Acme Homes is a registered trade name of Acme, Inc.";
+    const statement = "Acme Group is committed to ensuring digital accessibility for individuals with " +
+      "disabilities. We are continuously working to improve the accessibility of our web experience for " +
+      "everyone, and we welcome feedback and accommodation requests. If you wish to report an issue or seek " +
+      "an accommodation, please let us know.";
+    const links = ["About us", "Careers at Acme", "Investor relations", "Privacy policy", "Terms of use",
+      "Cookie preferences", "Accessibility statement", "Contact support"]
+      .map((text, index) => `<a href="/l/${index}">${text}</a>`).join("");
+    const badge = '<img src="/badge.png" alt="Accessibility certified badge"> ';
+    const footers = {
+      touchingLinks: `<p>${licenses}</p>` +
+        `<p>${statement.replace("let us know", '<a href="/a11y">let us</a><a href="/contact">know</a>')}</p>` +
+        `<p>${links}</p>`,
+      imageAltText: `<p>${badge}${licenses}</p><p>${badge}${statement}</p>`,
+      orderedList: `<p>${licenses}</p><ol><li>${statement}</li><li>${licenses}</li></ol>`,
+      controls: `<p>${licenses}</p><p>${statement.replace("digital accessibility",
+        '<button>Menu</button>digital <select><option>Language</option></select>accessibility')}</p>`,
+    };
+    for (const [name, footer] of Object.entries(footers)) {
+      // The app renders client-side, so Readability picks the server-rendered footer.
+      const body = `<html><head><title>Acme: Homes</title></head><body><div id="__next"><h1>Homes.</h1>` +
+        `<div role="contentinfo"><div>${footer}</div></div></div></body></html>`;
+      const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+      const candidate = (await extractors.extract(page)).candidates
+        .find((value) => value.extractorId === "article")?.artifact;
+      if (candidate === undefined) throw new Error(`missing article candidate for ${name}`);
+
+      expect(candidate.markdown, name).toContain("committed to ensuring digital accessibility");
+      expect(validate(page, candidate), name).toMatchObject({
+        outcome: "invalid",
+        checks: expect.arrayContaining([expect.objectContaining({ code: "BOILERPLATE_ONLY", passed: false })]),
+        terminalError: { code: "INCOMPLETE_CONTENT" },
+      });
+    }
   });
 
   it("keeps an article that discusses missing pages", () => {

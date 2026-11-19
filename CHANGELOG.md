@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- An article whose opening a footer widget quotes ("Latest from the blog" with an excerpt) no longer
+  fails with `INCOMPLETE_CONTENT`: the footer check now also requires most of the candidate's prose
+  to be footer text. Footer links with no space between them and footer image alt text still count
+  as footer text, so such a footer is not delivered as page content.
+
 ## [0.18.0] - 2026-11-19
 
 ### Added
