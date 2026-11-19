@@ -46,6 +46,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Browser reads navigate the exact URL that robots, RSL and URL policy approved. Chrome 157 upgraded
+  `http://` navigations to `https://`, so http-only pages failed with `ROBOTS_UNAVAILABLE`.
 - Hybrid platform completion checklist now reflects what is implemented and tested.
 
 - Test fixtures no longer use a fixed fetch date that expired under the cache TTL.

@@ -127,6 +127,9 @@ export function browserLaunchOptions(
 ): LaunchOptions {
   const base: LaunchOptions = {
     headless,
+    // Chrome otherwise upgrades http:// navigations to https://, so the browser would request an
+    // origin that robots, RSL and URL policy never evaluated for this read.
+    args: ["--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable"],
     ...(proxy === null ? {} : { proxy: proxy.browser }),
   };
   if (config.browserExecutable !== null) {
