@@ -5,29 +5,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- `POST /projects/{project_id}/schedules` returns 422 `JOB_REQUEST_INVALID` for a Job request that
-  `POST /jobs` would reject (for example a read without a URL), instead of storing a schedule whose
-  every firing fails with `JOB_CREATION_FAILED`.
-- Console "Sign out" refreshes an expired Access Token before calling `/v1/auth/logout` and reports a
-  failed logout, so the refresh cookie no longer signs the user straight back in; tabs signed in by
-  the refresh cookie now show "Sign out" too. A tab whose session was already revoked (signed out in
-  another tab, a replayed refresh token, an admin) still signs out instead of showing
-  `ACCESS_TOKEN_INVALID`.
-- `crawlume report` also removes the query from URLs in the error details (the page URL, a redirect
-  target) and strips a user name and password from every URL, so the prefilled issue no longer leaks
-  tokens that the `- URL:` line hid.
-- The n8n, Zapier and Make connection tests pass only on 404 `JOB_NOT_FOUND`, so a Project ID that is
-  not a UUID, a URL without `/v1` or a wrong key no longer shows "Connection successful" because
-  routing answered 404 before the key was checked.
-- Cron schedules treat a day-of-month or day-of-week field that starts with `*`, such as `*/2`, as
-  unrestricted, as standard cron does: `0 9 */2 * 1` fires on odd days that are Mondays instead of on
-  every odd day and every Monday.
-- `crawlume report` no longer crashes with `URIError: URI malformed` when the 400-character Markdown
-  preview or the shortened issue link would end in the middle of an emoji or another character
-  outside the Basic Multilingual Plane.
-
 ## [0.18.0] - 2026-11-19
 
 ### Added
@@ -71,6 +48,26 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `POST /projects/{project_id}/schedules` returns 422 `JOB_REQUEST_INVALID` for a Job request that
+  `POST /jobs` would reject (for example a read without a URL), instead of storing a schedule whose
+  every firing fails with `JOB_CREATION_FAILED`.
+- Console "Sign out" refreshes an expired Access Token before calling `/v1/auth/logout` and reports a
+  failed logout, so the refresh cookie no longer signs the user straight back in; tabs signed in by
+  the refresh cookie now show "Sign out" too. A tab whose session was already revoked (signed out in
+  another tab, a replayed refresh token, an admin) still signs out instead of showing
+  `ACCESS_TOKEN_INVALID`.
+- `crawlume report` also removes the query from URLs in the error details (the page URL, a redirect
+  target) and strips a user name and password from every URL, so the prefilled issue no longer leaks
+  tokens that the `- URL:` line hid.
+- The n8n, Zapier and Make connection tests pass only on 404 `JOB_NOT_FOUND`, so a Project ID that is
+  not a UUID, a URL without `/v1` or a wrong key no longer shows "Connection successful" because
+  routing answered 404 before the key was checked.
+- Cron schedules treat a day-of-month or day-of-week field that starts with `*`, such as `*/2`, as
+  unrestricted, as standard cron does: `0 9 */2 * 1` fires on odd days that are Mondays instead of on
+  every odd day and every Monday.
+- `crawlume report` no longer crashes with `URIError: URI malformed` when the 400-character Markdown
+  preview or the shortened issue link would end in the middle of an emoji or another character
+  outside the Basic Multilingual Plane.
 - Article extraction no longer drops body content styled with Tailwind utilities whose names contain
   Readability's negative words (`overflow-hidden`, `scroll-mt-*`, `font-extrabold`). Mintlify
   callouts such as the MCP specification's human-in-the-loop warning, and section headings on
