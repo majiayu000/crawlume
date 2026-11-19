@@ -1,6 +1,6 @@
 {
   "name": "crawlume",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "type": "module",
   "description": "Resumable web crawling and retrieval for AI agents",
   "license": "Apache-2.0",
