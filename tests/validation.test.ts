@@ -296,6 +296,43 @@ describe("ValidatorRegistry", () => {
     }
   });
 
+  it("keeps linked index entries followed by a note about older results", async () => {
+    const entries = Array.from({ length: 12 }, (_, i) =>
+      `<li><a href="/releases/1.${i}">Release 1.${i}: faster parsing and fixed redirects</a></li>`).join("");
+    const body = `<html><head><title>Release notes</title></head><body><main><h1>Release notes</h1>` +
+      `<ul>${entries}</ul><p>Older releases are no longer available.</p></main></body></html>`;
+    const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+    const batch = await extractors.extract(page);
+    expect(batch.candidates.length).toBeGreaterThan(0);
+    for (const candidate of batch.candidates) {
+      expect(validate(page, candidate.artifact)).toMatchObject({
+        checks: expect.arrayContaining([expect.objectContaining({ code: "SOFT_NOT_FOUND", passed: true })]),
+        terminalError: null,
+      });
+    }
+  });
+
+  it("still rejects navigation-only and unavailable pages with recommendations", async () => {
+    const entries = Array.from({ length: 12 }, (_, i) =>
+      `<li><a href="/items/${i}">Details and information about item ${i}</a></li>`).join("");
+    const fixtures = [
+      `<main><nav><ul>${entries}</ul><p>Page not found.</p></nav><p>Page not found.</p></main>`,
+      `<main><p>This product is no longer available.</p><h2>You may also like</h2><ul>${entries}</ul></main>`,
+      `<main><h1>Page not found</h1><ul>${entries}</ul><p>Older results are no longer available.</p></main>`,
+    ];
+    for (const fixture of fixtures) {
+      const body = `<html><head><title>Site</title></head><body>${fixture}</body></html>`;
+      const page = rawPage({ body, responseBytes: Buffer.byteLength(body) });
+      const batch = await extractors.extract(page);
+      expect(batch.candidates.length).toBeGreaterThan(0);
+      for (const candidate of batch.candidates) {
+        expect(validate(page, candidate.artifact), candidate.artifact.markdown).toMatchObject({
+          terminalError: { code: "PAGE_NOT_FOUND" },
+        });
+      }
+    }
+  });
+
   it("keeps an article that discusses missing pages", () => {
     const markdown = "No results found is a common empty state. " +
       "Designers should explain why a search returned nothing and offer the next step. ".repeat(6);
