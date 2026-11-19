@@ -5,6 +5,7 @@ import {
   currentUser,
   ensureSession,
   forgetJob,
+  hasSession,
   human,
   logout,
   project,
@@ -60,17 +61,20 @@ function navigate(hash: string): void {
 }
 
 function renderHeader(): void {
+  // The profile is stored only by the OIDC callback, so a tab signed in by the refresh cookie has none.
   const user = currentUser();
-  header.replaceChildren(user === null ? "" : h("span", {},
-    h("span", { class: "muted" }, user.display_name ?? user.email ?? user.id), " ",
+  const status = h("span");
+  header.replaceChildren(!hasSession() ? "" : h("span", {},
+    user === null ? null : h("span", { class: "muted" }, user.display_name ?? user.email ?? user.id), " ",
     h("button", {
       type: "button",
       class: "link",
-      onclick: async () => {
+      onclick: guarded(status, async () => {
         await logout();
         navigate("#/");
-      },
+      }),
     }, "Sign out"),
+    status,
   ));
 }
 

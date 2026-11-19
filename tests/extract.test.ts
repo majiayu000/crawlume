@@ -34,6 +34,14 @@ describe("extractPage", () => {
     expect(result.markdown).toContain("Continue with tool invocation.");
   });
 
+  it("keeps body content whose Tailwind utility classes match Readability's negative words", async () => {
+    const prose = (topic: string) => `<p>${`The specification explains how ${topic} behaves for every client and server. `.repeat(8)}</p>`;
+    const body = `<html><title>Tools</title><body><article><h1>Tools</h1>${prose("tool listing")}<div role="note" class="callout my-4 overflow-hidden rounded-2xl"><div class="text-sm prose"><span>There SHOULD always be a human in the loop.</span><ul><li>Provide UI that shows exposed tools</li><li>Insert indicators when tools are invoked</li><li>Present confirmation prompts to the user</li></ul></div></div>${prose("tool invocation")}<div class="scroll-mt-24 font-extrabold"><p>Servers MUST declare the tools capability before listing tools.</p></div>${prose("tool results")}</article></body></html>`;
+    const result = await extracted(rawPage({ body }), "article");
+    expect(result.markdown).toContain("Present confirmation prompts to the user");
+    expect(result.markdown).toContain("Servers MUST declare the tools capability");
+  });
+
   it("preserves highlighted line boundaries so comments do not swallow following code", async () => {
     const body = `<html><title>Code guide</title><body><article><p>${"The guide explains working code examples in detail. ".repeat(25)}</p><pre class="language-js"><code><div><span>// Set up the page</span><br></div><div><br></div><div><span>await page.goto('/');</span></div><div><span>await page.close();</span><br></div></code></pre></article></body></html>`;
     const result = await extracted(rawPage({ body }), "article");

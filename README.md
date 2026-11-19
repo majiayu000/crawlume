@@ -61,8 +61,9 @@ npx -y crawlume report https://example.com/the-page
 ```
 
 It reads the page again without the cache and prints the error code, the stages it tried, versions,
-and the start of the extracted text. The query string is removed from the URL. Nothing is sent: the
-last line is a link that opens a prefilled GitHub issue for you to review and submit.
+and the start of the extracted text. The query string, fragment and any user name or password are
+removed from every URL in the report. Nothing is sent: the last line is a link that opens a
+prefilled GitHub issue for you to review and submit.
 
 You can also opt in to anonymous statistics with `CRAWLUME_TELEMETRY=1`. Each finished read then
 sends one event to PostHog with the outcome, error code, HTTP or browser, the stages that ran,

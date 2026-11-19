@@ -416,7 +416,7 @@ export class ControlPlaneJobService {
     return this.insertJob(transaction, scope, prepared, input, auditContext);
   }
 
-  private prepareJob(
+  prepareJob(
     scope: JobCreatorScope,
     idempotencyKey: string,
     input: CreateControlPlaneJobInput,

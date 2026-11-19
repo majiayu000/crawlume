@@ -187,6 +187,21 @@ describeWithPostgres("Project storage and Job schedules on PostgreSQL", () => {
     expect(created.rows[0]?.dataset_id).toBe((await new DatasetService(connect()).get(project, "nightly")).id);
   });
 
+  it.each([
+    ["input the Job type cannot run", { input: {} }],
+    ["a pinned Worker on public placement", {
+      placement: { class: "public", pinned_worker_id: "00000000-0000-4000-8000-000000001299" },
+    }],
+  ])("rejects a schedule whose Job request has %s instead of failing every slot", async (_case, change) => {
+    const database = connect();
+    const schedules = new JobScheduleService(database, new ControlPlaneJobService(database));
+
+    await expect(schedules.create(fixtureProjectKey, {
+      name: "invalid", cron: "* * * * *", jobRequest: { ...scheduledJob, ...change }, enabled: true,
+    })).rejects.toMatchObject({ code: "JOB_REQUEST_INVALID" });
+    expect((await pools[0]!.query("SELECT id FROM job_schedules")).rows).toEqual([]);
+  });
+
   it("does not fire disabled schedules and records failed firings without stopping", async () => {
     const database = connect();
     const schedules = new JobScheduleService(database, new ControlPlaneJobService(database));

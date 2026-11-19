@@ -27,6 +27,15 @@ describe("cron expressions", () => {
     expect(next("0 0 15 * sat", "2030-01-01T00:00:00.000Z")).toBe("2030-01-05T00:00:00.000Z");
   });
 
+  it("treats a day field that starts with * as unrestricted, so both day fields must match", () => {
+    // 2026-11-01 is a Sunday; 2026-11-09 is the first odd day that is a Monday.
+    expect(next("0 9 */2 * 1", "2026-11-01T00:00:00.000Z")).toBe("2026-11-09T09:00:00.000Z");
+    // The 1st falls on a Sunday in November 2026 and on a Tuesday in December.
+    expect(next("0 9 1 * */2", "2026-11-01T09:00:00.000Z")).toBe("2026-12-01T09:00:00.000Z");
+    // A range with a step is a restriction, so either day field matching is still enough.
+    expect(next("0 9 1-31/2 * 1", "2026-11-01T00:00:00.000Z")).toBe("2026-11-01T09:00:00.000Z");
+  });
+
   it("rejects malformed expressions and reports dates that never occur", () => {
     for (const expression of ["* * * *", "60 * * * *", "* 24 * * *", "*/0 * * * *", "5-1 * * * *", "a * * * *"]) {
       expect(() => parseCronExpression(expression)).toThrow(CronExpressionError);

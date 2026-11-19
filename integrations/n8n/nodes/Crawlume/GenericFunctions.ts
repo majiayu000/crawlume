@@ -18,8 +18,9 @@ type ApiContext = IExecuteFunctions | IHookFunctions;
 export const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
 
 /**
- * No API-key route lists Jobs, so probe a Job that cannot exist: 404 proves the key is valid for this
- * Project, while 401/403 mean a bad key or a key bound to another Project.
+ * No API-key route lists Jobs, so probe a Job that cannot exist: 404 JOB_NOT_FOUND proves the key is
+ * valid for this Project, while 401/403 mean a bad key or a key bound to another Project. Any other
+ * 404 comes from routing before the key is checked (a Project ID that is not a UUID, a URL without /v1).
  */
 export async function crawlumeApiTest(
 	this: ICredentialTestFunctions,
@@ -39,8 +40,15 @@ export async function crawlumeApiTest(
 			simple: false,
 			resolveWithFullResponse: true,
 		})) as { statusCode: number; body?: IDataObject };
-		if (response.statusCode === 404) return { status: 'OK', message: 'Connection successful' };
-		return { status: 'Error', message: String(response.body?.detail ?? `HTTP ${response.statusCode}`) };
+		if (response.statusCode === 404 && response.body?.code === 'JOB_NOT_FOUND') {
+			return { status: 'OK', message: 'Connection successful' };
+		}
+		const message = String(response.body?.detail ?? `HTTP ${response.statusCode}`);
+		if (response.statusCode !== 404) return { status: 'Error', message };
+		return {
+			status: 'Error',
+			message: `${message} Check that the Control Plane URL ends with /v1 and the Project ID is the Project's UUID.`,
+		};
 	} catch (error) {
 		return { status: 'Error', message: (error as Error).message };
 	}

@@ -59,7 +59,7 @@ const apiKeyStoragePrefix = "crawlume.console.api-key.";
 
 let accessToken: string | null = null;
 let accessTokenExpiresAt = 0;
-let refreshing: Promise<boolean> | null = null;
+let refreshing: Promise<Response> | null = null;
 
 function storage(kind: "local" | "session"): Storage | null {
   try {
@@ -110,39 +110,69 @@ export async function completeLogin(query: string): Promise<User> {
   return body.user;
 }
 
-async function rotateRefreshCookie(): Promise<boolean> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+/** Rotates the refresh cookie; the control plane's last answer is ok once a new token is accepted. */
+async function rotateRefreshCookie(): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
     const response = await fetch("/v1/auth/refresh", { method: "POST", credentials: "same-origin" });
     if (response.ok) {
       acceptToken(await response.json() as { access_token: string; access_token_expires_at: string });
-      return true;
     }
     // 409 means another tab rotated the same cookie a moment ago; the new cookie is already set.
-    if (response.status !== 409) return false;
+    if (response.status !== 409 || attempt === 1) return response;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-  return false;
+}
+
+function hasFreshAccessToken(): boolean {
+  return accessToken !== null && Date.now() < accessTokenExpiresAt - 30_000;
+}
+
+async function refreshSession(): Promise<Response> {
+  refreshing ??= rotateRefreshCookie().finally(() => { refreshing = null; });
+  const response = await refreshing;
+  if (!response.ok) {
+    accessToken = null;
+    storage("session")?.removeItem(userStorageKey);
+  }
+  return response;
 }
 
 /** Ensures an Access Token is in memory, using the refresh cookie when needed. */
 export async function ensureSession(): Promise<boolean> {
-  if (accessToken !== null && Date.now() < accessTokenExpiresAt - 30_000) return true;
-  refreshing ??= rotateRefreshCookie().finally(() => { refreshing = null; });
-  const ok = await refreshing;
-  if (!ok) {
-    accessToken = null;
-    storage("session")?.removeItem(userStorageKey);
-  }
-  return ok;
+  return hasFreshAccessToken() || (await refreshSession()).ok;
 }
 
+/** True while this tab holds an Access Token, even when the user profile was not stored here. */
+export function hasSession(): boolean {
+  return accessToken !== null;
+}
+
+/**
+ * Revokes the user's sessions. A token that logout would reject is refreshed first, since a failed
+ * logout leaves the refresh cookie valid and signs the user straight back in. A 401 from refresh
+ * means no session is left (the control plane also clears the cookie). Throws if logout fails.
+ */
 export async function logout(): Promise<void> {
-  if (accessToken !== null) {
-    await fetch("/v1/auth/logout", {
+  let fresh = hasFreshAccessToken();
+  for (let attempt = 0; ; attempt += 1) {
+    if (!fresh) {
+      const refreshed = await refreshSession();
+      if (refreshed.status === 401) break;
+      if (!refreshed.ok) throw new ApiError(await problemFrom(refreshed));
+    }
+    const response = await fetch("/v1/auth/logout", {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
       credentials: "same-origin",
     });
+    // Another tab signed out, a refresh token was replayed or an admin revoked this session, so the
+    // token is dead; the cookie tells whether a newer session (signed in elsewhere) is left to revoke.
+    if (response.status === 401 && attempt === 0) {
+      fresh = false;
+      continue;
+    }
+    await parse<void>(response);
+    break;
   }
   accessToken = null;
   storage("session")?.clear();
