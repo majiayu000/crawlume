@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import type { CrawlumeApp } from "./app.js";
 import { normalizeError } from "./errors.js";
+import { packageManifest } from "./package-manifest.js";
 import {
   cacheModes,
   searchSources,
@@ -219,7 +220,7 @@ function toSearchOptions(args: z.infer<typeof searchWebInput>): SearchWebOptions
 
 export function createMcpServer(app: CrawlumeApp): McpServer {
   const server = new McpServer(
-    { name: "crawlume", version: "0.17.0" },
+    { name: "crawlume", version: packageManifest().version },
     {
       instructions:
         "Use read_page for a supplied URL, extract_page for structured JSON, " +
