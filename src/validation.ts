@@ -61,6 +61,25 @@ type FailedCheck = {
   errorCode: ReadErrorCode;
 };
 
+const softNotFoundText =
+  /\b(?:not found|no(?: \w+){0,2} found|no such \w+|(?:is not|isn't|no longer) available|(?:does not|doesn't) exist)\b/iu;
+
+function proseWithoutIndexNotes(prose: string, body: HTMLElement | undefined): string {
+  const main = body?.querySelector("main, [role='main' i]");
+  for (const list of main?.querySelectorAll("ul, ol") ?? []) {
+    const note = list.nextElementSibling;
+    if (note?.tagName !== "P" || note.children.length !== 0 ||
+      list.closest("nav, header, footer, aside, [role='navigation' i], [role='contentinfo' i], [role='complementary' i]")) {
+      continue;
+    }
+    const entries = [...list.children].filter((item) => item.tagName === "LI" && item.querySelector("a[href]"));
+    if (entries.length < 2) continue;
+    const text = (note.textContent ?? "").replace(/\s+/gu, " ").trim();
+    if (softNotFoundText.test(text)) prose = prose.replace(text, " ");
+  }
+  return prose;
+}
+
 export function declaredCanonicalUrl(page: RawPage): string | null {
   const mediaType = page.contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   const html = mediaType === "" || mediaType === "text/html" || mediaType === "application/xhtml+xml";
@@ -164,9 +183,9 @@ function genericContentValidation(input: ValidationCandidate): ValidationResult 
     .replace(/^\s*(?:#{1,6}|[-*+]|\d+\.)\s+/gmu, "")
     .replace(/\s+/gu, " ")
     .trim();
-  const softNotFound = prose.length < 240 &&
-    /\b(?:not found|no(?: \w+){0,2} found|no such \w+|(?:is not|isn't|no longer) available|(?:does not|doesn't) exist)\b/iu
-      .test(prose);
+  // A note following a list of available entries can describe missing older results.
+  const softNotFound = prose.length < 240 && softNotFoundText.test(prose) &&
+    (softNotFoundText.test(title) || softNotFoundText.test(proseWithoutIndexNotes(prose, gateBody)));
   required(
     "SOFT_NOT_FOUND",
     !softNotFound,
