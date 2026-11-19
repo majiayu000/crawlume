@@ -256,9 +256,9 @@ describe("ValidatorRegistry", () => {
     });
   });
 
-  it("rejects a footer candidate whose links touch or whose images carry alt text", async () => {
-    // Minified or server-rendered footers put links side by side; the DOM text then has no space
-    // between them, and an image's alt text shows up only in the Markdown.
+  it("rejects footer candidates despite extraction differences", async () => {
+    // The DOM and extracted Markdown differ around adjacent links, image alt text,
+    // list numbers and form controls.
     const licenses = "Acme, Inc. holds real estate brokerage licenses in multiple states. A list of our real " +
       "estate licenses is available on the licenses page. Acme Homes is a registered trade name of Acme, Inc.";
     const statement = "Acme Group is committed to ensuring digital accessibility for individuals with " +
@@ -274,6 +274,9 @@ describe("ValidatorRegistry", () => {
         `<p>${statement.replace("let us know", '<a href="/a11y">let us</a><a href="/contact">know</a>')}</p>` +
         `<p>${links}</p>`,
       imageAltText: `<p>${badge}${licenses}</p><p>${badge}${statement}</p>`,
+      orderedList: `<p>${licenses}</p><ol><li>${statement}</li><li>${licenses}</li></ol>`,
+      controls: `<p>${licenses}</p><p>${statement.replace("digital accessibility",
+        '<button>Menu</button>digital <select><option>Language</option></select>accessibility')}</p>`,
     };
     for (const [name, footer] of Object.entries(footers)) {
       // The app renders client-side, so Readability picks the server-rendered footer.
