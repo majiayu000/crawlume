@@ -171,7 +171,7 @@
 新功能，直到出现真实用户需求（issue、`crawlume report` 或付费意向）。冻结期只做：
 
 - 让 `npx -y -p crawlume crawlume-mcp` 对新用户可用（npm 发布、Node 版本报错清晰）。
-- 修复真实读取缺口：文档站 callout 正文丢失；robots.txt 被反爬挑战拦截时的处理取舍。
+- 修复真实读取缺口：文档站 callout 正文丢失（已修复）；robots.txt 被反爬挑战拦截时的处理取舍。
 - Nightly 保持绿色。
 
 解冻条件：至少 3 个外部用户的使用反馈，或一个明确的托管需求。

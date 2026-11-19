@@ -71,6 +71,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Article extraction no longer drops body content styled with Tailwind utilities whose names contain
+  Readability's negative words (`overflow-hidden`, `scroll-mt-*`, `font-extrabold`). Mintlify
+  callouts such as the MCP specification's human-in-the-loop warning, and section headings on
+  docs sites such as Next.js, are now kept.
 - Browser reads navigate the exact URL that robots, RSL and URL policy approved. Chrome 157 upgraded
   `http://` navigations to `https://`, so http-only pages failed with `ROBOTS_UNAVAILABLE`.
 - Hybrid platform completion checklist now reflects what is implemented and tested.

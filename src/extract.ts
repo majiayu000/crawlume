@@ -264,6 +264,19 @@ function normalizeCodeBlocks(document: Document): void {
   }
 }
 
+// Tailwind utilities whose names contain Readability's negative or unlikely words (hidden, scroll,
+// extra). They only style the element, so they must not make Readability drop body content.
+const stylingClassToken =
+  /^(?:[\w-]+:)*!?(?:overflow(?:-[xy])?-(?:hidden|scroll|clip|auto|visible)|overscroll(?:-[xy])?-\w+|scroll-\S+|font-extra(?:bold|light))!?$/u;
+
+function dropStylingClassTokens(document: Document): void {
+  for (const element of document.querySelectorAll("[class]")) {
+    const tokens = Array.from(element.classList);
+    const kept = tokens.filter((token) => !stylingClassToken.test(token));
+    if (kept.length !== tokens.length) element.setAttribute("class", kept.join(" "));
+  }
+}
+
 function sanitizeDocument(document: Document, baseUrl: string, fallback: boolean): void {
   document.querySelectorAll(fallback ? fallbackRemovableSelectors : removableSelectors)
     .forEach((node) => node.remove());
@@ -443,6 +456,7 @@ function articleExtractor(page: RawPage): ExtractedPage | null {
   const clone = document.cloneNode(true) as Document;
   sanitizeDocument(clone, page.finalUrl, false);
   normalizeCodeBlocks(clone);
+  dropStylingClassTokens(clone);
   const article = new Readability(clone, {
     classesToPreserve: [...new Set(Array.from(clone.querySelectorAll("pre > code"), (code) => code.className))],
   }).parse();

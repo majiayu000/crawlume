@@ -98,7 +98,8 @@ Jina 使用无 Key 匿名额度；Crawlume 使用 `--cache-mode live`，同一�
 
 - 正文质量两者在公开文档页上基本持平，Crawlume 没有可宣称的正文领先。
 - 差异在失败语义：Jina 会把登录墙和挑战页当成功返回，Crawlume 显式失败。这是可以对外讲的点。
-- Crawlume 两个真实缺口：Readability 丢掉 Mintlify 等文档站的 callout 内容；robots.txt 被挑战页
-  拦截时整站不可读，而 Jina 能读到 Stack Overflow 正文。后者是 fail-closed 的有意取舍，需要决定是否
+- Crawlume 两个真实缺口：Readability 丢掉 Mintlify 等文档站的 callout 内容（已修复：Tailwind 的
+  `overflow-hidden`、`scroll-mt-*`、`font-extrabold` 命中 Readability 的负面词，修复后 16/16 正文页完整命中，
+  Next.js 文档的小节标题也恢复了）；robots.txt 被挑战页拦截时整站不可读，而 Jina 能读到 Stack Overflow 正文。后者是 fail-closed 的有意取舍，需要决定是否
   对“robots 被反爬挑战拦截”区分处理。
 - Firecrawl 需要 API Key，本轮未测。
