@@ -77,3 +77,28 @@
 ## 尚未完成的验证
 
 正式进入云服务开发前，应使用统一的公开测试集，对至少以下产品做实测：Firecrawl、Tavily、Jina Reader、Parallel、Browserbase、Browserless、Bright Data、Zyte、ScrapingBee。指标包括成功率、延迟、正文质量、错误透明度、缓存行为、许可行为和每次成功结果成本。
+
+## 首轮实测：Crawlume 对 Jina Reader（2026-11-19）
+
+脚本与原始结果在 [`benchmarks/head-to-head/`](../benchmarks/head-to-head/)。21 个真实 URL：开发者文档、
+Wikipedia、GitHub、arXiv HTML/PDF、HN、纯 JS 页面、两个带反爬挑战的站点，以及三个应当失败的页面
+（404、GitHub 404、登录墙）。每页两个真值片段取自页面自身源码的前段和后段，不取自任何工具输出。
+Jina 使用无 Key 匿名额度；Crawlume 使用 `--cache-mode live`，同一台机器、同一网络。
+
+| 结果 | Crawlume | Jina Reader |
+|---|---|---|
+| 正文页完整命中（16 页） | 15 | 15（GitHub 被匿名额度拒绝，不计） |
+| 正文页部分命中 | 1（MCP 规范页丢失 callout 框） | 0 |
+| 应失败页显式失败（3 页） | 3/3 | 可判定 1 页，误报为成功；2 页被匿名额度拒绝 |
+| 登录墙 | `LOGIN_WALL_DETECTED` | 返回登录表单作为成功 |
+| npm（Cloudflare 挑战） | `ROBOTS_UNAVAILABLE`（robots 返回 403） | 返回挑战页，附 CAPTCHA 警告 |
+| Stack Overflow | `ROBOTS_UNAVAILABLE`（robots 返回 418） | 返回完整正文 |
+
+结论（样本小，只作方向）：
+
+- 正文质量两者在公开文档页上基本持平，Crawlume 没有可宣称的正文领先。
+- 差异在失败语义：Jina 会把登录墙和挑战页当成功返回，Crawlume 显式失败。这是可以对外讲的点。
+- Crawlume 两个真实缺口：Readability 丢掉 Mintlify 等文档站的 callout 内容；robots.txt 被挑战页
+  拦截时整站不可读，而 Jina 能读到 Stack Overflow 正文。后者是 fail-closed 的有意取舍，需要决定是否
+  对“robots 被反爬挑战拦截”区分处理。
+- Firecrawl 需要 API Key，本轮未测。

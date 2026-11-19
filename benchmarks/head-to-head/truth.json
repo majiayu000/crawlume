@@ -1,0 +1,134 @@
+{
+ "wiki": {
+  "url": "https://en.wikipedia.org/wiki/Web_crawler",
+  "markers": [
+   "that may cause the crawler to download",
+   "the following is a list of published"
+  ]
+ },
+ "mdn429": {
+  "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429",
+  "markers": [
+   "header may be included to this response",
+   "in this example server wide rate limiting"
+  ]
+ },
+ "pyasyncio": {
+  "url": "https://docs.python.org/3/library/asyncio-task.html",
+  "markers": [
+   "call it from the task group body",
+   "exception into the wrapped coroutine if a"
+  ]
+ },
+ "mcptools": {
+  "url": "https://modelcontextprotocol.io/specification/2025-06-18/server/tools",
+  "markers": [
+   "present confirmation prompts to the user for",
+   "content is returned as a json object"
+  ]
+ },
+ "react": {
+  "url": "https://react.dev/learn/thinking-in-react",
+  "markers": [
+   "to build a static version of your",
+   "needs to filter the product list based"
+  ]
+ },
+ "nextjs": {
+  "url": "https://nextjs.org/docs/app/getting-started/installation",
+  "markers": [
+   "turbopack is now the default bundler to",
+   "if you use eslint create an explicit"
+  ]
+ },
+ "ghplaywright": {
+  "url": "https://github.com/microsoft/playwright",
+  "markers": [
+   "find elements with resilient locators that mirror",
+   "brings test running debugging and code generation"
+  ]
+ },
+ "rfc9309": {
+  "url": "https://www.rfc-editor.org/rfc/rfc9309.html",
+  "markers": [
+   "below is an augmented backus naur form",
+   "if the robots txt file is unreachable"
+  ]
+ },
+ "quotesjs": {
+  "url": "https://quotes.toscrape.com/js/",
+  "markers": [
+   "process of our thinking",
+   "it is our choices harry that show what we truly are"
+  ]
+ },
+ "hn1": {
+  "url": "https://news.ycombinator.com/item?id=1",
+  "markers": [
+   "the rising star of venture capital unknown",
+   "the rising star of venture capital unknown"
+  ]
+ },
+ "arxivabs": {
+  "url": "https://arxiv.org/abs/1706.03762",
+  "markers": [
+   "the dominant sequence transduction models are based",
+   "based solely on attention mechanisms dispensing with recurrence"
+  ]
+ },
+ "arxivpdf": {
+  "url": "https://arxiv.org/pdf/1706.03762",
+  "markers": [
+   "the dominant sequence transduction models",
+   "scaled dot product attention"
+  ]
+ },
+ "effgo": {
+  "url": "https://go.dev/doc/effective_go",
+  "markers": [
+   "function to be run immediately before the",
+   "the appearance of the blank identifier in"
+  ]
+ },
+ "rustown": {
+  "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+  "markers": [
+   "at this point the relationship between scopes",
+   "the original string thus immediately goes out"
+  ]
+ },
+ "vite": {
+  "url": "https://vite.dev/guide/",
+  "markers": [
+   "newly available at the time of each",
+   "in a project where vite is installed"
+  ]
+ },
+ "tailwind": {
+  "url": "https://tailwindcss.com/docs/installation/using-vite",
+  "markers": [
+   "installing tailwind css as a vite plugin",
+   "then start using tailwind s utility classes"
+  ]
+ },
+ "npmzod": {
+  "url": "https://www.npmjs.com/package/zod",
+  "markers": []
+ },
+ "so": {
+  "url": "https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array",
+  "markers": []
+ },
+ "fail404": {
+  "url": "https://httpbin.org/status/404",
+  "markers": []
+ },
+ "failgh404": {
+  "url": "https://github.com/majiayu000/this-repo-does-not-exist-xyz",
+  "markers": []
+ },
+ "faillogin": {
+  "url": "https://quotes.toscrape.com/login",
+  "markers": []
+ }
+}

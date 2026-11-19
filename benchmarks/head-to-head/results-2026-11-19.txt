@@ -1,0 +1,23 @@
+page         crawlume       detail                       chars   jina           detail
+wiki         valid          http                         78572   valid          78638 chars
+mdn429       valid          http                          2800   valid          60486 chars
+pyasyncio    valid          http                         68532   valid          68001 chars
+mcptools     partial        http                         10683   valid          123895 chars
+react        valid          http                         22435   valid          32228 chars
+nextjs       valid          http                         11866   valid          11996 chars
+ghplaywright valid          http                         12875   n/a            AbuseAlleviationError
+rfc9309      valid          http                         36699   valid          37333 chars
+quotesjs     valid          browser                       1064   valid          1153 chars
+hn1          valid          http                          2407   valid          2701 chars
+arxivabs     valid          http                          2357   valid          2467 chars
+arxivpdf     valid          http                         41476   valid          40738 chars
+effgo        valid          http                        102960   valid          107545 chars
+rustown      valid          http                         29541   valid          29720 chars
+vite         valid          http                         10986   valid          10982 chars
+tailwind     valid          http                          2567   valid          2636 chars
+npmzod       correct        unparseable                      0   FALSE_SUCCESS  459 chars
+so           correct        unparseable                      0   valid          105012 chars
+fail404      correct        unparseable                      0   n/a            AbuseAlleviationError
+failgh404    correct        unparseable                      0   n/a            AbuseAlleviationError
+faillogin    correct        unparseable                      0   FALSE_SUCCESS  267 chars
+{"crawlume": {"valid": 15, "partial": 1, "correct": 5}, "jina": {"valid": 16, "n/a": 3, "FALSE_SUCCESS": 2}}
